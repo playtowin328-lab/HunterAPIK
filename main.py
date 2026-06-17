@@ -262,13 +262,13 @@ def make_pairing_qr(link: str, code: str) -> BufferedInputFile:
 def pairing_text(code: str, links: dict[str, str]) -> str:
     minutes = max(1, PAIRING_TTL_SECONDS // 60)
     return (
-        f"Device pairing code: `{code}`\n\n"
+        f"Device pairing code: {code}\n\n"
         f"Scan this QR with the phone camera, or tap the button below.\n\n"
         f"Install Android Agent: {links['server']}/agent\n"
         f"Pair link: {links['web_link']}\n\n"
         f"Manual Android Agent setup:\n"
-        f"Server URL: `{links['server']}`\n"
-        f"Code: `{code}`\n\n"
+        f"Server URL: {links['server']}\n"
+        f"Code: {code}\n\n"
         f"Code is valid for {minutes} min."
     )
 
@@ -276,12 +276,15 @@ def pairing_text(code: str, links: dict[str, str]) -> str:
 async def send_pairing_details(message: Message, owner_id: int) -> None:
     code = create_pairing_code(owner_id)
     links = pair_links(code)
-    await message.answer_photo(
-        photo=make_pairing_qr(links["web_link"], code),
-        caption=pairing_text(code, links),
-        reply_markup=pairing_keyboard(links),
-        parse_mode="Markdown",
-    )
+    try:
+        await message.answer_photo(
+            photo=make_pairing_qr(links["web_link"], code),
+            caption=pairing_text(code, links),
+            reply_markup=pairing_keyboard(links),
+        )
+    except Exception as exc:
+        print(f"Failed to send pairing QR: {exc}")
+        await message.answer(pairing_text(code, links), reply_markup=pairing_keyboard(links))
 
 
 async def send_pairing_code(message: Message) -> None:
@@ -1209,8 +1212,8 @@ async def callbacks(callback: CallbackQuery) -> None:
         return
 
     if action == "pair_device":
+        await callback.answer("Preparing QR...")
         await send_pairing_details(callback.message, callback.from_user.id)
-        await callback.answer()
         return
         code = create_pairing_code(callback.from_user.id)
         links = pair_links(code)
