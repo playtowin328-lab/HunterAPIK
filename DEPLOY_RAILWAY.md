@@ -30,6 +30,11 @@ Recommended volume mount path:
 /data
 ```
 
+This repository also contains the Android agent source. Railway must build only
+the Python bot/web service, so `nixpacks.toml`, `runtime.txt`, and
+`.railwayignore` are included to force a Python build and skip Android/Gradle
+files during deploy.
+
 ## 3. Railway Variables
 
 Set these variables:

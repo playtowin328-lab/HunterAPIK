@@ -1,0 +1,15 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+storage/
+logs/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Railway runs only the Python bot/web mini app service.
+# The Android agent stays in GitHub, but is not part of the server build.
+android_agent/
+wireguard/
