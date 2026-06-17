@@ -495,6 +495,15 @@ deviceForm.addEventListener("submit", async (event) => {
 });
 
 connectCurrentDevice.addEventListener("click", async () => {
+  currentDeviceText.textContent = "Opening Android Agent installer...";
+  const url = `${apiBaseUrl}/agent`;
+  if (tg?.openLink) {
+    tg.openLink(url);
+    return;
+  }
+  window.open(url, "_blank", "noopener");
+  return;
+
   const currentDevice = detectCurrentDevice();
 
   try {

@@ -225,6 +225,23 @@ async def send_my_id(message: Message) -> None:
     await message.answer(f"Твой owner_id для агента: `{message.from_user.id}`", parse_mode="Markdown")
 
 
+async def send_status(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    apk_source = "local file" if agent_apk_path() else ("AGENT_APK_URL" if AGENT_APK_URL else "missing")
+    lines = [
+        "Bot status",
+        f"Admin lock: {'on' if ADMIN_IDS else 'off'}",
+        f"Your Telegram ID: {message.from_user.id}",
+        f"Public URL: {PUBLIC_BASE_URL or 'missing'}",
+        f"Mini App URL: {MINI_APP_URL or 'missing'}",
+        f"Agent APK: {apk_source}",
+        f"Storage: {STORAGE_DIR}",
+        f"DB: {DB_PATH}",
+    ]
+    await message.answer("\n".join(lines))
+
+
 async def send_pairing_code(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
@@ -824,7 +841,10 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     <code>{server}</code>
     <button class="ghost" onclick="navigator.clipboard.writeText('{app_link}')">Скопировать deep link</button>
   </main>
-  <script>setTimeout(() => {{ location.href = "{app_link}"; }}, 600);</script>
+  <script>
+    // No auto-redirect here: if the APK is not installed, Android often fails silently.
+    // The user should explicitly tap Download APK or Open Android Agent.
+  </script>
 </body>
 </html>"""
         body = html.encode("utf-8")
@@ -1330,6 +1350,7 @@ async def run_bot() -> None:
     dp.message.register(send_start, Command("help"))
     dp.message.register(send_settings, Command("settings"))
     dp.message.register(send_my_id, Command("myid"))
+    dp.message.register(send_status, Command("status"))
     dp.message.register(send_pairing_code, Command("pair"))
     dp.message.register(handle_web_app_data, F.web_app_data)
     dp.message.register(handle_photo, F.photo)
