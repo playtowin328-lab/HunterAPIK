@@ -44,6 +44,7 @@ BOT_TOKEN=YOUR_BOT_TOKEN
 ADMIN_IDS=YOUR_TELEGRAM_ID
 PUBLIC_BASE_URL=https://YOUR_APP.up.railway.app
 MINI_APP_URL=https://YOUR_APP.up.railway.app
+AGENT_APK_URL=https://github.com/playtowin328-lab/HunterAPIK/releases/download/android-agent-latest/apk-agent.apk
 DEVICE_API_TOKEN=GENERATE_LONG_SECRET
 STORAGE_DIR=/data
 DB_PATH=/data/app.db
@@ -110,6 +111,12 @@ mini_app/apk-agent.apk
 /data/apk-agent.apk
 ```
 
-If you do not have Android Studio locally, run the GitHub Actions workflow
-`Build Android Agent APK`, download the `apk-agent-debug` artifact, rename
-`app-debug.apk` to `apk-agent.apk`, and put it in `mini_app/` before deploy.
+Or set `AGENT_APK_URL` to a public APK download URL. This repo includes a
+GitHub Actions workflow, `Build Android Agent APK`, that publishes:
+
+```text
+https://github.com/playtowin328-lab/HunterAPIK/releases/download/android-agent-latest/apk-agent.apk
+```
+
+After that release exists, `/agent` will show a working download button and
+`/apk-agent.apk` will redirect to the release file.

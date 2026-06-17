@@ -57,6 +57,7 @@ STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
 STORAGE_DIR.mkdir(exist_ok=True)
 MINI_APP_DIR = BASE_DIR / "mini_app"
 AGENT_APK_NAME = "apk-agent.apk"
+AGENT_APK_URL = os.getenv("AGENT_APK_URL", "").strip()
 DEVICE_DB_PATH = STORAGE_DIR / "devices.json"
 PAIRING_DB_PATH = STORAGE_DIR / "pairing_codes.json"
 COMMAND_DB_PATH = STORAGE_DIR / "device_commands.json"
@@ -842,11 +843,19 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 "from this browser if Android asks, then open the /pair QR again.</p>"
                 f'<a href="{escape(download_url, quote=True)}">Download APK</a>'
             )
+        elif AGENT_APK_URL:
+            status = (
+                "<p>APK is built by GitHub Actions and published as a release file. "
+                "Download it on your Android phone, allow install from this browser "
+                "if Android asks, then open the /pair QR again.</p>"
+                f'<a href="{escape(AGENT_APK_URL, quote=True)}">Download APK</a>'
+            )
         else:
             status = (
                 "<p>APK is not uploaded yet. Build the Android app in Android Studio "
                 "and put the file as <code>mini_app/apk-agent.apk</code> before deploy, "
-                "or upload it to the Railway volume as <code>/data/apk-agent.apk</code>.</p>"
+                "upload it to the Railway volume as <code>/data/apk-agent.apk</code>, "
+                "or set <code>AGENT_APK_URL</code> to a release download link.</p>"
             )
 
         html = f"""<!doctype html>
@@ -881,6 +890,11 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     def handle_agent_apk(self) -> None:
         apk_path = agent_apk_path()
         if not apk_path:
+            if AGENT_APK_URL:
+                self.send_response(HTTPStatus.FOUND)
+                self.send_header("Location", AGENT_APK_URL)
+                self.end_headers()
+                return
             self.send_json({"error": "APK is not uploaded yet"}, HTTPStatus.NOT_FOUND)
             return
 
