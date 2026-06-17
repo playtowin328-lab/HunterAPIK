@@ -33,6 +33,7 @@ public class MainActivity extends Activity {
     private EditText ownerIdInput;
     private EditText tokenInput;
     private EditText deviceNameInput;
+    private TextView permissionsText;
     private TextView statusText;
     private TextView deviceIdText;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -83,6 +84,11 @@ public class MainActivity extends Activity {
         subtitle.setTextSize(14);
         subtitle.setPadding(0, dp(6), 0, dp(14));
         root.addView(subtitle, matchWidth());
+
+        permissionsText = new TextView(this);
+        permissionsText.setTextSize(14);
+        permissionsText.setPadding(0, 0, 0, dp(12));
+        root.addView(permissionsText, matchWidth());
 
         serverUrlInput = input("Server URL, например http://192.168.1.10:8080");
         pairingCodeInput = input("Код из /pair");
@@ -154,13 +160,29 @@ public class MainActivity extends Activity {
             startActivity(intent);
         });
 
+        Button setupButton = button("Setup required permissions");
+        setupButton.setOnClickListener(view -> startPermissionWizard());
+
+        Button notificationButton = button("Enable notifications");
+        notificationButton.setOnClickListener(view -> openNotificationSettings());
+
+        Button screenButton = button("Allow screen view");
+        screenButton.setOnClickListener(view -> requestScreenCapture());
+
+        Button batteryButton = button("Battery background settings");
+        batteryButton.setOnClickListener(view -> openBatterySettings());
+
         root.addView(saveButton, matchWidthWithTopMargin());
         root.addView(pasteButton, matchWidthWithTopMargin());
         root.addView(pairButton, matchWidthWithTopMargin());
+        root.addView(setupButton, matchWidthWithTopMargin());
+        root.addView(notificationButton, matchWidthWithTopMargin());
         root.addView(startButton, matchWidthWithTopMargin());
         root.addView(stopButton, matchWidthWithTopMargin());
         root.addView(testButton, matchWidthWithTopMargin());
+        root.addView(screenButton, matchWidthWithTopMargin());
         root.addView(accessibilityButton, matchWidthWithTopMargin());
+        root.addView(batteryButton, matchWidthWithTopMargin());
 
         deviceIdText = new TextView(this);
         deviceIdText.setTextSize(13);
@@ -199,8 +221,16 @@ public class MainActivity extends Activity {
         boolean enabled = prefs.getBoolean(AgentConfig.KEY_ENABLED, false);
         String lastStatus = prefs.getString(HeartbeatService.KEY_LAST_STATUS, "Сигнал ещё не отправлялся");
         boolean paired = !prefs.getString(AgentConfig.KEY_DEVICE_SECRET, "").isEmpty();
+        boolean notificationsReady = notificationsReady();
+        boolean accessibilityReady = TouchControlService.isReady();
 
         deviceIdText.setText("Device ID: " + AgentConfig.getDeviceId(this));
+        permissionsText.setText(
+                "Required setup:\n"
+                        + "Notifications: " + (notificationsReady ? "ready" : "needs permission") + "\n"
+                        + "Gestures/accessibility: " + (accessibilityReady ? "ready" : "open settings and enable APK Agent") + "\n"
+                        + "Screen view: tap Allow screen view when you want preview"
+        );
         statusText.setText(
                 (enabled ? "Агент включён" : "Агент выключен")
                         + "\nPair: " + (paired ? "готов" : "не выполнен")
@@ -253,6 +283,43 @@ public class MainActivity extends Activity {
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 10);
         }
+    }
+
+    private boolean notificationsReady() {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+                || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void openNotificationSettings() {
+        requestNotificationPermission();
+        Intent intent;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+        } else {
+            intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:" + getPackageName()));
+        }
+        startActivity(intent);
+    }
+
+    private void openAccessibilitySettings() {
+        statusText.setText("Enable APK Agent in Accessibility settings, then return here.");
+        startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+    }
+
+    private void openBatterySettings() {
+        Intent intent = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+        startActivity(intent);
+    }
+
+    private void startPermissionWizard() {
+        requestNotificationPermission();
+        if (!TouchControlService.isReady()) {
+            openAccessibilitySettings();
+            return;
+        }
+        requestScreenCapture();
     }
 
     private void handlePairIntent(Intent intent, boolean autoPair) {

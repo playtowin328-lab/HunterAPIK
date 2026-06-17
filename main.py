@@ -8,6 +8,7 @@ import threading
 import time
 import zipfile
 import base64
+from html import escape
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -50,6 +51,7 @@ BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
 STORAGE_DIR.mkdir(exist_ok=True)
 MINI_APP_DIR = BASE_DIR / "mini_app"
+AGENT_APK_NAME = "apk-agent.apk"
 DEVICE_DB_PATH = STORAGE_DIR / "devices.json"
 PAIRING_DB_PATH = STORAGE_DIR / "pairing_codes.json"
 COMMAND_DB_PATH = STORAGE_DIR / "device_commands.json"
@@ -229,6 +231,7 @@ def pairing_text(code: str, links: dict[str, str]) -> str:
     return (
         f"Device pairing code: `{code}`\n\n"
         f"Scan this QR with the phone camera, or tap the button below.\n\n"
+        f"Install Android Agent: {links['server']}/agent\n"
         f"Pair link: {links['web_link']}\n\n"
         f"Manual Android Agent setup:\n"
         f"Server URL: `{links['server']}`\n"
@@ -486,6 +489,18 @@ def public_server_url() -> str:
     return f"http://{WEBAPP_HOST}:{WEBAPP_PORT}"
 
 
+def agent_apk_path() -> Path | None:
+    candidates = [
+        MINI_APP_DIR / AGENT_APK_NAME,
+        STORAGE_DIR / AGENT_APK_NAME,
+        BASE_DIR / "android_agent" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk",
+    ]
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
 def pair_links(code: str) -> dict[str, str]:
     server = public_server_url()
     encoded_server = quote(server, safe="")
@@ -685,6 +700,14 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             self.handle_pair_page(parsed_url)
             return
 
+        if parsed_url.path == "/agent":
+            self.handle_agent_page()
+            return
+
+        if parsed_url.path == f"/{AGENT_APK_NAME}":
+            self.handle_agent_apk()
+            return
+
         if parsed_url.path == "/api/devices/commands/next":
             query = parse_qs(parsed_url.query)
             payload = {
@@ -733,6 +756,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         code = query.get("code", [""])[0].strip()
         server = query.get("server", [public_server_url()])[0].strip() or public_server_url()
         app_link = f"apkagent://pair?server={quote(server, safe='')}&code={quote(code, safe='')}"
+        install_link = f"{public_server_url()}/agent"
         html = f"""<!doctype html>
 <html lang="ru">
 <head>
@@ -756,6 +780,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     <a href="{app_link}">Открыть Android Agent</a>
     <p>Код:</p>
     <code>{code}</code>
+    <a class="ghost" href="{install_link}">Download Android Agent APK</a>
     <p>Server URL:</p>
     <code>{server}</code>
     <button class="ghost" onclick="navigator.clipboard.writeText('{app_link}')">Скопировать deep link</button>
@@ -766,6 +791,65 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         body = html.encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def handle_agent_page(self) -> None:
+        apk_path = agent_apk_path()
+        download_url = f"{public_server_url()}/{AGENT_APK_NAME}"
+        if apk_path:
+            status = (
+                "<p>APK is ready. Download it on your Android phone, allow install "
+                "from this browser if Android asks, then open the /pair QR again.</p>"
+                f'<a href="{escape(download_url, quote=True)}">Download APK</a>'
+            )
+        else:
+            status = (
+                "<p>APK is not uploaded yet. Build the Android app in Android Studio "
+                "and put the file as <code>mini_app/apk-agent.apk</code> before deploy, "
+                "or upload it to the Railway volume as <code>/data/apk-agent.apk</code>.</p>"
+            )
+
+        html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Android Agent</title>
+  <style>
+    body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:#101820; color:#f5fbff; font-family:system-ui,sans-serif; }}
+    main {{ width:min(92vw,460px); padding:24px; border-radius:14px; background:#17232f; box-shadow:0 18px 50px rgba(0,0,0,.35); }}
+    h1 {{ margin:0 0 10px; font-size:28px; }}
+    p {{ color:#b8c7d6; line-height:1.45; }}
+    code {{ padding:2px 6px; border-radius:6px; background:#0d141b; color:#7ee0d3; }}
+    a {{ display:block; width:100%; margin-top:12px; padding:13px 14px; border-radius:10px; background:#13a68f; color:white; font-weight:800; text-align:center; text-decoration:none; box-sizing:border-box; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Android Agent</h1>
+    {status}
+  </main>
+</body>
+</html>"""
+        body = html.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def handle_agent_apk(self) -> None:
+        apk_path = agent_apk_path()
+        if not apk_path:
+            self.send_json({"error": "APK is not uploaded yet"}, HTTPStatus.NOT_FOUND)
+            return
+
+        body = apk_path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/vnd.android.package-archive")
+        self.send_header("Content-Disposition", f'attachment; filename="{AGENT_APK_NAME}"')
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

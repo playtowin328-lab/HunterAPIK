@@ -83,3 +83,23 @@ After deploy:
 2. Open the pair link on Android.
 3. Start the agent.
 4. Open the mini app in Telegram.
+
+## 7. Android APK download
+
+The server exposes:
+
+```text
+https://YOUR_APP.up.railway.app/agent
+https://YOUR_APP.up.railway.app/apk-agent.apk
+```
+
+These links work after an APK exists in one of these locations:
+
+```text
+mini_app/apk-agent.apk
+/data/apk-agent.apk
+```
+
+If you do not have Android Studio locally, run the GitHub Actions workflow
+`Build Android Agent APK`, download the `apk-agent-debug` artifact, rename
+`app-debug.apk` to `apk-agent.apk`, and put it in `mini_app/` before deploy.
