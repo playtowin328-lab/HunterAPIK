@@ -1,0 +1,1152 @@
+import asyncio
+import json
+import os
+import secrets
+import sqlite3
+import threading
+import time
+import zipfile
+import base64
+from http import HTTPStatus
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, quote, urlparse
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command, CommandStart
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    WebAppInfo,
+)
+from dotenv import load_dotenv
+from PIL import Image, ImageEnhance, ImageFilter, UnidentifiedImageError
+
+try:
+    import pytesseract
+except Exception:
+    pytesseract = None
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL") or (
+    f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else ""
+)
+configured_mini_app_url = os.getenv("MINI_APP_URL") or PUBLIC_BASE_URL
+MINI_APP_URL = configured_mini_app_url if configured_mini_app_url.startswith("https://") else ""
+DEVICE_API_TOKEN = os.getenv("DEVICE_API_TOKEN", "")
+WEBAPP_HOST = os.getenv("WEBAPP_HOST", "0.0.0.0")
+WEBAPP_PORT = int(os.getenv("PORT", os.getenv("WEBAPP_PORT", "8080")))
+DEVICE_TTL_SECONDS = int(os.getenv("DEVICE_TTL_SECONDS", "90"))
+BASE_DIR = Path(__file__).resolve().parent
+STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
+STORAGE_DIR.mkdir(exist_ok=True)
+MINI_APP_DIR = BASE_DIR / "mini_app"
+DEVICE_DB_PATH = STORAGE_DIR / "devices.json"
+PAIRING_DB_PATH = STORAGE_DIR / "pairing_codes.json"
+COMMAND_DB_PATH = STORAGE_DIR / "device_commands.json"
+SCREEN_DIR = STORAGE_DIR / "screens"
+SCREEN_DIR.mkdir(exist_ok=True)
+DB_PATH = Path(os.getenv("DB_PATH", str(STORAGE_DIR / "app.db")))
+MAX_IMAGE_SIZE_MB = int(os.getenv("MAX_IMAGE_SIZE_MB", "20"))
+MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024
+PAIRING_TTL_SECONDS = int(os.getenv("PAIRING_TTL_SECONDS", "600"))
+
+# В простой первой версии храним последнее фото пользователя на диске.
+user_last_photo: dict[int, Path] = {}
+
+
+def db_connect() -> sqlite3.Connection:
+    connection = sqlite3.connect(DB_PATH, timeout=15)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def init_db() -> None:
+    with db_connect() as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS devices (
+                owner_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                secret TEXT NOT NULL DEFAULT '',
+                telemetry_json TEXT NOT NULL DEFAULT '{}',
+                last_seen INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (owner_id, device_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pairing_codes (
+                code TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                expires_at INTEGER NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS commands (
+                command_id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL,
+                result TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_commands_next ON commands(owner_id, device_id, status, created_at)")
+
+
+init_db()
+
+HELP_TEXT = (
+    "👋 Добро пожаловать в *APK Converter*\n\n"
+    "Отправь фото или картинку файлом, а потом выбери действие:\n\n"
+    "📄 PDF — сделать фото PDF-файлом\n"
+    "🖼 PNG — сделать PNG-файлом\n"
+    "📝 Текст — распознать текст с фото\n"
+    "✨ Улучшить фото — повысить резкость и контраст\n"
+    "📦 ZIP — упаковать фото в архив\n\n"
+    "📱 Мини-апп — личные устройства и быстрый доступ\n\n"
+    "Команды:\n"
+    "/start — главное меню\n"
+    "/help — подсказка\n"
+    "/settings — текущие настройки\n"
+    "/pair — код для быстрого подключения Android Agent"
+)
+
+SETTINGS_TEXT = (
+    "⚙️ Настройки:\n\n"
+    f"• Максимальный размер картинки: {MAX_IMAGE_SIZE_MB} МБ\n"
+    "• Язык OCR: русский + английский\n"
+    "• Формат PDF: один лист\n"
+    "• PNG отдаётся как файл без сжатия Telegram\n"
+    f"• Мини-апп: {'подключена' if MINI_APP_URL else 'нужен MINI_APP_URL'}"
+)
+
+
+def main_menu() -> InlineKeyboardMarkup:
+    mini_app_button = (
+        InlineKeyboardButton(
+            text="📱 Мини-апп",
+            web_app=WebAppInfo(url=MINI_APP_URL),
+        )
+        if MINI_APP_URL
+        else InlineKeyboardButton(text="📱 Мини-апп", callback_data="mini_app_info")
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [mini_app_button],
+            [
+                InlineKeyboardButton(text="🔗 Подключить телефон", callback_data="pair_device"),
+                InlineKeyboardButton(text="📡 Мои устройства", callback_data="my_devices"),
+            ],
+            [
+                InlineKeyboardButton(text="🕹 Управление", callback_data="control_info"),
+                InlineKeyboardButton(text="🚀 Railway", callback_data="railway_info"),
+            ],
+            [
+                InlineKeyboardButton(text="📄 PDF", callback_data="make_pdf"),
+                InlineKeyboardButton(text="🖼 PNG", callback_data="make_png"),
+                InlineKeyboardButton(text="📝 Текст", callback_data="make_text"),
+            ],
+            [
+                InlineKeyboardButton(text="✨ Улучшить фото", callback_data="enhance_photo"),
+                InlineKeyboardButton(text="📦 ZIP", callback_data="make_zip"),
+            ],
+            [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
+        ]
+    )
+
+
+async def send_start(message: Message) -> None:
+    await message.answer(HELP_TEXT, reply_markup=main_menu(), parse_mode="Markdown")
+
+
+async def send_settings(message: Message) -> None:
+    await message.answer(SETTINGS_TEXT)
+
+
+async def send_my_id(message: Message) -> None:
+    await message.answer(f"Твой owner_id для агента: `{message.from_user.id}`", parse_mode="Markdown")
+
+
+async def send_pairing_code(message: Message) -> None:
+    code = create_pairing_code(message.from_user.id)
+    links = pair_links(code)
+    minutes = max(1, PAIRING_TTL_SECONDS // 60)
+    await message.answer(
+        f"Код подключения устройства: `{code}`\n\n"
+        f"Способы подключения:\n"
+        f"1. Открой ссылку: {links['web_link']}\n"
+        f"2. Или вставь в Android Agent Server URL: `{links['server']}` и код выше.\n\n"
+        f"Код действует {minutes} мин.",
+        parse_mode="Markdown",
+    )
+
+
+def format_devices_text(owner_id: int) -> str:
+    devices = list_devices_for_user(str(owner_id))
+    if not devices:
+        return "Пока нет подключенных устройств. Нажми «Подключить телефон» и введи код в Android Agent."
+
+    lines = ["📡 Твои устройства:"]
+    for device in devices:
+        status = "🟢 online" if device.get("online") else "⚫ offline"
+        lines.append(
+            f"\n{status} — {device.get('name', 'Unknown')}\n"
+            f"Платформа: {device.get('platform', 'unknown')}\n"
+            f"Агент: {device.get('agent', 'unknown')}"
+        )
+
+    return "\n".join(lines)
+
+
+def user_dir(user_id: int) -> Path:
+    path = STORAGE_DIR / str(user_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def load_device_db() -> dict:
+    if not DEVICE_DB_PATH.exists():
+        return {"devices": []}
+
+    try:
+        return json.loads(DEVICE_DB_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"devices": []}
+
+
+def save_device_db(data: dict) -> None:
+    DEVICE_DB_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_pairing_db() -> dict:
+    if not PAIRING_DB_PATH.exists():
+        return {"codes": {}}
+
+    try:
+        return json.loads(PAIRING_DB_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"codes": {}}
+
+
+def save_pairing_db(data: dict) -> None:
+    PAIRING_DB_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_command_db() -> dict:
+    if not COMMAND_DB_PATH.exists():
+        return {"commands": []}
+
+    try:
+        return json.loads(COMMAND_DB_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"commands": []}
+
+
+def save_command_db(data: dict) -> None:
+    COMMAND_DB_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def create_device_command(owner_id: str, device_id: str, command_type: str, payload: dict | None = None) -> dict:
+    allowed_commands = {
+        "request_screen",
+        "stop_screen",
+        "request_files",
+        "request_actions",
+        "ping",
+        "tap",
+        "back",
+        "home",
+        "recents",
+        "swipe_up",
+        "swipe_down",
+        "swipe_left",
+        "swipe_right",
+        "input_text",
+        "key_enter",
+        "key_delete",
+    }
+    if command_type not in allowed_commands:
+        raise ValueError("unsupported command")
+
+    now = int(time.time())
+    command = {
+        "command_id": secrets.token_urlsafe(16),
+        "owner_id": str(owner_id),
+        "device_id": str(device_id),
+        "type": command_type,
+        "payload": payload or {},
+        "status": "pending",
+        "created_at": now,
+        "updated_at": now,
+    }
+    with db_connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO commands(command_id, owner_id, device_id, type, payload_json, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                command["command_id"],
+                command["owner_id"],
+                command["device_id"],
+                command["type"],
+                json.dumps(command["payload"], ensure_ascii=False),
+                command["status"],
+                command["created_at"],
+                command["updated_at"],
+            ),
+        )
+    return command
+
+
+def next_device_command(owner_id: str, device_id: str) -> dict | None:
+    now = int(time.time())
+    with db_connect() as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM commands
+            WHERE owner_id = ? AND device_id = ? AND status = 'pending'
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (str(owner_id), str(device_id)),
+        ).fetchone()
+        if not row:
+            return None
+
+        connection.execute(
+            "UPDATE commands SET status = 'delivered', updated_at = ? WHERE command_id = ?",
+            (now, row["command_id"]),
+        )
+
+    command = dict(row)
+    command["payload"] = json.loads(command.pop("payload_json") or "{}")
+    command["status"] = "delivered"
+    command["updated_at"] = now
+    return command
+
+
+def complete_device_command(owner_id: str, device_id: str, command_id: str, status: str, result: str = "") -> dict | None:
+    now = int(time.time())
+    with db_connect() as connection:
+        row = connection.execute(
+            "SELECT * FROM commands WHERE owner_id = ? AND device_id = ? AND command_id = ?",
+            (str(owner_id), str(device_id), str(command_id)),
+        ).fetchone()
+        if not row:
+            return None
+
+        connection.execute(
+            "UPDATE commands SET status = ?, result = ?, updated_at = ? WHERE command_id = ?",
+            (status[:32], result[:500], now, str(command_id)),
+        )
+
+    command = dict(row)
+    command["payload"] = json.loads(command.pop("payload_json") or "{}")
+    command["status"] = status[:32]
+    command["result"] = result[:500]
+    command["updated_at"] = now
+    return command
+
+
+def screen_paths(owner_id: str, device_id: str) -> tuple[Path, Path]:
+    safe_owner = "".join(ch for ch in str(owner_id) if ch.isalnum() or ch in {"_", "-"})
+    safe_device = "".join(ch for ch in str(device_id) if ch.isalnum() or ch in {"_", "-"})
+    device_dir = SCREEN_DIR / safe_owner
+    device_dir.mkdir(parents=True, exist_ok=True)
+    return device_dir / f"{safe_device}.jpg", device_dir / f"{safe_device}.json"
+
+
+def save_screen_frame(owner_id: str, device_id: str, image_base64: str) -> dict:
+    if not owner_id or not device_id:
+        raise ValueError("owner_id and device_id are required")
+
+    image_bytes = base64.b64decode(image_base64, validate=True)
+    if len(image_bytes) > 2_500_000:
+        raise ValueError("screen frame is too large")
+
+    image_path, meta_path = screen_paths(owner_id, device_id)
+    image_path.write_bytes(image_bytes)
+    meta = {"owner_id": str(owner_id), "device_id": str(device_id), "updated_at": int(time.time())}
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return meta
+
+
+def load_screen_frame(owner_id: str, device_id: str) -> dict | None:
+    image_path, meta_path = screen_paths(owner_id, device_id)
+    if not image_path.exists() or not meta_path.exists():
+        return None
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    image_base64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return {**meta, "image_data": f"data:image/jpeg;base64,{image_base64}"}
+
+
+def create_pairing_code(owner_id: int) -> str:
+    now = int(time.time())
+    expires_at = now + PAIRING_TTL_SECONDS
+
+    with db_connect() as connection:
+        connection.execute("DELETE FROM pairing_codes WHERE expires_at <= ?", (now,))
+        while True:
+            code = f"{secrets.randbelow(1_000_000):06d}"
+            try:
+                connection.execute(
+                    "INSERT INTO pairing_codes(code, owner_id, expires_at) VALUES (?, ?, ?)",
+                    (code, str(owner_id), expires_at),
+                )
+                return code
+            except sqlite3.IntegrityError:
+                continue
+
+
+def public_server_url() -> str:
+    if PUBLIC_BASE_URL:
+        return PUBLIC_BASE_URL.rstrip("/")
+    return f"http://{WEBAPP_HOST}:{WEBAPP_PORT}"
+
+
+def pair_links(code: str) -> dict[str, str]:
+    server = public_server_url()
+    encoded_server = quote(server, safe="")
+    return {
+        "server": server,
+        "app_link": f"apkagent://pair?server={encoded_server}&code={code}",
+        "web_link": f"{server}/pair?server={encoded_server}&code={code}",
+    }
+
+
+def claim_pairing_code(code: str) -> str | None:
+    now = int(time.time())
+    with db_connect() as connection:
+        row = connection.execute(
+            "SELECT owner_id, expires_at FROM pairing_codes WHERE code = ?",
+            (code,),
+        ).fetchone()
+        if not row or int(row["expires_at"]) <= now:
+            connection.execute("DELETE FROM pairing_codes WHERE code = ?", (code,))
+            return None
+
+        connection.execute("DELETE FROM pairing_codes WHERE code = ?", (code,))
+        return str(row["owner_id"])
+
+
+def normalize_device(raw_device: dict) -> dict:
+    now = int(time.time())
+    telemetry = raw_device.get("telemetry")
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+
+    return {
+        "owner_id": str(raw_device.get("owner_id", "")).strip(),
+        "device_id": str(raw_device.get("device_id", "")).strip(),
+        "name": str(raw_device.get("name", "Unknown device")).strip()[:80],
+        "type": str(raw_device.get("type", "phone")).strip()[:24],
+        "platform": str(raw_device.get("platform", "unknown")).strip()[:40],
+        "agent": str(raw_device.get("agent", "apk-agent")).strip()[:40],
+        "secret": str(raw_device.get("secret", "")).strip(),
+        "telemetry": telemetry,
+        "last_seen": int(raw_device.get("last_seen", now)),
+        "created_at": int(raw_device.get("created_at", now)),
+    }
+
+
+def upsert_device(raw_device: dict) -> dict:
+    device = normalize_device(raw_device)
+    if not device["owner_id"] or not device["device_id"]:
+        raise ValueError("owner_id and device_id are required")
+
+    now = int(time.time())
+    with db_connect() as connection:
+        row = connection.execute(
+            "SELECT created_at, secret FROM devices WHERE owner_id = ? AND device_id = ?",
+            (device["owner_id"], device["device_id"]),
+        ).fetchone()
+        device["created_at"] = int(row["created_at"]) if row else now
+        device["secret"] = device["secret"] or (str(row["secret"]) if row else "")
+        device["last_seen"] = now
+        connection.execute(
+            """
+            INSERT INTO devices(owner_id, device_id, name, type, platform, agent, secret, telemetry_json, last_seen, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(owner_id, device_id) DO UPDATE SET
+                name = excluded.name,
+                type = excluded.type,
+                platform = excluded.platform,
+                agent = excluded.agent,
+                secret = excluded.secret,
+                telemetry_json = excluded.telemetry_json,
+                last_seen = excluded.last_seen
+            """,
+            (
+                device["owner_id"],
+                device["device_id"],
+                device["name"],
+                device["type"],
+                device["platform"],
+                device["agent"],
+                device["secret"],
+                json.dumps(device["telemetry"], ensure_ascii=False),
+                device["last_seen"],
+                device["created_at"],
+            ),
+        )
+    return device
+
+
+def list_devices_for_user(owner_id: str) -> list[dict]:
+    now = int(time.time())
+    result = []
+
+    with db_connect() as connection:
+        rows = connection.execute(
+            "SELECT * FROM devices WHERE owner_id = ? ORDER BY last_seen DESC",
+            (str(owner_id),),
+        ).fetchall()
+
+    for row in rows:
+        item = {
+            "owner_id": row["owner_id"],
+            "device_id": row["device_id"],
+            "name": row["name"],
+            "type": row["type"],
+            "platform": row["platform"],
+            "agent": row["agent"],
+            "telemetry": json.loads(row["telemetry_json"] or "{}"),
+            "last_seen": int(row["last_seen"]),
+            "created_at": int(row["created_at"]),
+        }
+        item["online"] = now - item["last_seen"] <= DEVICE_TTL_SECONDS
+        result.append(item)
+
+    return result
+
+
+def public_device(device: dict) -> dict:
+    item = dict(device)
+    item.pop("secret", None)
+    return item
+
+
+def rename_device(owner_id: str, device_id: str, name: str) -> bool:
+    clean_name = name.strip()[:80]
+    if not clean_name:
+        raise ValueError("name is required")
+
+    with db_connect() as connection:
+        cursor = connection.execute(
+            "UPDATE devices SET name = ? WHERE owner_id = ? AND device_id = ?",
+            (clean_name, str(owner_id), str(device_id)),
+        )
+        return cursor.rowcount > 0
+
+
+def delete_device(owner_id: str, device_id: str) -> bool:
+    with db_connect() as connection:
+        cursor = connection.execute(
+            "DELETE FROM devices WHERE owner_id = ? AND device_id = ?",
+            (str(owner_id), str(device_id)),
+        )
+        connection.execute(
+            "DELETE FROM commands WHERE owner_id = ? AND device_id = ?",
+            (str(owner_id), str(device_id)),
+        )
+        return cursor.rowcount > 0
+
+
+def revoke_device(owner_id: str, device_id: str) -> bool:
+    with db_connect() as connection:
+        cursor = connection.execute(
+            "UPDATE devices SET secret = '' WHERE owner_id = ? AND device_id = ?",
+            (str(owner_id), str(device_id)),
+        )
+        return cursor.rowcount > 0
+
+
+def is_authorized_device_request(headers, payload: dict) -> bool:
+    if DEVICE_API_TOKEN and headers.get("Authorization") == f"Bearer {DEVICE_API_TOKEN}":
+        return True
+
+    provided_secret = headers.get("X-Device-Secret", "").strip()
+    if not provided_secret:
+        return not DEVICE_API_TOKEN
+
+    owner_id = str(payload.get("owner_id", "")).strip()
+    device_id = str(payload.get("device_id", "")).strip()
+    with db_connect() as connection:
+        row = connection.execute(
+            "SELECT secret FROM devices WHERE owner_id = ? AND device_id = ?",
+            (owner_id, device_id),
+        ).fetchone()
+    return bool(row and secrets.compare_digest(str(row["secret"]), provided_secret))
+
+
+class MiniAppRequestHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=str(MINI_APP_DIR), **kwargs)
+
+    def end_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Device-Secret")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        super().end_headers()
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.end_headers()
+
+    def do_GET(self) -> None:
+        parsed_url = urlparse(self.path)
+        if parsed_url.path == "/health":
+            self.send_json({"ok": True, "service": "apk-converter-bot"})
+            return
+
+        if parsed_url.path == "/pair":
+            self.handle_pair_page(parsed_url)
+            return
+
+        if parsed_url.path == "/api/devices/commands/next":
+            query = parse_qs(parsed_url.query)
+            payload = {
+                "owner_id": query.get("owner_id", [""])[0].strip(),
+                "device_id": query.get("device_id", [""])[0].strip(),
+            }
+            if not payload["owner_id"] or not payload["device_id"]:
+                self.send_json({"error": "owner_id and device_id are required"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not is_authorized_device_request(self.headers, payload):
+                self.send_json({"error": "bad device secret"}, HTTPStatus.UNAUTHORIZED)
+                return
+
+            self.send_json({"command": next_device_command(payload["owner_id"], payload["device_id"])})
+            return
+
+        if parsed_url.path == "/api/devices/screen":
+            query = parse_qs(parsed_url.query)
+            owner_id = query.get("owner_id", [""])[0].strip()
+            device_id = query.get("device_id", [""])[0].strip()
+            frame = load_screen_frame(owner_id, device_id)
+            if not frame:
+                self.send_json({"error": "screen frame not found"}, HTTPStatus.NOT_FOUND)
+                return
+
+            self.send_json({"frame": frame})
+            return
+
+        if parsed_url.path == "/api/devices":
+            query = parse_qs(parsed_url.query)
+            owner_id = query.get("owner_id", [""])[0].strip()
+            if not owner_id:
+                self.send_json({"error": "owner_id is required"}, HTTPStatus.BAD_REQUEST)
+                return
+
+            self.send_json({"devices": list_devices_for_user(owner_id)})
+            return
+
+        if parsed_url.path == "/":
+            self.path = "/index.html"
+
+        super().do_GET()
+
+    def handle_pair_page(self, parsed_url) -> None:
+        query = parse_qs(parsed_url.query)
+        code = query.get("code", [""])[0].strip()
+        server = query.get("server", [public_server_url()])[0].strip() or public_server_url()
+        app_link = f"apkagent://pair?server={quote(server, safe='')}&code={quote(code, safe='')}"
+        html = f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>APK Agent Pair</title>
+  <style>
+    body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:#101820; color:#f5fbff; font-family:system-ui,sans-serif; }}
+    main {{ width:min(92vw,440px); padding:24px; border-radius:14px; background:#17232f; box-shadow:0 18px 50px rgba(0,0,0,.35); }}
+    h1 {{ margin:0 0 10px; font-size:28px; }}
+    p {{ color:#b8c7d6; line-height:1.45; }}
+    code {{ display:block; padding:12px; border-radius:10px; background:#0d141b; color:#7ee0d3; overflow-wrap:anywhere; }}
+    a, button {{ display:block; width:100%; margin-top:12px; padding:13px 14px; border:0; border-radius:10px; background:#13a68f; color:white; font-weight:800; text-align:center; text-decoration:none; box-sizing:border-box; }}
+    .ghost {{ background:#243445; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Подключение Android Agent</h1>
+    <p>Если приложение установлено, нажми кнопку ниже. Агент сам заполнит сервер и код подключения.</p>
+    <a href="{app_link}">Открыть Android Agent</a>
+    <p>Код:</p>
+    <code>{code}</code>
+    <p>Server URL:</p>
+    <code>{server}</code>
+    <button class="ghost" onclick="navigator.clipboard.writeText('{app_link}')">Скопировать deep link</button>
+  </main>
+  <script>setTimeout(() => {{ location.href = "{app_link}"; }}, 600);</script>
+</body>
+</html>"""
+        body = html.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        parsed_url = urlparse(self.path)
+        if parsed_url.path == "/api/pair/claim":
+            self.handle_pair_claim()
+            return
+
+        if parsed_url.path == "/api/devices/command":
+            self.handle_create_command()
+            return
+
+        if parsed_url.path == "/api/devices/manage":
+            self.handle_manage_device()
+            return
+
+        if parsed_url.path == "/api/devices/commands/complete":
+            self.handle_complete_command()
+            return
+
+        if parsed_url.path == "/api/devices/screen":
+            self.handle_screen_upload()
+            return
+
+        if parsed_url.path not in {"/api/devices/register", "/api/devices/heartbeat"}:
+            self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length).decode("utf-8")
+            payload = json.loads(raw_body or "{}")
+            if not is_authorized_device_request(self.headers, payload):
+                self.send_json({"error": "bad agent token"}, HTTPStatus.UNAUTHORIZED)
+                return
+            device = upsert_device(payload)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        self.send_json({"ok": True, "device": public_device(device)})
+
+    def handle_pair_claim(self) -> None:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length).decode("utf-8")
+            payload = json.loads(raw_body or "{}")
+            owner_id = claim_pairing_code(str(payload.get("pairing_code", "")).strip())
+            if not owner_id:
+                self.send_json({"error": "pairing code is invalid or expired"}, HTTPStatus.BAD_REQUEST)
+                return
+
+            device_secret = secrets.token_urlsafe(32)
+            payload["owner_id"] = owner_id
+            payload["secret"] = device_secret
+            device = upsert_device(payload)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        self.send_json(
+            {
+                "ok": True,
+                "owner_id": owner_id,
+                "device_secret": device_secret,
+                "device": public_device(device),
+            }
+        )
+
+    def handle_create_command(self) -> None:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length).decode("utf-8")
+            payload = json.loads(raw_body or "{}")
+            owner_id = str(payload.get("owner_id", "")).strip()
+            device_id = str(payload.get("device_id", "")).strip()
+            command_type = str(payload.get("type", "")).strip()
+            command_payload = payload.get("payload")
+            if command_payload is not None and not isinstance(command_payload, dict):
+                raise ValueError("payload must be an object")
+            if not owner_id or not device_id:
+                raise ValueError("owner_id and device_id are required")
+            command = create_device_command(owner_id, device_id, command_type, command_payload)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        self.send_json({"ok": True, "command": command})
+
+    def handle_manage_device(self) -> None:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length).decode("utf-8")
+            payload = json.loads(raw_body or "{}")
+            owner_id = str(payload.get("owner_id", "")).strip()
+            device_id = str(payload.get("device_id", "")).strip()
+            action = str(payload.get("action", "")).strip()
+            if not owner_id or not device_id:
+                raise ValueError("owner_id and device_id are required")
+
+            if action == "rename":
+                ok = rename_device(owner_id, device_id, str(payload.get("name", "")))
+            elif action == "delete":
+                ok = delete_device(owner_id, device_id)
+            elif action == "revoke":
+                ok = revoke_device(owner_id, device_id)
+            else:
+                raise ValueError("unsupported action")
+        except (json.JSONDecodeError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if not ok:
+            self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+            return
+
+        self.send_json({"ok": True})
+
+    def handle_screen_upload(self) -> None:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length).decode("utf-8")
+            payload = json.loads(raw_body or "{}")
+            if not is_authorized_device_request(self.headers, payload):
+                self.send_json({"error": "bad device secret"}, HTTPStatus.UNAUTHORIZED)
+                return
+
+            meta = save_screen_frame(
+                str(payload.get("owner_id", "")).strip(),
+                str(payload.get("device_id", "")).strip(),
+                str(payload.get("image_base64", "")).strip(),
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        self.send_json({"ok": True, "frame": meta})
+
+    def handle_complete_command(self) -> None:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length).decode("utf-8")
+            payload = json.loads(raw_body or "{}")
+            if not is_authorized_device_request(self.headers, payload):
+                self.send_json({"error": "bad device secret"}, HTTPStatus.UNAUTHORIZED)
+                return
+
+            command = complete_device_command(
+                str(payload.get("owner_id", "")).strip(),
+                str(payload.get("device_id", "")).strip(),
+                str(payload.get("command_id", "")).strip(),
+                str(payload.get("status", "done")).strip(),
+                str(payload.get("result", "")).strip(),
+            )
+            if not command:
+                self.send_json({"error": "command not found"}, HTTPStatus.NOT_FOUND)
+                return
+        except (json.JSONDecodeError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        self.send_json({"ok": True, "command": command})
+
+    def send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def start_web_app() -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer((WEBAPP_HOST, WEBAPP_PORT), MiniAppRequestHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print(f"Mini app server started on http://{WEBAPP_HOST}:{WEBAPP_PORT}")
+    return server
+
+
+def image_to_pdf(image_path: Path, output_path: Path) -> None:
+    with Image.open(image_path) as image:
+        image.convert("RGB").save(output_path, "PDF", resolution=100.0)
+
+
+def image_to_png(image_path: Path, output_path: Path) -> None:
+    with Image.open(image_path) as image:
+        image.convert("RGBA").save(output_path, "PNG")
+
+
+def enhance_image(image_path: Path, output_path: Path) -> None:
+    with Image.open(image_path) as source:
+        image = source.convert("RGB")
+        image = image.filter(ImageFilter.SHARPEN)
+        image = ImageEnhance.Contrast(image).enhance(1.25)
+        image = ImageEnhance.Sharpness(image).enhance(1.35)
+        image.save(output_path, "JPEG", quality=95)
+
+
+def image_to_zip(image_path: Path, output_path: Path) -> None:
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        zip_file.write(image_path, arcname=image_path.name)
+
+
+def recognize_text(image_path: Path) -> str:
+    if pytesseract is None:
+        return "OCR-модуль не установлен. Установи pytesseract и Tesseract OCR."
+
+    try:
+        with Image.open(image_path) as image:
+            text = pytesseract.image_to_string(image, lang="rus+eng").strip()
+        return text or "Текст на фото не найден."
+    except Exception as exc:
+        return f"Не получилось распознать текст. Ошибка: {exc}"
+
+
+def ensure_valid_image(image_path: Path) -> bool:
+    try:
+        with Image.open(image_path) as image:
+            image.verify()
+        return True
+    except (UnidentifiedImageError, OSError):
+        return False
+
+
+async def get_last_photo_or_warn(callback: CallbackQuery) -> Path | None:
+    user_id = callback.from_user.id
+    image_path = user_last_photo.get(user_id)
+    if not image_path or not image_path.exists():
+        await callback.message.answer("Сначала отправь фото 📸")
+        await callback.answer()
+        return None
+    return image_path
+
+
+async def handle_photo(message: Message, bot: Bot) -> None:
+    user_id = message.from_user.id
+    folder = user_dir(user_id)
+    photo = message.photo[-1]
+
+    file = await bot.get_file(photo.file_id)
+    input_path = folder / "last_photo.jpg"
+    await bot.download_file(file.file_path, destination=input_path)
+
+    if not await asyncio.to_thread(ensure_valid_image, input_path):
+        input_path.unlink(missing_ok=True)
+        await message.answer("Не получилось открыть фото. Попробуй отправить другое изображение.")
+        return
+
+    user_last_photo[user_id] = input_path
+
+    await message.answer(
+        "Фото принято ✅\nВыбери, что сделать с ним:",
+        reply_markup=main_menu(),
+    )
+
+
+async def handle_document_image(message: Message, bot: Bot) -> None:
+    user_id = message.from_user.id
+    folder = user_dir(user_id)
+    document = message.document
+
+    if not document.mime_type or not document.mime_type.startswith("image/"):
+        await message.answer("Отправь именно фото или картинку 🖼")
+        return
+
+    if document.file_size and document.file_size > MAX_IMAGE_SIZE_BYTES:
+        await message.answer(f"Файл слишком большой. Максимум: {MAX_IMAGE_SIZE_MB} МБ.")
+        return
+
+    file = await bot.get_file(document.file_id)
+    suffix = Path(document.file_name or "image.jpg").suffix or ".jpg"
+    input_path = folder / f"last_document_image{suffix}"
+    await bot.download_file(file.file_path, destination=input_path)
+
+    if not await asyncio.to_thread(ensure_valid_image, input_path):
+        input_path.unlink(missing_ok=True)
+        await message.answer("Не получилось открыть картинку. Проверь файл и отправь ещё раз.")
+        return
+
+    user_last_photo[user_id] = input_path
+
+    await message.answer(
+        "Картинка принята как файл ✅\nВыбери действие:",
+        reply_markup=main_menu(),
+    )
+
+
+async def handle_web_app_data(message: Message) -> None:
+    try:
+        payload = json.loads(message.web_app_data.data)
+    except (TypeError, json.JSONDecodeError):
+        await message.answer("Мини-апп прислал данные, но я не смог их прочитать.")
+        return
+
+    if payload.get("event") != "device_status_changed":
+        await message.answer("Получил данные из мини-аппа.")
+        return
+
+    device = payload.get("device", {})
+    name = device.get("name", "устройство")
+    status = "подключено" if device.get("online") else "отключено"
+    await message.answer(f"Статус обновлён: {name} — {status}.")
+
+
+async def callbacks(callback: CallbackQuery) -> None:
+    action = callback.data
+
+    if action == "settings":
+        await callback.message.answer(SETTINGS_TEXT)
+        await callback.answer()
+        return
+
+    if action == "pair_device":
+        code = create_pairing_code(callback.from_user.id)
+        links = pair_links(code)
+        minutes = max(1, PAIRING_TTL_SECONDS // 60)
+        await callback.message.answer(
+            f"🔗 Код подключения: `{code}`\n\n"
+            f"Быстро: {links['web_link']}\n\n"
+            f"Вручную: Server URL `{links['server']}` и код выше.\n"
+            f"Код действует {minutes} мин.",
+            parse_mode="Markdown",
+        )
+        await callback.answer()
+        return
+
+    if action == "my_devices":
+        await callback.message.answer(format_devices_text(callback.from_user.id))
+        await callback.answer()
+        return
+
+    if action == "control_info":
+        await callback.message.answer(
+            "🕹 Управление телефоном\n\n"
+            "Android: можно развивать наш Agent до просмотра экрана через MediaProjection "
+            "и управления через Accessibility Service. Это всегда требует явных разрешений на телефоне.\n\n"
+            "iPhone: полноценное удалённое управление сторонним приложением обычно недоступно. "
+            "Реалистичный режим — статус устройства, инструкции, открытие разрешённых приложений и screen sharing через Apple/внешние сервисы."
+        )
+        await callback.answer()
+        return
+
+    if action == "railway_info":
+        await callback.message.answer(
+            "🚀 Railway\n\n"
+            "Для деплоя задай переменные: BOT_TOKEN, DEVICE_API_TOKEN, PUBLIC_BASE_URL или домен Railway. "
+            "Процесс сам возьмёт порт из PORT и отдаст мини-апп/API."
+        )
+        await callback.answer()
+        return
+
+    if action == "mini_app_info":
+        await callback.message.answer(
+            "Мини-апп почти готов. Загрузи папку mini_app на HTTPS-хостинг, "
+            "укажи ссылку в MINI_APP_URL и перезапусти бота."
+        )
+        await callback.answer()
+        return
+
+    image_path = await get_last_photo_or_warn(callback)
+    if image_path is None:
+        return
+
+    folder = user_dir(callback.from_user.id)
+
+    try:
+        if action == "make_pdf":
+            output = folder / "APK_Converter_photo.pdf"
+            await asyncio.to_thread(image_to_pdf, image_path, output)
+            await callback.message.answer_document(FSInputFile(output), caption="📄 Готово: PDF")
+
+        elif action == "make_png":
+            output = folder / "APK_Converter_photo.png"
+            await asyncio.to_thread(image_to_png, image_path, output)
+            await callback.message.answer_document(FSInputFile(output), caption="🖼 Готово: PNG")
+
+        elif action == "make_zip":
+            output = folder / "APK_Converter_photo.zip"
+            await asyncio.to_thread(image_to_zip, image_path, output)
+            await callback.message.answer_document(FSInputFile(output), caption="📦 Готово: ZIP")
+
+        elif action == "enhance_photo":
+            output = folder / "APK_Converter_enhanced.jpg"
+            await asyncio.to_thread(enhance_image, image_path, output)
+            await callback.message.answer_document(FSInputFile(output), caption="✨ Фото улучшено")
+
+        elif action == "make_text":
+            text = await asyncio.to_thread(recognize_text, image_path)
+            if len(text) > 3500:
+                txt_file = folder / "APK_Converter_text.txt"
+                txt_file.write_text(text, encoding="utf-8")
+                await callback.message.answer_document(FSInputFile(txt_file), caption="📝 Текст распознан")
+            else:
+                await callback.message.answer(f"📝 Распознанный текст:\n\n{text}")
+
+        else:
+            await callback.message.answer("Не знаю такую команду. Открой /start и выбери действие из меню.")
+    except Exception as exc:
+        await callback.message.answer(f"Не получилось обработать изображение. Ошибка: {exc}")
+
+    await callback.answer()
+
+
+async def run_bot() -> None:
+    if not BOT_TOKEN:
+        raise RuntimeError("Не найден BOT_TOKEN. Создай .env по примеру .env.example")
+
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher()
+
+    dp.message.register(send_start, CommandStart())
+    dp.message.register(send_start, Command("help"))
+    dp.message.register(send_settings, Command("settings"))
+    dp.message.register(send_my_id, Command("myid"))
+    dp.message.register(send_pairing_code, Command("pair"))
+    dp.message.register(handle_web_app_data, F.web_app_data)
+    dp.message.register(handle_photo, F.photo)
+    dp.message.register(handle_document_image, F.document)
+    dp.callback_query.register(callbacks)
+
+    print("APK Converter bot started")
+    web_server = start_web_app()
+    try:
+        await dp.start_polling(bot)
+    finally:
+        web_server.shutdown()
+        web_server.server_close()
+
+
+if __name__ == "__main__":
+    asyncio.run(run_bot())

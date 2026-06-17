@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+storage/
+logs/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+.agent_device_id
