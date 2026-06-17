@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import os
 import secrets
@@ -17,6 +18,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     Message,
     CallbackQuery,
+    BufferedInputFile,
     FSInputFile,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -24,6 +26,7 @@ from aiogram.types import (
 )
 from dotenv import load_dotenv
 from PIL import Image, ImageEnhance, ImageFilter, UnidentifiedImageError
+import qrcode
 
 try:
     import pytesseract
@@ -200,6 +203,53 @@ async def send_pairing_code(message: Message) -> None:
         f"Код действует {minutes} мин.",
         parse_mode="Markdown",
     )
+
+
+def pairing_keyboard(links: dict[str, str]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Open pair page", url=links["web_link"])],
+            [InlineKeyboardButton(text="Open Android Agent", url=links["app_link"])],
+        ]
+    )
+
+
+def make_pairing_qr(link: str, code: str) -> BufferedInputFile:
+    qr = qrcode.QRCode(version=1, box_size=10, border=3)
+    qr.add_data(link)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return BufferedInputFile(buffer.getvalue(), filename=f"pair-{code}.png")
+
+
+def pairing_text(code: str, links: dict[str, str]) -> str:
+    minutes = max(1, PAIRING_TTL_SECONDS // 60)
+    return (
+        f"Device pairing code: `{code}`\n\n"
+        f"Scan this QR with the phone camera, or tap the button below.\n\n"
+        f"Pair link: {links['web_link']}\n\n"
+        f"Manual Android Agent setup:\n"
+        f"Server URL: `{links['server']}`\n"
+        f"Code: `{code}`\n\n"
+        f"Code is valid for {minutes} min."
+    )
+
+
+async def send_pairing_details(message: Message, owner_id: int) -> None:
+    code = create_pairing_code(owner_id)
+    links = pair_links(code)
+    await message.answer_photo(
+        photo=make_pairing_qr(links["web_link"], code),
+        caption=pairing_text(code, links),
+        reply_markup=pairing_keyboard(links),
+        parse_mode="Markdown",
+    )
+
+
+async def send_pairing_code(message: Message) -> None:
+    await send_pairing_details(message, message.from_user.id)
 
 
 def format_devices_text(owner_id: int) -> str:
@@ -1032,6 +1082,9 @@ async def callbacks(callback: CallbackQuery) -> None:
         return
 
     if action == "pair_device":
+        await send_pairing_details(callback.message, callback.from_user.id)
+        await callback.answer()
+        return
         code = create_pairing_code(callback.from_user.id)
         links = pair_links(code)
         minutes = max(1, PAIRING_TTL_SECONDS // 60)
