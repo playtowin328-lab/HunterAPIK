@@ -44,6 +44,11 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL") or (
 configured_mini_app_url = os.getenv("MINI_APP_URL") or PUBLIC_BASE_URL
 MINI_APP_URL = configured_mini_app_url if configured_mini_app_url.startswith("https://") else ""
 DEVICE_API_TOKEN = os.getenv("DEVICE_API_TOKEN", "")
+ADMIN_IDS = {
+    item.strip()
+    for item in os.getenv("ADMIN_IDS", "").replace(";", ",").split(",")
+    if item.strip()
+}
 WEBAPP_HOST = os.getenv("WEBAPP_HOST", "0.0.0.0")
 WEBAPP_PORT = int(os.getenv("PORT", os.getenv("WEBAPP_PORT", "8080")))
 DEVICE_TTL_SECONDS = int(os.getenv("DEVICE_TTL_SECONDS", "90"))
@@ -64,6 +69,26 @@ PAIRING_TTL_SECONDS = int(os.getenv("PAIRING_TTL_SECONDS", "600"))
 
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
+
+
+def is_admin_user(user) -> bool:
+    if not ADMIN_IDS:
+        return True
+    return bool(user and str(user.id) in ADMIN_IDS)
+
+
+async def ensure_message_admin(message: Message) -> bool:
+    if is_admin_user(message.from_user):
+        return True
+    await message.answer("Access denied. This bot is available only to admins.")
+    return False
+
+
+async def ensure_callback_admin(callback: CallbackQuery) -> bool:
+    if is_admin_user(callback.from_user):
+        return True
+    await callback.answer("Access denied. Admins only.", show_alert=True)
+    return False
 
 
 def db_connect() -> sqlite3.Connection:
@@ -182,18 +207,26 @@ def main_menu() -> InlineKeyboardMarkup:
 
 
 async def send_start(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
     await message.answer(HELP_TEXT, reply_markup=main_menu(), parse_mode="Markdown")
 
 
 async def send_settings(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
     await message.answer(SETTINGS_TEXT)
 
 
 async def send_my_id(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
     await message.answer(f"Твой owner_id для агента: `{message.from_user.id}`", parse_mode="Markdown")
 
 
 async def send_pairing_code(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
     code = create_pairing_code(message.from_user.id)
     links = pair_links(code)
     minutes = max(1, PAIRING_TTL_SECONDS // 60)
@@ -252,6 +285,8 @@ async def send_pairing_details(message: Message, owner_id: int) -> None:
 
 
 async def send_pairing_code(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
     await send_pairing_details(message, message.from_user.id)
 
 
@@ -1088,6 +1123,8 @@ async def get_last_photo_or_warn(callback: CallbackQuery) -> Path | None:
 
 
 async def handle_photo(message: Message, bot: Bot) -> None:
+    if not await ensure_message_admin(message):
+        return
     user_id = message.from_user.id
     folder = user_dir(user_id)
     photo = message.photo[-1]
@@ -1110,6 +1147,8 @@ async def handle_photo(message: Message, bot: Bot) -> None:
 
 
 async def handle_document_image(message: Message, bot: Bot) -> None:
+    if not await ensure_message_admin(message):
+        return
     user_id = message.from_user.id
     folder = user_dir(user_id)
     document = message.document
@@ -1141,6 +1180,8 @@ async def handle_document_image(message: Message, bot: Bot) -> None:
 
 
 async def handle_web_app_data(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
     try:
         payload = json.loads(message.web_app_data.data)
     except (TypeError, json.JSONDecodeError):
@@ -1158,6 +1199,8 @@ async def handle_web_app_data(message: Message) -> None:
 
 
 async def callbacks(callback: CallbackQuery) -> None:
+    if not await ensure_callback_admin(callback):
+        return
     action = callback.data
 
     if action == "settings":

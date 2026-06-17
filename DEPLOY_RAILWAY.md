@@ -41,6 +41,7 @@ Set these variables:
 
 ```env
 BOT_TOKEN=YOUR_BOT_TOKEN
+ADMIN_IDS=YOUR_TELEGRAM_ID
 PUBLIC_BASE_URL=https://YOUR_APP.up.railway.app
 MINI_APP_URL=https://YOUR_APP.up.railway.app
 DEVICE_API_TOKEN=GENERATE_LONG_SECRET
@@ -52,6 +53,15 @@ MAX_IMAGE_SIZE_MB=20
 ```
 
 Railway sets `PORT` automatically. Do not hardcode it.
+
+`ADMIN_IDS` locks Telegram bot commands/buttons to specific Telegram users.
+Use comma-separated IDs for multiple admins, for example:
+
+```env
+ADMIN_IDS=123456789,987654321
+```
+
+QR pairing links and device API continue to work after an admin creates a pair code.
 
 ## 4. BotFather
 
