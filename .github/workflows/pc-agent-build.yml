@@ -1,0 +1,58 @@
+name: Build PC Agent
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "pc_agent/**"
+      - ".github/workflows/pc-agent-build.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller
+
+      - name: Build exe
+        run: pyinstaller --onefile --name hunter-pc-agent pc_agent/agent.py
+
+      - name: Prepare files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist-release | Out-Null
+          Copy-Item dist/hunter-pc-agent.exe dist-release/hunter-pc-agent.exe
+          Get-FileHash dist-release/hunter-pc-agent.exe -Algorithm SHA256 | ForEach-Object {
+            "$($_.Hash)  hunter-pc-agent.exe" | Out-File -Encoding ascii dist-release/hunter-pc-agent.sha256
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hunter-pc-agent-windows
+          path: dist-release/hunter-pc-agent.exe
+
+      - name: Publish latest PC agent release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pc-agent-latest
+          name: PC Agent Latest
+          body: Visible PC heartbeat agent. Use only on your own PCs/VDS.
+          files: |
+            dist-release/hunter-pc-agent.exe
+            dist-release/hunter-pc-agent.sha256
+          make_latest: false
+          overwrite_files: true

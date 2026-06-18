@@ -64,6 +64,8 @@ AGENT_APK_URL = os.getenv("AGENT_APK_URL", "").strip()
 GITHUB_REPO = os.getenv("GITHUB_REPO", "playtowin328-lab/HunterAPIK").strip()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 GITHUB_WORKFLOW = os.getenv("GITHUB_WORKFLOW", "android-agent-apk.yml").strip()
+PC_AGENT_WORKFLOW = os.getenv("PC_AGENT_WORKFLOW", "pc-agent-build.yml").strip()
+PC_AGENT_EXE_NAME = "hunter-pc-agent.exe"
 DEVICE_DB_PATH = STORAGE_DIR / "devices.json"
 PAIRING_DB_PATH = STORAGE_DIR / "pairing_codes.json"
 COMMAND_DB_PATH = STORAGE_DIR / "device_commands.json"
@@ -171,6 +173,7 @@ HELP_TEXT = (
     "/build_apk — собрать Lite APK со стандартным названием\n"
     "/build_apk Название — собрать Lite APK со своим названием\n"
     "/build_apk_full Название — собрать полный APK с экраном и жестами\n"
+    "/build_pc_agent — собрать Windows EXE для ПК/VDS\n"
     "/guide — подробная инструкция\n"
     "/settings — текущие настройки\n"
     "/check — диагностика деплоя"
@@ -230,6 +233,9 @@ def main_menu() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="🕹 Управление", callback_data="control_info"),
                 InlineKeyboardButton(text="📘 Инструкция", callback_data="guide"),
+            ],
+            [
+                InlineKeyboardButton(text="💻 PC Agent", callback_data="pc_agent_info"),
             ],
             [
                 InlineKeyboardButton(text="🛠 Собрать APK", callback_data="connect_build_now"),
@@ -422,6 +428,70 @@ async def send_build_apk_full(message: Message, command: CommandObject) -> None:
     await start_apk_build(message, message.from_user.id, app_name, "full")
 
 
+def pc_agent_url() -> str:
+    return f"https://github.com/{GITHUB_REPO}/releases/download/pc-agent-latest/{PC_AGENT_EXE_NAME}"
+
+
+def pc_agent_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Скачать PC Agent", url=pc_agent_url())],
+            [InlineKeyboardButton(text="Собрать PC Agent", callback_data="pc_agent_build_now")],
+            [InlineKeyboardButton(text="Получить QR / код", callback_data="pair_device")],
+            [InlineKeyboardButton(text="Мои устройства", callback_data="my_devices")],
+        ]
+    )
+
+
+def pc_agent_text() -> str:
+    return (
+        "PC Agent для твоих ПК/VDS\n\n"
+        "1. Нажми «Собрать PC Agent» и дождись Windows EXE.\n"
+        "2. Скачай EXE на свой ПК или Windows VDS.\n"
+        "3. В боте нажми «Получить QR / код».\n"
+        "4. На ПК выполни:\n"
+        f"`{PC_AGENT_EXE_NAME} pair --server {public_server_url()} --code 123456 --name \"Home PC\"`\n"
+        "5. Потом запусти:\n"
+        f"`{PC_AGENT_EXE_NAME} run`\n\n"
+        "Экран ПК лучше подключать легально через WireGuard + RDP/SSH или RustDesk. "
+        "Наш PC Agent не скрывается и не выполняет произвольные команды."
+    )
+
+
+async def send_pc_agent(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    await message.answer(pc_agent_text(), reply_markup=pc_agent_keyboard(), parse_mode="Markdown")
+
+
+async def send_build_pc_agent(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    await start_pc_agent_build(message)
+
+
+async def start_pc_agent_build(message: Message) -> None:
+    if not GITHUB_TOKEN:
+        await message.answer(
+            "Не могу запустить сборку PC Agent. Добавь GITHUB_TOKEN в Railway variables и redeploy."
+        )
+        return
+
+    started_at = datetime.now(timezone.utc)
+    try:
+        await asyncio.to_thread(trigger_github_workflow, PC_AGENT_WORKFLOW, {})
+    except Exception as exc:
+        await message.answer(f"GitHub PC Agent build не стартовал: {exc}")
+        return
+
+    await message.answer(
+        "Сборка PC Agent запущена.\n\n"
+        "Я проверю GitHub Actions и пришлю ссылку, когда Windows EXE будет готов.\n"
+        f"Релиз: https://github.com/{GITHUB_REPO}/releases/tag/pc-agent-latest"
+    )
+    asyncio.create_task(watch_pc_agent_build(message, started_at))
+
+
 async def start_apk_build(message: Message, owner_id: int, app_name: str = "Hunter Agent", build_mode: str = "lite") -> None:
     app_name = (app_name or "Hunter Agent").strip()[:40] or "Hunter Agent"
     build_mode = "full" if build_mode == "full" else "lite"
@@ -521,6 +591,60 @@ async def watch_apk_build(message: Message, started_at: datetime) -> None:
 
     await message.answer(
         "APK build is still running or GitHub did not expose the run in time.\n"
+        f"Check Actions:\nhttps://github.com/{GITHUB_REPO}/actions"
+    )
+
+
+async def watch_pc_agent_build(message: Message, started_at: datetime) -> None:
+    run = None
+    run_announced = False
+    deadline = datetime.now(timezone.utc) + timedelta(minutes=20)
+
+    while datetime.now(timezone.utc) < deadline:
+        try:
+            if run is None:
+                run = await asyncio.to_thread(latest_dispatched_workflow_run, PC_AGENT_WORKFLOW, started_at)
+                if run is None:
+                    await asyncio.sleep(10)
+                    continue
+
+            if not run_announced:
+                await message.answer(f"GitHub Actions PC run found:\n{run.get('html_url')}")
+                run_announced = True
+
+            run_id = int(run["id"])
+            fresh_run = await asyncio.to_thread(
+                github_api_json,
+                f"/repos/{GITHUB_REPO}/actions/runs/{run_id}",
+            )
+            status = fresh_run.get("status")
+            conclusion = fresh_run.get("conclusion")
+
+            if status != "completed":
+                await asyncio.sleep(20)
+                continue
+
+            if conclusion == "success":
+                await message.answer(
+                    "PC Agent готов.\n\n"
+                    f"Скачать EXE:\n{pc_agent_url()}\n\n"
+                    "После скачивания: получи `/pair`, затем выполни команду `pair` на ПК.",
+                    reply_markup=pc_agent_keyboard(),
+                    parse_mode="Markdown",
+                )
+                return
+
+            await message.answer(
+                "PC Agent build failed.\n\n"
+                f"Open logs:\n{run.get('html_url')}"
+            )
+            return
+        except Exception as exc:
+            await message.answer(f"Could not check PC Agent build status: {exc}")
+            return
+
+    await message.answer(
+        "PC Agent build is still running or GitHub did not expose the run in time.\n"
         f"Check Actions:\nhttps://github.com/{GITHUB_REPO}/actions"
     )
 
@@ -868,19 +992,26 @@ def prepare_build_icon(owner_id: int, source_path: Path) -> str | None:
 
 
 def trigger_github_apk_build(app_name: str, icon_url: str | None, build_mode: str = "lite") -> None:
+    trigger_github_workflow(
+        GITHUB_WORKFLOW,
+        {
+            "app_name": app_name[:40],
+            "icon_url": icon_url or "",
+            "build_mode": "full" if build_mode == "full" else "lite",
+        },
+    )
+
+
+def trigger_github_workflow(workflow_file: str, inputs: dict) -> None:
     if not GITHUB_TOKEN:
         raise RuntimeError("GITHUB_TOKEN is missing")
     if not GITHUB_REPO:
         raise RuntimeError("GITHUB_REPO is missing")
 
-    endpoint = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/{GITHUB_WORKFLOW}/dispatches"
+    endpoint = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/{workflow_file}/dispatches"
     payload = {
         "ref": "main",
-        "inputs": {
-            "app_name": app_name[:40],
-            "icon_url": icon_url or "",
-            "build_mode": "full" if build_mode == "full" else "lite",
-        },
+        "inputs": inputs,
     }
     request = urllib.request.Request(
         endpoint,
@@ -948,7 +1079,11 @@ def apk_download_status() -> tuple[bool, str, str]:
 
 
 def latest_dispatched_apk_run(started_at: datetime) -> dict | None:
-    workflow = quote(GITHUB_WORKFLOW, safe="")
+    return latest_dispatched_workflow_run(GITHUB_WORKFLOW, started_at)
+
+
+def latest_dispatched_workflow_run(workflow_file: str, started_at: datetime) -> dict | None:
+    workflow = quote(workflow_file, safe="")
     data = github_api_json(
         f"/repos/{GITHUB_REPO}/actions/workflows/{workflow}/runs",
         {
@@ -1762,6 +1897,16 @@ async def callbacks(callback: CallbackQuery) -> None:
         await callback.message.answer(GUIDE_TEXT, reply_markup=connect_keyboard(), parse_mode="Markdown")
         return
 
+    if action == "pc_agent_info":
+        await callback.answer()
+        await callback.message.answer(pc_agent_text(), reply_markup=pc_agent_keyboard(), parse_mode="Markdown")
+        return
+
+    if action == "pc_agent_build_now":
+        await callback.answer("Starting PC Agent build...")
+        await start_pc_agent_build(callback.message)
+        return
+
     if action == "connect_wizard":
         await callback.answer()
         await callback.message.answer(connect_text(callback.from_user.id), reply_markup=connect_keyboard())
@@ -1915,6 +2060,8 @@ async def run_bot() -> None:
     dp.message.register(send_devices, Command("devices"))
     dp.message.register(send_build_apk, Command("build_apk"))
     dp.message.register(send_build_apk_full, Command("build_apk_full"))
+    dp.message.register(send_build_pc_agent, Command("build_pc_agent"))
+    dp.message.register(send_pc_agent, Command("pc_agent"))
     dp.message.register(send_pairing_code, Command("pair"))
     dp.message.register(handle_web_app_data, F.web_app_data)
     dp.message.register(handle_photo, F.photo)
