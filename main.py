@@ -1198,21 +1198,18 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     def handle_agent_page(self) -> None:
         apk_path = agent_apk_path()
         download_url = f"{public_server_url()}/{AGENT_APK_NAME}"
+        release_url = release_apk_url()
+        actions_url = f"https://github.com/{GITHUB_REPO}/actions/workflows/{GITHUB_WORKFLOW}"
         mini_app_url = MINI_APP_URL or public_server_url()
-        apk_available = bool(apk_path or AGENT_APK_URL)
-        download_href = download_url if apk_path else AGENT_APK_URL
+        download_href = download_url if apk_path else release_url
         if apk_path:
             source_text = "APK is ready from this server."
         elif AGENT_APK_URL:
             source_text = "APK is published by GitHub Actions release."
         else:
-            source_text = "APK is not ready yet. Run /build_apk in Telegram or set AGENT_APK_URL."
+            source_text = "APK release link is configured from the repository."
 
-        download_button = (
-            f'<a href="{escape(download_href, quote=True)}">Download APK</a>'
-            if apk_available
-            else '<button disabled>APK not ready</button>'
-        )
+        download_button = f'<a href="{escape(download_href, quote=True)}">Download APK</a>'
 
         html = f"""<!doctype html>
 <html lang="en">
@@ -1242,6 +1239,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
       <span class="status">{escape(source_text)}</span>
       <p>This APK connects your Android phone to the Telegram bot and Mini App.</p>
       {download_button}
+      <a class="ghost" href="{escape(actions_url, quote=True)}">Open APK build status</a>
       <a class="ghost" href="{escape(mini_app_url, quote=True)}">Open Mini App</a>
 
       <h2>Install steps</h2>
@@ -1254,7 +1252,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
       </ol>
 
       <h2>If APK is not ready</h2>
-      <p>Send an icon image to the bot, then run <code>/build_apk Hunter Agent</code>. The bot will send the download link after GitHub Actions finishes.</p>
+      <p>If the download returns 404, the GitHub Release has not been created yet. Send an icon image to the bot, then run <code>/build_apk Hunter Agent</code>. The bot will send the download link after GitHub Actions finishes.</p>
     </section>
   </main>
 </body>
@@ -1269,12 +1267,9 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     def handle_agent_apk(self) -> None:
         apk_path = agent_apk_path()
         if not apk_path:
-            if AGENT_APK_URL:
-                self.send_response(HTTPStatus.FOUND)
-                self.send_header("Location", AGENT_APK_URL)
-                self.end_headers()
-                return
-            self.send_json({"error": "APK is not uploaded yet"}, HTTPStatus.NOT_FOUND)
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", release_apk_url())
+            self.end_headers()
             return
 
         body = apk_path.read_bytes()
