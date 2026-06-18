@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     Message,
@@ -256,6 +257,38 @@ def main_menu() -> InlineKeyboardMarkup:
     )
 
 
+def nav_row(back: str | None = None) -> list[InlineKeyboardButton]:
+    row: list[InlineKeyboardButton] = []
+    if back:
+        row.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=back))
+    row.append(InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu"))
+    return row
+
+
+def nav_keyboard(back: str | None = "main_menu") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[nav_row(back)])
+
+
+def with_nav(markup: InlineKeyboardMarkup, back: str | None = None) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[*markup.inline_keyboard, nav_row(back)])
+
+
+async def show_bot_screen(
+    callback: CallbackQuery,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    parse_mode: str | None = None,
+) -> None:
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            return
+        await callback.message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except Exception:
+        await callback.message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+
 async def send_start(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
@@ -265,7 +298,7 @@ async def send_start(message: Message) -> None:
 async def send_settings(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
-    await message.answer(SETTINGS_TEXT)
+    await message.answer(SETTINGS_TEXT, reply_markup=nav_keyboard(None))
 
 
 async def send_guide(message: Message) -> None:
@@ -314,6 +347,7 @@ def connect_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Мои устройства", callback_data="my_devices"),
                 InlineKeyboardButton(text="Статус", callback_data="connect_status"),
             ],
+            nav_row(None),
         ]
     )
 
@@ -710,15 +744,16 @@ def pairing_text(code: str, links: dict[str, str]) -> str:
 async def send_pairing_details(message: Message, owner_id: int) -> None:
     code = create_pairing_code(owner_id)
     links = pair_links(code)
+    keyboard = with_nav(pairing_keyboard(links), "connect_wizard")
     try:
         await message.answer_photo(
             photo=make_pairing_qr(links["web_link"], code),
             caption=pairing_text(code, links),
-            reply_markup=pairing_keyboard(links),
+            reply_markup=keyboard,
         )
     except Exception as exc:
         print(f"Failed to send pairing QR: {exc}")
-        await message.answer(pairing_text(code, links), reply_markup=pairing_keyboard(links))
+        await message.answer(pairing_text(code, links), reply_markup=keyboard)
 
 
 async def send_pairing_code(message: Message) -> None:
@@ -1913,6 +1948,120 @@ async def callbacks(callback: CallbackQuery) -> None:
     if not await ensure_callback_admin(callback):
         return
     action = callback.data
+
+    if action == "main_menu":
+        await callback.answer()
+        await show_bot_screen(callback, HELP_TEXT, reply_markup=main_menu(), parse_mode="Markdown")
+        return
+
+    if action == "settings":
+        await callback.answer()
+        await show_bot_screen(callback, SETTINGS_TEXT, reply_markup=nav_keyboard(None))
+        return
+
+    if action == "guide":
+        await callback.answer()
+        await show_bot_screen(callback, GUIDE_TEXT, reply_markup=connect_keyboard(), parse_mode="Markdown")
+        return
+
+    if action == "pc_agent_info":
+        await callback.answer()
+        await show_bot_screen(callback, pc_agent_text(), reply_markup=with_nav(pc_agent_keyboard()), parse_mode="Markdown")
+        return
+
+    if action == "connect_wizard":
+        await callback.answer()
+        await show_bot_screen(callback, connect_text(callback.from_user.id), reply_markup=connect_keyboard())
+        return
+
+    if action == "connect_status":
+        await callback.answer()
+        await show_bot_screen(
+            callback,
+            "Connection status\n\n"
+            f"{connect_text(callback.from_user.id)}\n\n"
+            f"Install page: {public_server_url()}/agent\n"
+            f"APK link: {release_apk_url()}",
+            reply_markup=connect_keyboard(),
+        )
+        return
+
+    if action == "connect_check":
+        await callback.answer("Running check...")
+        await show_bot_screen(callback, "Проверяю Railway, мини-апп, APK и GitHub workflow...", reply_markup=nav_keyboard("connect_wizard"))
+        result = await asyncio.to_thread(run_deploy_checks, callback.from_user.id)
+        await show_bot_screen(callback, result, reply_markup=connect_keyboard())
+        return
+
+    if action == "connect_build_help":
+        await callback.answer()
+        await show_bot_screen(
+            callback,
+            "*Сборка Android APK*\n\n"
+            "1. Если нужен свой значок, сначала отправь боту картинку.\n"
+            "2. Нажми `Собрать APK` или отправь `/build_apk Hunter Agent`.\n"
+            "3. Бот запустит GitHub Actions и пришлет ссылку на готовый APK.\n\n"
+            "По умолчанию собирается Lite APK для Android 10+: подключение, QR и статус устройства. "
+            "Полная сборка запускается командой `/build_apk_full Hunter Agent Full` и может требовать больше разрешений на телефоне.",
+            reply_markup=connect_keyboard(),
+            parse_mode="Markdown",
+        )
+        return
+
+    if action == "pair_device":
+        await callback.answer("Preparing QR...")
+        code = create_pairing_code(callback.from_user.id)
+        links = pair_links(code)
+        keyboard = with_nav(pairing_keyboard(links), "connect_wizard")
+        try:
+            await callback.message.answer_photo(
+                photo=make_pairing_qr(links["web_link"], code),
+                caption=pairing_text(code, links),
+                reply_markup=keyboard,
+            )
+        except Exception as exc:
+            print(f"Failed to send pairing QR: {exc}")
+            await callback.message.answer(pairing_text(code, links), reply_markup=keyboard)
+        return
+
+    if action == "my_devices":
+        await callback.answer()
+        await show_bot_screen(callback, format_devices_text(callback.from_user.id), reply_markup=connect_keyboard())
+        return
+
+    if action == "control_info":
+        await callback.answer()
+        await show_bot_screen(
+            callback,
+            "Управление устройствами\n\n"
+            "Android Agent работает только после явного подключения и разрешений на телефоне. "
+            "Lite-режим подходит для проверки связи, QR и статуса. Полный режим добавляет экран и жесты через системные разрешения Android.\n\n"
+            "iPhone стороннему приложению не дает полноценное удаленное управление как Android. Для iOS реалистично держать инструкции, статус и легальный screen sharing через инструменты Apple.",
+            reply_markup=nav_keyboard(None),
+        )
+        return
+
+    if action == "railway_info":
+        await callback.answer()
+        await show_bot_screen(
+            callback,
+            "Railway\n\n"
+            "Нужные переменные: BOT_TOKEN, DEVICE_API_TOKEN, PUBLIC_BASE_URL или RAILWAY_PUBLIC_DOMAIN, MINI_APP_URL, GITHUB_REPO, GITHUB_TOKEN.\n\n"
+            "После изменения переменных перезапусти сервис. Мини-апп и API отдаются этим же web-процессом.",
+            reply_markup=nav_keyboard(None),
+        )
+        return
+
+    if action == "mini_app_info":
+        await callback.answer()
+        await show_bot_screen(
+            callback,
+            "Мини-апп\n\n"
+            "Укажи HTTPS-ссылку в MINI_APP_URL. Для Railway обычно подходит твой публичный адрес проекта. "
+            "После перезапуска кнопка `Мини-апп` в главном меню будет открывать интерфейс управления.",
+            reply_markup=nav_keyboard(None),
+        )
+        return
 
     if action == "settings":
         await callback.message.answer(SETTINGS_TEXT)
