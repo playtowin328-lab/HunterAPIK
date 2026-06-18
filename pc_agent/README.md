@@ -1,30 +1,49 @@
 # Hunter PC Agent
 
-Видимый агент для твоих ПК/VDS. Первый этап умеет:
+Видимый агент для твоего домашнего ПК/VDS. Он нужен, чтобы держать связь с ботом и, при включенном ADB-мосте, управлять своим Android-телефоном через официальный Android Debug Bridge.
 
-- привязать ПК к Telegram-боту через `/pair`;
-- отправлять heartbeat в мини-ап;
-- показывать ПК в списке устройств как `pc-agent`.
+## Самый простой режим для телефона дома
 
-Удаленный экран и управление ПК лучше делать через легальные каналы:
+1. В боте нажми `Получить QR / код`.
+2. На домашнем ПК установи Android Platform Tools, чтобы команда `adb` работала в PowerShell.
+3. На телефоне включи `Для разработчиков` -> `USB debugging`.
+4. Подключи телефон к ПК и подтверди RSA-ключ на экране телефона.
+5. Запусти одну команду:
 
-- Windows PC/VDS: WireGuard + RDP.
-- Linux VDS: WireGuard + SSH.
-- Кроссплатформенно: RustDesk/Chrome Remote Desktop с явным подтверждением владельца.
+```powershell
+hunter-pc-agent.exe setup --server https://web-production-715d7.up.railway.app --code 123456 --name "Home PC" --startup
+```
 
-## Использование
+Эта команда:
 
-1. В боте отправь `/pair`.
-2. На ПК выполни:
+- привяжет ПК к боту;
+- проверит ADB;
+- включит ADB-мост;
+- добавит автозапуск Windows;
+- оставит агент работать.
+
+После этого в мини-апе появится устройство `adb-...`. Им можно управлять из другой страны, пока домашний ПК включен, агент запущен, а телефон подключен по USB или заранее настроенному Wireless debugging.
+
+## Проверка
+
+```powershell
+hunter-pc-agent.exe doctor --adb
+```
+
+Если увидишь `unauthorized`, посмотри на экран телефона и подтверди RSA-ключ. Если `ADB не найден`, установи Android Platform Tools и добавь `platform-tools` в PATH.
+
+## Ручной режим
 
 ```powershell
 hunter-pc-agent.exe pair --server https://web-production-715d7.up.railway.app --code 123456 --name "Home PC"
+hunter-pc-agent.exe run --adb --interval 3
 ```
 
-3. Запусти агент:
+## Автозапуск
 
 ```powershell
-hunter-pc-agent.exe run
+hunter-pc-agent.exe startup install
+hunter-pc-agent.exe startup remove
 ```
 
-Окно должно оставаться открытым. Это сделано специально: агент не скрывается и не маскируется.
+PC Agent не скрывается, не ставит себя в автозапуск без твоей команды и не включает ADB без подтверждения на телефоне.

@@ -16,6 +16,7 @@ from urllib import error, parse, request
 
 APP_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "HunterPCAgent"
 CONFIG_PATH = APP_DIR / "config.json"
+STARTUP_SCRIPT_NAME = "Hunter ADB Bridge.cmd"
 
 
 def load_config() -> dict:
@@ -91,6 +92,53 @@ def adb_devices() -> list[str]:
         if len(parts) >= 2 and parts[1] == "device":
             devices.append(parts[0])
     return devices
+
+
+def adb_device_rows() -> list[tuple[str, str]]:
+    output = adb_run(None, ["devices"], timeout=8)
+    rows: list[tuple[str, str]] = []
+    for line in str(output).splitlines()[1:]:
+        parts = line.strip().split()
+        if len(parts) >= 2:
+            rows.append((parts[0], parts[1]))
+    return rows
+
+
+def adb_doctor() -> tuple[bool, list[str]]:
+    lines: list[str] = []
+    path = adb_path()
+    lines.append(f"ADB: {path}")
+    if shutil.which(path) is None and not Path(path).exists():
+        return False, lines + [
+            "ADB не найден.",
+            "Установи Android Platform Tools и добавь папку platform-tools в PATH.",
+            "Скачать можно с официальной страницы Android Developers.",
+        ]
+
+    try:
+        rows = adb_device_rows()
+    except Exception as exc:
+        return False, lines + [f"ADB не отвечает: {exc}"]
+
+    if not rows:
+        return False, lines + [
+            "Телефон не найден.",
+            "Подключи USB-кабель или включи Wireless debugging.",
+            "На телефоне подтвердить RSA-ключ обязательно, без этого удаленное управление не стартует.",
+        ]
+
+    ok = False
+    for serial, state in rows:
+        if state == "device":
+            ok = True
+            lines.append(f"{serial}: готов")
+        elif state == "unauthorized":
+            lines.append(f"{serial}: нужно подтвердить RSA-ключ на телефоне")
+        elif state == "offline":
+            lines.append(f"{serial}: offline, переподключи USB/Wi-Fi debugging")
+        else:
+            lines.append(f"{serial}: {state}")
+    return ok, lines
 
 
 def adb_shell(serial: str, command: str, timeout: int = 12) -> str:
@@ -298,6 +346,46 @@ def adb_bridge_tick(config: dict) -> None:
             adb_complete_command(config, device_id, command, "failed", str(exc))
 
 
+def executable_command(adb_enabled: bool = True, interval: int = 3) -> str:
+    if getattr(sys, "frozen", False):
+        executable = f'"{sys.executable}"'
+    else:
+        executable = f'"{sys.executable}" "{Path(__file__).resolve()}"'
+    args = ["run", f"--interval {max(3, interval)}"]
+    if adb_enabled:
+        args.append("--adb")
+    return f"{executable} {' '.join(args)}"
+
+
+def windows_startup_dir() -> Path:
+    appdata = os.getenv("APPDATA")
+    if not appdata:
+        raise RuntimeError("APPDATA is not available; startup install is supported on Windows only.")
+    return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+
+
+def install_startup(adb_enabled: bool = True, interval: int = 3) -> Path:
+    startup_dir = windows_startup_dir()
+    startup_dir.mkdir(parents=True, exist_ok=True)
+    script_path = startup_dir / STARTUP_SCRIPT_NAME
+    command = executable_command(adb_enabled=adb_enabled, interval=interval)
+    script_path.write_text(
+        "@echo off\n"
+        "cd /d \"%USERPROFILE%\"\n"
+        f"{command}\n",
+        encoding="utf-8",
+    )
+    return script_path
+
+
+def uninstall_startup() -> bool:
+    script_path = windows_startup_dir() / STARTUP_SCRIPT_NAME
+    if not script_path.exists():
+        return False
+    script_path.unlink()
+    return True
+
+
 def claim_pairing(config: dict, server_url: str, code: str) -> dict:
     server = server_url.rstrip("/")
     payload = {
@@ -354,6 +442,23 @@ def run_loop(config: dict, interval: int, adb_enabled: bool) -> None:
         time.sleep(interval)
 
 
+def print_doctor(adb_enabled: bool) -> bool:
+    print("Hunter PC Agent doctor")
+    print(f"Config: {CONFIG_PATH}")
+    config = load_config()
+    paired = bool(config.get("server_url") and config.get("owner_id") and config.get("device_secret"))
+    print("Pairing:", "ok" if paired else "not paired")
+    if config.get("server_url"):
+        print("Server:", config["server_url"])
+    if not adb_enabled:
+        return paired
+
+    ok, lines = adb_doctor()
+    for line in lines:
+        print(line)
+    return paired and ok
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Hunter PC Agent")
     subparsers = parser.add_subparsers(dest="command")
@@ -366,6 +471,24 @@ def main() -> int:
     run_parser = subparsers.add_parser("run", help="Run heartbeat loop")
     run_parser.add_argument("--interval", type=int, default=30, help="Heartbeat interval seconds")
     run_parser.add_argument("--adb", action="store_true", help="Enable Android Debug Bridge device control")
+
+    setup_parser = subparsers.add_parser("setup", help="Pair, check ADB, optionally install startup, then run")
+    setup_parser.add_argument("--server", required=True, help="Public bot server URL")
+    setup_parser.add_argument("--code", required=True, help="Pairing code from /pair")
+    setup_parser.add_argument("--name", default="", help="Device name")
+    setup_parser.add_argument("--interval", type=int, default=3, help="Heartbeat interval seconds")
+    setup_parser.add_argument("--no-adb", action="store_true", help="Do not enable ADB bridge")
+    setup_parser.add_argument("--startup", action="store_true", help="Add Windows startup shortcut")
+
+    doctor_parser = subparsers.add_parser("doctor", help="Check pairing and ADB readiness")
+    doctor_parser.add_argument("--adb", action="store_true", help="Check Android Debug Bridge too")
+
+    startup_parser = subparsers.add_parser("startup", help="Install or remove Windows startup")
+    startup_subparsers = startup_parser.add_subparsers(dest="startup_command")
+    startup_install = startup_subparsers.add_parser("install", help="Start bridge automatically after Windows login")
+    startup_install.add_argument("--interval", type=int, default=3, help="Heartbeat interval seconds")
+    startup_install.add_argument("--no-adb", action="store_true", help="Do not enable ADB bridge")
+    startup_subparsers.add_parser("remove", help="Remove Windows startup shortcut")
 
     args = parser.parse_args()
     config = load_config()
@@ -380,6 +503,37 @@ def main() -> int:
     if args.command == "run":
         run_loop(config, max(3, args.interval), args.adb)
         return 0
+
+    if args.command == "setup":
+        if args.name:
+            config["device_name"] = args.name.strip()[:60]
+        claim_pairing(config, args.server, args.code)
+        print("Pair success.")
+        adb_enabled = not args.no_adb
+        if adb_enabled:
+            ok, lines = adb_doctor()
+            for line in lines:
+                print(line)
+            if not ok:
+                print("ADB bridge will keep running, but the phone will appear only after ADB is ready.")
+        if args.startup:
+            script_path = install_startup(adb_enabled=adb_enabled, interval=max(3, args.interval))
+            print(f"Startup installed: {script_path}")
+        run_loop(config, max(3, args.interval), adb_enabled)
+        return 0
+
+    if args.command == "doctor":
+        return 0 if print_doctor(args.adb) else 2
+
+    if args.command == "startup":
+        if args.startup_command == "install":
+            script_path = install_startup(adb_enabled=not args.no_adb, interval=max(3, args.interval))
+            print(f"Startup installed: {script_path}")
+            return 0
+        if args.startup_command == "remove":
+            removed = uninstall_startup()
+            print("Startup removed." if removed else "Startup was not installed.")
+            return 0
 
     parser.print_help()
     return 1

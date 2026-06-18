@@ -649,6 +649,7 @@ def pc_agent_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Скачать PC Agent", url=pc_agent_url())],
+            [InlineKeyboardButton(text="Команда ADB-моста", callback_data="pc_agent_adb_setup")],
             [InlineKeyboardButton(text="Собрать PC Agent", callback_data="pc_agent_build_now")],
             [InlineKeyboardButton(text="Получить QR / код", callback_data="pair_device")],
             [InlineKeyboardButton(text="Мои устройства", callback_data="my_devices")],
@@ -659,22 +660,37 @@ def pc_agent_keyboard() -> InlineKeyboardMarkup:
 def pc_agent_text() -> str:
     return (
         "PC Agent для твоих ПК/VDS\n\n"
-        "1. Нажми «Собрать PC Agent» и дождись Windows EXE.\n"
-        "2. Скачай EXE на свой ПК или Windows VDS.\n"
+        "Самый простой сценарий для телефона, который останется дома:\n"
+        "1. На домашнем ПК один раз установи Android Platform Tools.\n"
+        "2. Подключи телефон по USB, включи USB debugging и подтверди RSA-ключ на телефоне.\n"
         "3. В боте нажми «Получить QR / код».\n"
-        "4. На ПК выполни:\n"
+        "4. На домашнем ПК выполни одну команду:\n"
+        f"`{PC_AGENT_EXE_NAME} setup --server {public_server_url()} --code 123456 --name \"Home PC\" --startup`\n\n"
+        "После этого PC Agent сам запустит ADB-мост и добавит автозапуск Windows. "
+        "Когда ты будешь в другой стране, открываешь мини-ап и управляешь устройством `adb-...`, пока домашний ПК включен и телефон подключен/доступен по ADB.\n\n"
+        "Ручной режим, если автозапуск не нужен:\n"
         f"`{PC_AGENT_EXE_NAME} pair --server {public_server_url()} --code 123456 --name \"Home PC\"`\n"
-        "5. Потом запусти:\n"
-        f"`{PC_AGENT_EXE_NAME} run`\n\n"
-        "ADB-мост для Android рядом с ПК:\n"
-        "1. Установи Android Platform Tools, чтобы команда `adb` была доступна в PATH.\n"
-        "2. На телефоне включи Developer options → USB debugging или Wireless debugging.\n"
-        "3. Подключи телефон к ПК и подтверди RSA-ключ на экране телефона.\n"
-        "4. Запусти PC Agent так:\n"
         f"`{PC_AGENT_EXE_NAME} run --adb --interval 3`\n"
-        "После этого телефон появится в мини-апе как отдельное устройство `adb-...`: экран, тапы, свайпы и системные кнопки идут через официальный ADB.\n\n"
+        f"`{PC_AGENT_EXE_NAME} doctor --adb`\n\n"
         "Экран ПК лучше подключать легально через WireGuard + RDP/SSH или RustDesk. "
         "Наш PC Agent не скрывается и не выполняет произвольные команды."
+    )
+
+
+def pc_agent_adb_setup_text(owner_id: int) -> str:
+    code = create_pairing_code(owner_id)
+    command = (
+        f"{PC_AGENT_EXE_NAME} setup --server {public_server_url()} "
+        f"--code {code} --name \"Home PC\" --startup"
+    )
+    return (
+        "Готовая команда для домашнего ADB-моста\n\n"
+        "1. Скачай PC Agent на домашний Windows ПК.\n"
+        "2. Один раз включи на телефоне USB debugging и подтверди RSA-ключ.\n"
+        "3. В PowerShell рядом с EXE вставь:\n\n"
+        f"`{command}`\n\n"
+        "Команда привяжет ПК, включит ADB-мост, добавит автозапуск Windows и запустит агент. "
+        "Код живет ограниченное время, если не успел — нажми кнопку еще раз."
     )
 
 
@@ -2270,6 +2286,16 @@ async def callbacks(callback: CallbackQuery) -> None:
     if action == "pc_agent_info":
         await callback.answer()
         await show_bot_screen(callback, pc_agent_text(), reply_markup=with_nav(pc_agent_keyboard()), parse_mode="Markdown")
+        return
+
+    if action == "pc_agent_adb_setup":
+        await callback.answer()
+        await show_bot_screen(
+            callback,
+            pc_agent_adb_setup_text(callback.from_user.id),
+            reply_markup=with_nav(pc_agent_keyboard()),
+            parse_mode="Markdown",
+        )
         return
 
     if action == "connect_wizard":

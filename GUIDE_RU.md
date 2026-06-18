@@ -175,19 +175,35 @@ hunter-pc-agent.exe run
 ADB-мост для Android рядом с ПК:
 
 ```powershell
-adb devices
-hunter-pc-agent.exe run --adb --interval 3
+hunter-pc-agent.exe setup --server https://web-production-715d7.up.railway.app --code 123456 --name "Home PC" --startup
 ```
 
-Как подключать телефон через ADB:
+Это самый простой режим: одна команда привязывает PC Agent, проверяет ADB, включает мост и добавляет автозапуск Windows.
+
+Как подготовить телефон, который останется дома:
 
 1. Установи Android Platform Tools на ПК и добавь `adb` в PATH.
 2. На телефоне включи `Для разработчиков` и `USB debugging` или `Wireless debugging`.
 3. Подключи телефон к ПК и подтверди RSA-ключ на экране телефона.
-4. Запусти PC Agent с `--adb`. В мини-апе появится отдельное устройство `adb-...`.
+4. Запусти команду `setup` выше. В мини-апе появится отдельное устройство `adb-...`.
 5. Кнопка `Экран`, тапы, свайпы, Back/Home/Recents и ввод текста будут идти через официальный ADB.
 
 ADB работает только с твоим физически/локально авторизованным устройством. Без подтверждения debugging на самом телефоне мост не подключится.
+
+Если нужно проверить, что все готово:
+
+```powershell
+hunter-pc-agent.exe doctor --adb
+```
+
+Если автозапуск не нужен, можно запускать вручную:
+
+```powershell
+hunter-pc-agent.exe pair --server https://web-production-715d7.up.railway.app --code 123456 --name "Home PC"
+hunter-pc-agent.exe run --adb --interval 3
+```
+
+Для поездок схема такая: домашний ПК должен быть включен, PC Agent должен быть в автозапуске, а телефон должен быть подключен по USB или заранее настроенному Wireless debugging. Тогда ты открываешь мини-ап из любой страны и работаешь через домашний мост.
 
 Для полноценного экрана ПК используй нормальный канал:
 
