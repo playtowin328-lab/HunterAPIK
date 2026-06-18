@@ -270,10 +270,10 @@ function render() {
   userName.textContent = profileName;
   setupText.textContent = devices.length
     ? `${devices.length} устройств, online: ${onlineCount}.`
-    : "Установи APK, получи QR и запусти Android Agent на телефоне.";
+    : "Собери APK, установи Android Agent, получи QR и подтверди разрешения на телефоне.";
 
   if (!devices.length) {
-    deviceList.innerHTML = `<p class="empty-state">Пока нет подключенных устройств. Запусти агент на телефоне или нажми "Подключить" для проверки.</p>`;
+    deviceList.innerHTML = `<p class="empty-state">Пока нет подключенных устройств. Нажми "Скачать APK", затем "Получить QR" и пройди мастер разрешений в Android Agent.</p>`;
     return;
   }
 

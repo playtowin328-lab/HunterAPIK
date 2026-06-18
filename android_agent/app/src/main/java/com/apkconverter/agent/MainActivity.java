@@ -13,6 +13,7 @@ import android.net.Uri;
 import android.provider.Settings;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -74,13 +75,13 @@ public class MainActivity extends Activity {
         root.setGravity(Gravity.CENTER_HORIZONTAL);
 
         TextView title = new TextView(this);
-        title.setText("APK Device Agent");
+        title.setText("Hunter Android Agent");
         title.setTextSize(26);
         title.setGravity(Gravity.START);
         root.addView(title, matchWidth());
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Подключает этот Android к мини-аппу через heartbeat.");
+        subtitle.setText("Подключает этот телефон к Telegram-боту и мини-апу. Управление работает только после твоих разрешений.");
         subtitle.setTextSize(14);
         subtitle.setPadding(0, dp(6), 0, dp(14));
         root.addView(subtitle, matchWidth());
@@ -90,52 +91,52 @@ public class MainActivity extends Activity {
         permissionsText.setPadding(0, 0, 0, dp(12));
         root.addView(permissionsText, matchWidth());
 
-        serverUrlInput = input("Server URL, например http://192.168.1.10:8080");
-        pairingCodeInput = input("Код из /pair");
-        ownerIdInput = input("Owner ID из команды /myid");
-        tokenInput = input("DEVICE_API_TOKEN, если pairing не используется");
-        deviceNameInput = input("Имя устройства");
+        serverUrlInput = input("Server URL, например https://web-production-715d7.up.railway.app");
+        pairingCodeInput = input("Код из QR или команды /pair");
+        ownerIdInput = input("Owner ID, заполняется после QR");
+        tokenInput = input("Токен не нужен при подключении через QR");
+        deviceNameInput = input("Имя устройства, например POCO C75");
 
-        root.addView(label("Server URL"));
+        root.addView(label("Сервер"));
         root.addView(serverUrlInput, matchWidth());
-        root.addView(label("Pairing code"));
+        root.addView(label("Код подключения"));
         root.addView(pairingCodeInput, matchWidth());
         root.addView(label("Owner ID"));
         root.addView(ownerIdInput, matchWidth());
-        root.addView(label("Token"));
+        root.addView(label("Токен, резервный режим"));
         root.addView(tokenInput, matchWidth());
-        root.addView(label("Device name"));
+        root.addView(label("Имя устройства"));
         root.addView(deviceNameInput, matchWidth());
 
-        Button saveButton = button("Сохранить");
+        Button saveButton = button("Сохранить настройки");
         saveButton.setOnClickListener(view -> {
             savePrefs();
             renderStatus();
         });
 
-        Button pairButton = button("Pair по коду");
+        Button pairButton = button("Подключить по коду");
         pairButton.setOnClickListener(view -> {
             savePrefs();
             pairWithCurrentCode();
         });
 
-        Button pasteButton = button("Вставить ссылку/код");
+        Button pasteButton = button("Вставить QR-ссылку или код");
         pasteButton.setOnClickListener(view -> pastePairFromClipboard());
 
-        Button startButton = button("Старт агента");
+        Button startButton = button("Запустить агент");
         startButton.setOnClickListener(view -> {
             savePrefs();
             startAgentService();
             renderStatus();
         });
 
-        Button stopButton = button("Стоп агента");
+        Button stopButton = button("Остановить агент");
         stopButton.setOnClickListener(view -> {
             startService(new Intent(this, HeartbeatService.class).setAction(HeartbeatService.ACTION_STOP));
             renderStatus();
         });
 
-        Button testButton = button("Тест heartbeat");
+        Button testButton = button("Проверить связь");
         testButton.setOnClickListener(view -> {
             savePrefs();
             statusText.setText("Проверяю...");
@@ -149,22 +150,22 @@ public class MainActivity extends Activity {
             });
         });
 
-        Button accessibilityButton = button("Открыть настройки жестов");
+        Button accessibilityButton = button("Разрешить жесты и тапы");
         accessibilityButton.setOnClickListener(view -> {
             Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
             startActivity(intent);
         });
 
-        Button setupButton = button("Setup required permissions");
+        Button setupButton = button("Открыть мастер разрешений");
         setupButton.setOnClickListener(view -> startPermissionWizard());
 
-        Button notificationButton = button("Enable notifications");
+        Button notificationButton = button("Разрешить уведомления");
         notificationButton.setOnClickListener(view -> openNotificationSettings());
 
-        Button screenButton = button("Allow screen view");
+        Button screenButton = button("Разрешить просмотр экрана");
         screenButton.setOnClickListener(view -> requestScreenCapture());
 
-        Button batteryButton = button("Battery background settings");
+        Button batteryButton = button("Разрешить работу в фоне");
         batteryButton.setOnClickListener(view -> openBatterySettings());
 
         root.addView(saveButton, matchWidthWithTopMargin());
@@ -218,18 +219,20 @@ public class MainActivity extends Activity {
         boolean paired = !prefs.getString(AgentConfig.KEY_DEVICE_SECRET, "").isEmpty();
         boolean notificationsReady = notificationsReady();
         boolean accessibilityReady = TouchControlService.isReady();
+        boolean batteryReady = batteryReady();
 
         deviceIdText.setText("Device ID: " + AgentConfig.getDeviceId(this));
         permissionsText.setText(
-                "Required setup:\n"
-                        + "Notifications: " + (notificationsReady ? "ready" : "needs permission") + "\n"
-                        + "Gestures/accessibility: " + (accessibilityReady ? "ready" : "open settings and enable APK Agent") + "\n"
-                        + "Screen view: tap Allow screen view when you want preview"
+                "Разрешения:\n"
+                        + "Уведомления: " + (notificationsReady ? "готово" : "нужно разрешить") + "\n"
+                        + "Работа в фоне: " + (batteryReady ? "готово" : "нужно отключить оптимизацию батареи") + "\n"
+                        + "Жесты/Accessibility: " + (accessibilityReady ? "готово" : "открой настройки и включи Hunter Agent") + "\n"
+                        + "Экран: нажми «Разрешить просмотр экрана», когда нужен preview"
         );
         statusText.setText(
                 (enabled ? "Агент включён" : "Агент выключен")
-                        + "\nPair: " + (paired ? "готов" : "не выполнен")
-                        + "\nЖесты: " + (TouchControlService.isReady() ? "включены" : "нужно включить")
+                        + "\nПодключение: " + (paired ? "готово" : "нужно открыть QR или ввести код")
+                        + "\nЖесты: " + (TouchControlService.isReady() ? "включены" : "нужно включить вручную")
                         + "\n" + lastStatus
         );
     }
@@ -285,6 +288,14 @@ public class MainActivity extends Activity {
                 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
     }
 
+    private boolean batteryReady() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true;
+        }
+        PowerManager manager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        return manager == null || manager.isIgnoringBatteryOptimizations(getPackageName());
+    }
+
     private void startAgentService() {
         Intent intent = new Intent(this, HeartbeatService.class).setAction(HeartbeatService.ACTION_START);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -308,21 +319,39 @@ public class MainActivity extends Activity {
     }
 
     private void openAccessibilitySettings() {
-        statusText.setText("Enable APK Agent in Accessibility settings, then return here.");
+        statusText.setText("В настройках Accessibility включи Hunter Agent, затем вернись сюда.");
         startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
     }
 
     private void openBatterySettings() {
-        Intent intent = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
-        startActivity(intent);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !batteryReady()) {
+                Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                        .setData(Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+                return;
+            }
+            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+        } catch (Exception exc) {
+            Intent fallback = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:" + getPackageName()));
+            startActivity(fallback);
+        }
     }
 
     private void startPermissionWizard() {
         requestNotificationPermission();
+        if (!batteryReady()) {
+            statusText.setText("Шаг 1: разреши работу в фоне, чтобы Android не останавливал агент.");
+            openBatterySettings();
+            return;
+        }
         if (!TouchControlService.isReady()) {
+            statusText.setText("Шаг 2: включи Accessibility, если нужны тапы, свайпы и кнопки Back/Home.");
             openAccessibilitySettings();
             return;
         }
+        statusText.setText("Шаг 3: подтверди просмотр экрана, если хочешь видеть экран в мини-апе.");
         requestScreenCapture();
     }
 
@@ -359,14 +388,13 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     loadPrefs();
                     pairingCodeInput.setText("");
-                    statusText.setText("Pair успешен. Теперь можно нажать Старт агента.");
+                    statusText.setText("Подключение успешно. Агент запускается и открывает мастер разрешений.");
                     startAgentService();
-                    statusText.setText("Pair success. Agent started. Follow the permission prompts.");
                     renderStatus();
                     startPermissionWizard();
                 });
             } catch (Exception exc) {
-                runOnUiThread(() -> statusText.setText("Pair ошибка: " + exc.getMessage()));
+                runOnUiThread(() -> statusText.setText("Ошибка подключения: " + exc.getMessage()));
             }
         });
     }

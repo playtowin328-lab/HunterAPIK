@@ -1,5 +1,7 @@
 # APK Converter Telegram Bot
 
+Подробная инструкция по Android Agent, APK, QR и мини-апу: [GUIDE_RU.md](GUIDE_RU.md).
+
 Бот принимает фото и умеет:
 
 - 📄 делать PDF

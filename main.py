@@ -89,14 +89,14 @@ def is_admin_user(user) -> bool:
 async def ensure_message_admin(message: Message) -> bool:
     if is_admin_user(message.from_user):
         return True
-    await message.answer("Access denied. This bot is available only to admins.")
+    await message.answer("Доступ закрыт. Этот бот доступен только администраторам.")
     return False
 
 
 async def ensure_callback_admin(callback: CallbackQuery) -> bool:
     if is_admin_user(callback.from_user):
         return True
-    await callback.answer("Access denied. Admins only.", show_alert=True)
+    await callback.answer("Доступ закрыт. Только администраторы.", show_alert=True)
     return False
 
 
@@ -155,28 +155,57 @@ def init_db() -> None:
 init_db()
 
 HELP_TEXT = (
-    "👋 Добро пожаловать в *APK Converter*\n\n"
-    "Отправь фото или картинку файлом, а потом выбери действие:\n\n"
-    "📄 PDF — сделать фото PDF-файлом\n"
-    "🖼 PNG — сделать PNG-файлом\n"
-    "📝 Текст — распознать текст с фото\n"
-    "✨ Улучшить фото — повысить резкость и контраст\n"
-    "📦 ZIP — упаковать фото в архив\n\n"
-    "📱 Мини-апп — личные устройства и быстрый доступ\n\n"
-    "Команды:\n"
+    "*Hunter Agent — личный пульт устройств*\n\n"
+    "Бот помогает собрать Android APK, привязать твой телефон по QR и открыть управление в мини-апе. "
+    "Все действия рассчитаны только на твои устройства и требуют явного подтверждения разрешений на телефоне.\n\n"
+    "*Главные действия:*\n"
+    "• `Подключить телефон` — мастер установки APK и QR.\n"
+    "• `Мини-апп` — список устройств, экран, жесты и команды.\n"
+    "• `Собрать APK` — новая сборка Android Agent через GitHub Actions.\n"
+    "• `Полная проверка` — проверка Railway, мини-апа, APK и GitHub workflow.\n\n"
+    "*Команды:*\n"
     "/start — главное меню\n"
-    "/help — подсказка\n"
+    "/connect — мастер подключения телефона\n"
+    "/pair — QR и код привязки\n"
+    "/devices — список устройств\n"
+    "/build_apk — собрать APK со стандартным названием\n"
+    "/build_apk Название — собрать APK со своим названием\n"
+    "/guide — подробная инструкция\n"
     "/settings — текущие настройки\n"
-    "/pair — код для быстрого подключения Android Agent"
+    "/check — диагностика деплоя"
 )
 
 SETTINGS_TEXT = (
-    "⚙️ Настройки:\n\n"
-    f"• Максимальный размер картинки: {MAX_IMAGE_SIZE_MB} МБ\n"
-    "• Язык OCR: русский + английский\n"
-    "• Формат PDF: один лист\n"
-    "• PNG отдаётся как файл без сжатия Telegram\n"
-    f"• Мини-апп: {'подключена' if MINI_APP_URL else 'нужен MINI_APP_URL'}"
+    "Настройки бота\n\n"
+    f"• Максимальный размер изображения: {MAX_IMAGE_SIZE_MB} МБ\n"
+    "• OCR: русский + английский\n"
+    "• PDF: один лист\n"
+    "• PNG: отправляется файлом без сжатия Telegram\n"
+    f"• Мини-апп: {'подключен' if MINI_APP_URL else 'нужно указать MINI_APP_URL'}\n"
+    f"• Публичный адрес: {PUBLIC_BASE_URL or 'не указан'}\n"
+    f"• APK workflow: {GITHUB_WORKFLOW or 'не указан'}\n"
+    f"• Репозиторий: {GITHUB_REPO or 'не указан'}\n"
+    f"• Доступ к боту: {'только админы' if ADMIN_IDS else 'публичный режим, лучше указать ADMIN_IDS'}"
+)
+
+GUIDE_TEXT = (
+    "*Подробная инструкция*\n\n"
+    "*1. Собрать APK*\n"
+    "Нажми `Собрать APK` или отправь `/build_apk`. Если хочешь свой значок, сначала отправь картинку боту, "
+    "потом выполни `/build_apk Название приложения`. После успешной сборки бот пришлет ссылку на APK.\n\n"
+    "*2. Установить на Android*\n"
+    "Открой `/agent` на телефоне и скачай APK. Если Android предупреждает про установку из браузера, "
+    "разреши установку из этого источника. Это обычное ограничение Android для APK вне Play Market; "
+    "обойти его незаметно нельзя, пользователь подтверждает установку сам.\n\n"
+    "*3. Привязать телефон*\n"
+    "Нажми `Получить QR` или отправь `/pair`. Открой QR-ссылку на телефоне. Android Agent сам заполнит сервер и код, "
+    "после чего запустит агент.\n\n"
+    "*4. Разрешения на телефоне*\n"
+    "Приложение попросит уведомления для фоновой работы, затем предложит настройки батареи, Accessibility для жестов "
+    "и системное разрешение записи экрана. Экран и жесты работают только после твоего подтверждения на телефоне.\n\n"
+    "*5. Проверка*\n"
+    "В боте нажми `Мои устройства` или открой мини-ап. Телефон должен стать `Online`. "
+    "Если не стал — нажми `Полная проверка` и проверь, что в Android Agent указан правильный сервер."
 )
 
 
@@ -199,7 +228,7 @@ def main_menu() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="🕹 Управление", callback_data="control_info"),
-                InlineKeyboardButton(text="🚀 Railway", callback_data="railway_info"),
+                InlineKeyboardButton(text="📘 Инструкция", callback_data="guide"),
             ],
             [
                 InlineKeyboardButton(text="🛠 Собрать APK", callback_data="connect_build_now"),
@@ -214,6 +243,7 @@ def main_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="✨ Улучшить фото", callback_data="enhance_photo"),
                 InlineKeyboardButton(text="📦 ZIP", callback_data="make_zip"),
             ],
+            [InlineKeyboardButton(text="🚀 Railway", callback_data="railway_info")],
             [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
         ]
     )
@@ -229,6 +259,12 @@ async def send_settings(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
     await message.answer(SETTINGS_TEXT)
+
+
+async def send_guide(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    await message.answer(GUIDE_TEXT, reply_markup=connect_keyboard(), parse_mode="Markdown")
 
 
 async def send_my_id(message: Message) -> None:
@@ -259,17 +295,17 @@ async def send_status(message: Message) -> None:
 def connect_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Download / install APK", url=f"{public_server_url()}/agent")],
-            [InlineKeyboardButton(text="Create new QR", callback_data="pair_device")],
-            [InlineKeyboardButton(text="Refresh wizard", callback_data="connect_wizard")],
+            [InlineKeyboardButton(text="Скачать / установить APK", url=f"{public_server_url()}/agent")],
+            [InlineKeyboardButton(text="Получить новый QR", callback_data="pair_device")],
+            [InlineKeyboardButton(text="Обновить мастер", callback_data="connect_wizard")],
             [
-                InlineKeyboardButton(text="Start APK build", callback_data="connect_build_now"),
-                InlineKeyboardButton(text="Build APK help", callback_data="connect_build_help"),
+                InlineKeyboardButton(text="Собрать APK", callback_data="connect_build_now"),
+                InlineKeyboardButton(text="Как собрать", callback_data="connect_build_help"),
             ],
-            [InlineKeyboardButton(text="Run full check", callback_data="connect_check")],
+            [InlineKeyboardButton(text="Полная проверка", callback_data="connect_check")],
             [
-                InlineKeyboardButton(text="Check devices", callback_data="my_devices"),
-                InlineKeyboardButton(text="Check status", callback_data="connect_status"),
+                InlineKeyboardButton(text="Мои устройства", callback_data="my_devices"),
+                InlineKeyboardButton(text="Статус", callback_data="connect_status"),
             ],
         ]
     )
@@ -281,15 +317,15 @@ def connect_text(owner_id: int) -> str:
     devices = list_devices_for_user(str(owner_id))
     online_count = sum(1 for device in devices if device.get("online"))
     return (
-        "Phone connection wizard\n\n"
-        "1. If APK is not ready, tap Start APK build.\n"
-        "2. Download and install Android Agent APK.\n"
-        "3. Tap Create new QR.\n"
-        "4. Open the QR link on the phone.\n"
-        "5. In Android Agent, allow notifications, screen view, and accessibility if you need control.\n"
-        "6. Return here and tap Check devices.\n\n"
+        "Мастер подключения телефона\n\n"
+        "1. Если APK еще не готов, нажми «Собрать APK».\n"
+        "2. Скачай APK на Android и установи приложение.\n"
+        "3. Нажми «Получить новый QR».\n"
+        "4. Открой QR-ссылку на телефоне, где установлен Android Agent.\n"
+        "5. Подтверди разрешения: уведомления, батарея, экран и Accessibility для жестов.\n"
+        "6. Вернись сюда и нажми «Мои устройства».\n\n"
         f"APK: {apk_source}\n"
-        f"Devices: {len(devices)} total, {online_count} online"
+        f"Устройства: {len(devices)} всего, {online_count} online"
     )
 
 
@@ -491,12 +527,12 @@ async def send_pairing_code(message: Message) -> None:
 def pairing_keyboard(links: dict[str, str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Download / install APK", url=f"{links['server']}/agent")],
-            [InlineKeyboardButton(text="Open pair page", url=links["web_link"])],
-            [InlineKeyboardButton(text="Open Android Agent", url=links["app_link"])],
+            [InlineKeyboardButton(text="Скачать / установить APK", url=f"{links['server']}/agent")],
+            [InlineKeyboardButton(text="Открыть страницу QR", url=links["web_link"])],
+            [InlineKeyboardButton(text="Открыть Android Agent", url=links["app_link"])],
             [
-                InlineKeyboardButton(text="Check devices", callback_data="my_devices"),
-                InlineKeyboardButton(text="Connection wizard", callback_data="connect_wizard"),
+                InlineKeyboardButton(text="Мои устройства", callback_data="my_devices"),
+                InlineKeyboardButton(text="Мастер подключения", callback_data="connect_wizard"),
             ],
         ]
     )
@@ -1228,59 +1264,90 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             remote_ok, remote_detail = probe_url(release_url, "HEAD")
         download_href = download_url if apk_path else release_url
         if apk_path:
-            source_text = "APK is ready from this server."
+            source_text = "APK готов на этом сервере."
         elif remote_ok:
-            source_text = "APK is published by GitHub Actions release."
+            source_text = "APK готов в GitHub Release."
         else:
-            source_text = f"APK is not built yet ({remote_detail})."
+            source_text = f"APK еще не собран ({remote_detail})."
 
         if apk_path or remote_ok:
-            download_button = f'<a href="{escape(download_href, quote=True)}">Download APK</a>'
+            download_button = f'<a class="primary" href="{escape(download_href, quote=True)}">Скачать APK</a>'
         else:
-            download_button = '<button disabled>APK not ready yet</button>'
+            download_button = '<button class="primary" disabled>APK еще не готов</button>'
 
         html = f"""<!doctype html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Android Agent</title>
+  <title>Установка Android Agent</title>
   <style>
-    body {{ margin:0; min-height:100vh; background:#101820; color:#f5fbff; font-family:system-ui,sans-serif; }}
-    main {{ width:min(92vw,560px); margin:0 auto; padding:28px 0 36px; }}
-    section {{ padding:18px; border-radius:14px; background:#17232f; box-shadow:0 18px 50px rgba(0,0,0,.28); }}
-    h1 {{ margin:0 0 10px; font-size:28px; }}
-    h2 {{ margin:20px 0 8px; font-size:18px; }}
-    p {{ color:#b8c7d6; line-height:1.45; }}
-    ol {{ color:#d7e6f3; line-height:1.55; padding-left:22px; }}
-    code {{ padding:2px 6px; border-radius:6px; background:#0d141b; color:#7ee0d3; }}
-    a, button {{ display:block; width:100%; margin-top:12px; padding:13px 14px; border:0; border-radius:10px; background:#13a68f; color:white; font-weight:800; text-align:center; text-decoration:none; box-sizing:border-box; }}
-    button[disabled] {{ background:#41515f; color:#aebdca; }}
-    .ghost {{ background:#243445; }}
-    .status {{ display:inline-block; padding:6px 9px; border-radius:999px; background:#0d141b; color:#7ee0d3; font-size:13px; }}
+    :root {{ color-scheme: dark; --bg:#0f141a; --card:#17212b; --soft:#202d38; --text:#f4f8fb; --muted:#aebdcc; --line:#314252; --accent:#15a98f; --warn:#ffd166; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; min-height:100vh; background:var(--bg); color:var(--text); font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+    main {{ width:min(94vw,760px); margin:0 auto; padding:22px 0 36px; }}
+    section {{ margin-top:12px; padding:16px; border:1px solid var(--line); border-radius:8px; background:var(--card); box-shadow:0 14px 40px rgba(0,0,0,.26); }}
+    h1 {{ margin:0 0 8px; font-size:30px; line-height:1.08; }}
+    h2 {{ margin:0 0 8px; font-size:18px; }}
+    p {{ margin:0; color:var(--muted); line-height:1.48; }}
+    ol, ul {{ margin:10px 0 0; color:#dce8f2; line-height:1.55; padding-left:22px; }}
+    li + li {{ margin-top:6px; }}
+    code {{ padding:2px 6px; border-radius:6px; background:#0b1117; color:#7ee0d3; }}
+    a, button {{ display:block; width:100%; margin-top:10px; padding:13px 14px; border:0; border-radius:8px; color:white; font-weight:800; text-align:center; text-decoration:none; }}
+    button[disabled] {{ background:#455565; color:#b8c4cf; }}
+    .primary {{ background:linear-gradient(135deg,var(--accent),#187aee); }}
+    .ghost {{ background:var(--soft); }}
+    .status {{ display:inline-block; margin-bottom:10px; padding:7px 10px; border-radius:999px; background:#0b1117; color:#7ee0d3; font-size:13px; font-weight:800; }}
+    .grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }}
+    .step {{ padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--soft); }}
+    .step strong {{ display:block; margin-bottom:4px; color:var(--warn); }}
+    .note {{ border-color:#655326; background:#241f13; }}
+    @media (max-width:640px) {{ .grid {{ grid-template-columns:1fr; }} h1 {{ font-size:26px; }} }}
   </style>
 </head>
 <body>
   <main>
     <section>
-      <h1>Android Agent</h1>
+      <h1>Установка Android Agent</h1>
       <span class="status">{escape(source_text)}</span>
-      <p>This APK connects your own Android phone to the Telegram bot and Mini App. Current build target supports Android 10+.</p>
+      <p>Android Agent подключает твой Android-телефон к Telegram-боту и мини-апу. Сборка рассчитана на Android 10+.</p>
       {download_button}
-      <a class="ghost" href="{escape(actions_url, quote=True)}">Open APK build status</a>
-      <a class="ghost" href="{escape(mini_app_url, quote=True)}">Open Mini App</a>
+      <a class="ghost" href="{escape(actions_url, quote=True)}">Статус сборки APK</a>
+      <a class="ghost" href="{escape(mini_app_url, quote=True)}">Открыть мини-ап</a>
+    </section>
 
-      <h2>Install steps</h2>
+    <section>
+      <h2>Быстрый порядок</h2>
+      <div class="grid">
+        <div class="step"><strong>1. APK</strong><p>Скачай APK на телефон и подтверди установку.</p></div>
+        <div class="step"><strong>2. QR</strong><p>В боте нажми «Получить новый QR» и открой ссылку на телефоне.</p></div>
+        <div class="step"><strong>3. Online</strong><p>Разреши нужные функции в Android Agent и проверь мини-ап.</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Если Android блокирует установку</h2>
       <ol>
-        <li>Download the APK on your Android phone.</li>
-        <li>If Android blocks it, allow installs from this browser or file manager.</li>
-        <li>Open Telegram bot and send <code>/pair</code> or <code>/connect</code>.</li>
-        <li>Open the QR link on the phone and tap <code>Open Android Agent</code>.</li>
-        <li>In Android Agent, allow notifications, screen view, and accessibility only if you need control.</li>
+        <li>Нажми «Настройки» в системном предупреждении.</li>
+        <li>Разреши установку из текущего браузера или файлового менеджера.</li>
+        <li>Вернись назад и снова нажми APK.</li>
+        <li>Если Play Protect показывает предупреждение, проверь, что APK скачан из твоего GitHub/Railway, и подтверждай установку только на своем устройстве.</li>
       </ol>
+    </section>
 
-      <h2>If APK is not ready</h2>
-      <p>If this page says APK is not ready, open the bot and send <code>/build_apk</code>. Optional: send an icon image first, then run <code>/build_apk Hunter Agent</code>. The bot will send the download link after GitHub Actions finishes.</p>
+    <section>
+      <h2>Какие разрешения попросит агент</h2>
+      <ul>
+        <li>Уведомления — чтобы Android не убивал фоновый сервис.</li>
+        <li>Батарея — чтобы подключение не засыпало через пару минут.</li>
+        <li>Запись экрана — только после системного подтверждения, для просмотра экрана в мини-апе.</li>
+        <li>Accessibility — только если нужны жесты, тапы, Back/Home/Recent и ввод текста.</li>
+      </ul>
+    </section>
+
+    <section class="note">
+      <h2>Если APK еще не готов</h2>
+      <p>Открой бота и отправь <code>/build_apk</code>. Для своего названия: <code>/build_apk Hunter Agent</code>. Если перед этим отправить картинку, она станет иконкой приложения.</p>
     </section>
   </main>
 </body>
@@ -1673,6 +1740,11 @@ async def callbacks(callback: CallbackQuery) -> None:
         await callback.answer()
         return
 
+    if action == "guide":
+        await callback.answer()
+        await callback.message.answer(GUIDE_TEXT, reply_markup=connect_keyboard(), parse_mode="Markdown")
+        return
+
     if action == "connect_wizard":
         await callback.answer()
         await callback.message.answer(connect_text(callback.from_user.id), reply_markup=connect_keyboard())
@@ -1697,12 +1769,13 @@ async def callbacks(callback: CallbackQuery) -> None:
     if action == "connect_build_help":
         await callback.answer()
         await callback.message.answer(
-            "To build a fresh APK:\n\n"
-            "1. Send the bot an icon image, optional.\n"
-            "2. Tap Start APK build or send: /build_apk Hunter Agent\n"
-            "3. Wait until I send the APK link.\n\n"
-            "Required Railway variables: GITHUB_TOKEN, GITHUB_REPO, GITHUB_WORKFLOW.\n"
-            "The APK is built for Android 10+."
+            "Как собрать свежий APK:\n\n"
+            "1. Если нужен свой значок, сначала отправь боту картинку.\n"
+            "2. Нажми «Собрать APK» или отправь `/build_apk Hunter Agent`.\n"
+            "3. Дождись сообщения со ссылкой на скачивание.\n\n"
+            "Нужные переменные Railway: GITHUB_TOKEN, GITHUB_REPO, GITHUB_WORKFLOW.\n"
+            "APK собирается для Android 10+.",
+            parse_mode="Markdown",
         )
         return
 
@@ -1814,6 +1887,7 @@ async def run_bot() -> None:
 
     dp.message.register(send_start, CommandStart())
     dp.message.register(send_start, Command("help"))
+    dp.message.register(send_guide, Command("guide"))
     dp.message.register(send_settings, Command("settings"))
     dp.message.register(send_my_id, Command("myid"))
     dp.message.register(send_status, Command("status"))
