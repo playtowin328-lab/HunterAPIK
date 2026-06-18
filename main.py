@@ -703,8 +703,7 @@ def pairing_keyboard(links: dict[str, str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Скачать / установить APK", url=f"{links['server']}/agent")],
-            [InlineKeyboardButton(text="Открыть страницу QR", url=links["web_link"])],
-            [InlineKeyboardButton(text="Открыть Android Agent", url=links["app_link"])],
+            [InlineKeyboardButton(text="Открыть страницу подключения", url=links["web_link"])],
             [
                 InlineKeyboardButton(text="Мои устройства", callback_data="my_devices"),
                 InlineKeyboardButton(text="Мастер подключения", callback_data="connect_wizard"),
@@ -753,7 +752,10 @@ async def send_pairing_details(message: Message, owner_id: int) -> None:
         )
     except Exception as exc:
         print(f"Failed to send pairing QR: {exc}")
-        await message.answer(pairing_text(code, links), reply_markup=keyboard)
+        try:
+            await message.answer(pairing_text(code, links), reply_markup=nav_keyboard("connect_wizard"))
+        except Exception:
+            await message.answer(pairing_text(code, links))
 
 
 async def send_pairing_code(message: Message) -> None:
@@ -2021,7 +2023,10 @@ async def callbacks(callback: CallbackQuery) -> None:
             )
         except Exception as exc:
             print(f"Failed to send pairing QR: {exc}")
-            await callback.message.answer(pairing_text(code, links), reply_markup=keyboard)
+            try:
+                await callback.message.answer(pairing_text(code, links), reply_markup=nav_keyboard("connect_wizard"))
+            except Exception:
+                await callback.message.answer(pairing_text(code, links))
         return
 
     if action == "my_devices":
