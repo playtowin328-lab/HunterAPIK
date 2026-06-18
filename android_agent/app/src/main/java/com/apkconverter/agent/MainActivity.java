@@ -125,12 +125,7 @@ public class MainActivity extends Activity {
         Button startButton = button("Старт агента");
         startButton.setOnClickListener(view -> {
             savePrefs();
-            Intent intent = new Intent(this, HeartbeatService.class).setAction(HeartbeatService.ACTION_START);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent);
-            } else {
-                startService(intent);
-            }
+            startAgentService();
             renderStatus();
         });
 
@@ -290,6 +285,15 @@ public class MainActivity extends Activity {
                 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
     }
 
+    private void startAgentService() {
+        Intent intent = new Intent(this, HeartbeatService.class).setAction(HeartbeatService.ACTION_START);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent);
+        } else {
+            startService(intent);
+        }
+    }
+
     private void openNotificationSettings() {
         requestNotificationPermission();
         Intent intent;
@@ -356,6 +360,10 @@ public class MainActivity extends Activity {
                     loadPrefs();
                     pairingCodeInput.setText("");
                     statusText.setText("Pair успешен. Теперь можно нажать Старт агента.");
+                    startAgentService();
+                    statusText.setText("Pair success. Agent started. Follow the permission prompts.");
+                    renderStatus();
+                    startPermissionWizard();
                 });
             } catch (Exception exc) {
                 runOnUiThread(() -> statusText.setText("Pair ошибка: " + exc.getMessage()));
