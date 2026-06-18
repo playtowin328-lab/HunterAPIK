@@ -135,3 +135,5 @@ From Telegram:
 ```
 
 If you send an image to the bot before `/build_apk`, that image becomes the APK icon.
+The bot starts GitHub Actions, watches the workflow run, and sends the APK
+download link or failed run logs when the build finishes.

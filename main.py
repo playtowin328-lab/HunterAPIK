@@ -8,11 +8,12 @@ import threading
 import time
 import zipfile
 import base64
+from datetime import datetime, timedelta, timezone
 from html import escape
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 import urllib.error
 import urllib.request
 
@@ -278,6 +279,7 @@ async def send_build_apk(message: Message, command: CommandObject) -> None:
         except Exception as exc:
             await message.answer(f"Icon image could not be prepared, building with default icon. Error: {exc}")
 
+    started_at = datetime.now(timezone.utc)
     try:
         await asyncio.to_thread(trigger_github_apk_build, app_name, icon_url)
     except Exception as exc:
@@ -289,9 +291,67 @@ async def send_build_apk(message: Message, command: CommandObject) -> None:
         "APK build started.\n\n"
         f"App name: {app_name[:40]}\n"
         f"Icon: {'custom' if icon_url else 'default'}\n\n"
-        "Wait for GitHub Actions to finish, then open:\n"
-        f"{release_url}\n\n"
-        "After the release is green, /agent will download the APK."
+        "I will watch GitHub Actions and send the APK link when it is ready.\n"
+        f"Release page: {release_url}"
+    )
+    asyncio.create_task(watch_apk_build(message, started_at))
+
+
+async def watch_apk_build(message: Message, started_at: datetime) -> None:
+    run = None
+    run_announced = False
+    deadline = datetime.now(timezone.utc) + timedelta(minutes=20)
+
+    while datetime.now(timezone.utc) < deadline:
+        try:
+            if run is None:
+                run = await asyncio.to_thread(latest_dispatched_apk_run, started_at)
+                if run is None:
+                    await asyncio.sleep(10)
+                    continue
+
+            if not run_announced:
+                await message.answer(f"GitHub Actions run found:\n{run.get('html_url')}")
+                run_announced = True
+
+            run_id = int(run["id"])
+            fresh_runs = await asyncio.to_thread(
+                github_api_json,
+                f"/repos/{GITHUB_REPO}/actions/runs/{run_id}",
+            )
+            status = fresh_runs.get("status")
+            conclusion = fresh_runs.get("conclusion")
+
+            if status != "completed":
+                await asyncio.sleep(20)
+                continue
+
+            if conclusion == "success":
+                await message.answer(
+                    "APK build finished.\n\n"
+                    f"Download APK:\n{release_apk_url()}\n\n"
+                    f"Install page:\n{public_server_url()}/agent"
+                )
+                return
+
+            jobs = await asyncio.to_thread(workflow_run_jobs, run_id)
+            failed_jobs = [job for job in jobs if job.get("conclusion") not in ("success", "skipped", None)]
+            failed_text = "\n".join(
+                f"- {job.get('name')}: {job.get('conclusion')}" for job in failed_jobs[:5]
+            ) or f"Conclusion: {conclusion}"
+            await message.answer(
+                "APK build failed.\n\n"
+                f"{failed_text}\n\n"
+                f"Open logs:\n{run.get('html_url')}"
+            )
+            return
+        except Exception as exc:
+            await message.answer(f"Could not check APK build status: {exc}")
+            return
+
+    await message.answer(
+        "APK build is still running or GitHub did not expose the run in time.\n"
+        f"Check Actions:\nhttps://github.com/{GITHUB_REPO}/actions"
     )
 
 
@@ -665,6 +725,59 @@ def trigger_github_apk_build(app_name: str, icon_url: str | None) -> None:
     except urllib.error.HTTPError as exc:
         details = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"GitHub returned HTTP {exc.code}: {details[:500]}") from exc
+
+
+def github_api_json(path: str, params: dict | None = None) -> dict:
+    if not GITHUB_TOKEN:
+        raise RuntimeError("GITHUB_TOKEN is missing")
+
+    query = f"?{urlencode(params)}" if params else ""
+    request = urllib.request.Request(
+        f"https://api.github.com{path}{query}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "User-Agent": "apk-converter-bot",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"GitHub returned HTTP {exc.code}: {details[:500]}") from exc
+
+
+def parse_github_time(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def release_apk_url() -> str:
+    return AGENT_APK_URL or f"https://github.com/{GITHUB_REPO}/releases/download/android-agent-latest/{AGENT_APK_NAME}"
+
+
+def latest_dispatched_apk_run(started_at: datetime) -> dict | None:
+    workflow = quote(GITHUB_WORKFLOW, safe="")
+    data = github_api_json(
+        f"/repos/{GITHUB_REPO}/actions/workflows/{workflow}/runs",
+        {
+            "branch": "main",
+            "event": "workflow_dispatch",
+            "per_page": "10",
+        },
+    )
+    for run in data.get("workflow_runs", []):
+        created_at = parse_github_time(run.get("created_at", "1970-01-01T00:00:00Z"))
+        if created_at >= started_at - timedelta(seconds=10):
+            return run
+    return None
+
+
+def workflow_run_jobs(run_id: int) -> list[dict]:
+    data = github_api_json(f"/repos/{GITHUB_REPO}/actions/runs/{run_id}/jobs", {"per_page": "20"})
+    return data.get("jobs", [])
 
 
 def pair_links(code: str) -> dict[str, str]:
