@@ -45,6 +45,9 @@ ADMIN_IDS=YOUR_TELEGRAM_ID
 PUBLIC_BASE_URL=https://YOUR_APP.up.railway.app
 MINI_APP_URL=https://YOUR_APP.up.railway.app
 AGENT_APK_URL=https://github.com/playtowin328-lab/HunterAPIK/releases/download/android-agent-latest/apk-agent.apk
+GITHUB_REPO=playtowin328-lab/HunterAPIK
+GITHUB_WORKFLOW=android-agent-apk.yml
+GITHUB_TOKEN=YOUR_GITHUB_TOKEN_WITH_ACTIONS_PERMISSION
 DEVICE_API_TOKEN=GENERATE_LONG_SECRET
 STORAGE_DIR=/data
 DB_PATH=/data/app.db
@@ -63,6 +66,10 @@ ADMIN_IDS=123456789,987654321
 ```
 
 QR pairing links and device API continue to work after an admin creates a pair code.
+
+`GITHUB_TOKEN` lets the bot start APK builds from Telegram with `/build_apk`.
+Create a fine-grained GitHub token for this repository with Actions read/write
+and Contents read/write permissions.
 
 ## 4. BotFather
 
@@ -120,3 +127,11 @@ https://github.com/playtowin328-lab/HunterAPIK/releases/download/android-agent-l
 
 After that release exists, `/agent` will show a working download button and
 `/apk-agent.apk` will redirect to the release file.
+
+From Telegram:
+
+```text
+/build_apk My Agent
+```
+
+If you send an image to the bot before `/build_apk`, that image becomes the APK icon.

