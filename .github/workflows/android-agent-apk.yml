@@ -37,7 +37,7 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -78,6 +78,7 @@ jobs:
           mkdir -p dist
           cp android_agent/app/build/outputs/apk/debug/app-debug.apk dist/apk-agent.apk
           test -s dist/apk-agent.apk
+          sha256sum dist/apk-agent.apk > dist/apk-agent.sha256
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -92,6 +93,8 @@ jobs:
           tag_name: android-agent-latest
           name: Android Agent Latest
           body: Debug build of APK Agent. Install only on your own devices.
-          files: dist/apk-agent.apk
+          files: |
+            dist/apk-agent.apk
+            dist/apk-agent.sha256
           make_latest: false
           overwrite_files: true

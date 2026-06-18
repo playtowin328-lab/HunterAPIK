@@ -202,7 +202,7 @@ def main_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🚀 Railway", callback_data="railway_info"),
             ],
             [
-                InlineKeyboardButton(text="🛠 Собрать APK", callback_data="connect_build_help"),
+                InlineKeyboardButton(text="🛠 Собрать APK", callback_data="connect_build_now"),
                 InlineKeyboardButton(text="✅ Полная проверка", callback_data="connect_check"),
             ],
             [
@@ -240,7 +240,8 @@ async def send_my_id(message: Message) -> None:
 async def send_status(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
-    apk_source = "local file" if agent_apk_path() else ("AGENT_APK_URL" if AGENT_APK_URL else "missing")
+    apk_ready, apk_url, apk_detail = apk_download_status()
+    apk_source = f"ready - {apk_url}" if apk_ready else f"not ready - {apk_detail}"
     lines = [
         "Bot status",
         f"Admin lock: {'on' if ADMIN_IDS else 'off'}",
@@ -261,7 +262,10 @@ def connect_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Download / install APK", url=f"{public_server_url()}/agent")],
             [InlineKeyboardButton(text="Create new QR", callback_data="pair_device")],
             [InlineKeyboardButton(text="Refresh wizard", callback_data="connect_wizard")],
-            [InlineKeyboardButton(text="Build APK help", callback_data="connect_build_help")],
+            [
+                InlineKeyboardButton(text="Start APK build", callback_data="connect_build_now"),
+                InlineKeyboardButton(text="Build APK help", callback_data="connect_build_help"),
+            ],
             [InlineKeyboardButton(text="Run full check", callback_data="connect_check")],
             [
                 InlineKeyboardButton(text="Check devices", callback_data="my_devices"),
@@ -272,16 +276,18 @@ def connect_keyboard() -> InlineKeyboardMarkup:
 
 
 def connect_text(owner_id: int) -> str:
-    apk_source = "ready" if agent_apk_path() or AGENT_APK_URL else "missing"
+    apk_ready, _, apk_detail = apk_download_status()
+    apk_source = "ready" if apk_ready else f"not ready ({apk_detail})"
     devices = list_devices_for_user(str(owner_id))
     online_count = sum(1 for device in devices if device.get("online"))
     return (
         "Phone connection wizard\n\n"
-        "1. Download and install Android Agent APK.\n"
-        "2. Tap Create new QR.\n"
-        "3. Open the QR link on the phone.\n"
-        "4. In Android Agent, allow notifications, screen view, and accessibility if you need control.\n"
-        "5. Return here and tap Check devices.\n\n"
+        "1. If APK is not ready, tap Start APK build.\n"
+        "2. Download and install Android Agent APK.\n"
+        "3. Tap Create new QR.\n"
+        "4. Open the QR link on the phone.\n"
+        "5. In Android Agent, allow notifications, screen view, and accessibility if you need control.\n"
+        "6. Return here and tap Check devices.\n\n"
         f"APK: {apk_source}\n"
         f"Devices: {len(devices)} total, {online_count} online"
     )
@@ -322,7 +328,7 @@ def run_deploy_checks(owner_id: int) -> str:
     lines = ["Deployment check"]
     health_url = f"{public_server_url()}/health"
     agent_url = f"{public_server_url()}/agent"
-    apk_url = release_apk_url()
+    apk_ready, apk_url, apk_detail = apk_download_status()
 
     lines.append(check_line("BOT_TOKEN", bool(BOT_TOKEN)))
     lines.append(check_line("ADMIN_IDS", bool(ADMIN_IDS), "off means public bot" if not ADMIN_IDS else "enabled"))
@@ -339,8 +345,7 @@ def run_deploy_checks(owner_id: int) -> str:
     lines.append(check_line("/health", health_ok, health_detail))
     agent_ok, agent_detail = probe_url(agent_url)
     lines.append(check_line("/agent", agent_ok, agent_detail))
-    apk_ok, apk_detail = probe_url(apk_url, "HEAD")
-    lines.append(check_line("APK URL", apk_ok, apk_detail))
+    lines.append(check_line("APK download", apk_ready, f"{apk_detail} - {apk_url}"))
 
     if GITHUB_TOKEN and GITHUB_REPO and GITHUB_WORKFLOW:
         try:
@@ -368,14 +373,12 @@ async def send_build_apk(message: Message, command: CommandObject) -> None:
     if not await ensure_message_admin(message):
         return
 
-    app_name = (command.args or "").strip()
-    if not app_name:
-        await message.answer(
-            "Send an app name like this:\n\n"
-            "/build_apk My Agent\n\n"
-            "Optional: send an icon image to the bot first, then run the command."
-        )
-        return
+    app_name = (command.args or "Hunter Agent").strip() or "Hunter Agent"
+    await start_apk_build(message, message.from_user.id, app_name)
+
+
+async def start_apk_build(message: Message, owner_id: int, app_name: str = "Hunter Agent") -> None:
+    app_name = (app_name or "Hunter Agent").strip()[:40] or "Hunter Agent"
 
     if not GITHUB_TOKEN:
         await message.answer(
@@ -385,10 +388,10 @@ async def send_build_apk(message: Message, command: CommandObject) -> None:
         return
 
     icon_url = None
-    image_path = user_last_photo.get(message.from_user.id)
+    image_path = user_last_photo.get(owner_id)
     if image_path and image_path.exists() and PUBLIC_BASE_URL:
         try:
-            icon_url = await asyncio.to_thread(prepare_build_icon, message.from_user.id, image_path)
+            icon_url = await asyncio.to_thread(prepare_build_icon, owner_id, image_path)
         except Exception as exc:
             await message.answer(f"Icon image could not be prepared, building with default icon. Error: {exc}")
 
@@ -405,6 +408,7 @@ async def send_build_apk(message: Message, command: CommandObject) -> None:
         f"App name: {app_name[:40]}\n"
         f"Icon: {'custom' if icon_url else 'default'}\n\n"
         "I will watch GitHub Actions and send the APK link when it is ready.\n"
+        "Android support: Android 10+ debug APK.\n"
         f"Release page: {release_url}"
     )
     asyncio.create_task(watch_apk_build(message, started_at))
@@ -876,6 +880,19 @@ def release_apk_url() -> str:
     return AGENT_APK_URL or f"https://github.com/{GITHUB_REPO}/releases/download/android-agent-latest/{AGENT_APK_NAME}"
 
 
+def apk_download_status() -> tuple[bool, str, str]:
+    apk_path = agent_apk_path()
+    if apk_path:
+        return True, f"{public_server_url()}/{AGENT_APK_NAME}", "local APK is ready"
+
+    url = release_apk_url()
+    ok, detail = probe_url(url, "HEAD")
+    if ok:
+        return True, url, "GitHub Release APK is ready"
+
+    return False, url, detail
+
+
 def latest_dispatched_apk_run(started_at: datetime) -> dict | None:
     workflow = quote(GITHUB_WORKFLOW, safe="")
     data = github_api_json(
@@ -1205,15 +1222,22 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         release_url = release_apk_url()
         actions_url = f"https://github.com/{GITHUB_REPO}/actions/workflows/{GITHUB_WORKFLOW}"
         mini_app_url = MINI_APP_URL or public_server_url()
+        remote_ok = False
+        remote_detail = "not checked"
+        if not apk_path:
+            remote_ok, remote_detail = probe_url(release_url, "HEAD")
         download_href = download_url if apk_path else release_url
         if apk_path:
             source_text = "APK is ready from this server."
-        elif AGENT_APK_URL:
+        elif remote_ok:
             source_text = "APK is published by GitHub Actions release."
         else:
-            source_text = "APK release link is configured from the repository."
+            source_text = f"APK is not built yet ({remote_detail})."
 
-        download_button = f'<a href="{escape(download_href, quote=True)}">Download APK</a>'
+        if apk_path or remote_ok:
+            download_button = f'<a href="{escape(download_href, quote=True)}">Download APK</a>'
+        else:
+            download_button = '<button disabled>APK not ready yet</button>'
 
         html = f"""<!doctype html>
 <html lang="en">
@@ -1241,7 +1265,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     <section>
       <h1>Android Agent</h1>
       <span class="status">{escape(source_text)}</span>
-      <p>This APK connects your Android phone to the Telegram bot and Mini App.</p>
+      <p>This APK connects your own Android phone to the Telegram bot and Mini App. Current build target supports Android 10+.</p>
       {download_button}
       <a class="ghost" href="{escape(actions_url, quote=True)}">Open APK build status</a>
       <a class="ghost" href="{escape(mini_app_url, quote=True)}">Open Mini App</a>
@@ -1256,7 +1280,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
       </ol>
 
       <h2>If APK is not ready</h2>
-      <p>If the download returns 404, the GitHub Release has not been created yet. Send an icon image to the bot, then run <code>/build_apk Hunter Agent</code>. The bot will send the download link after GitHub Actions finishes.</p>
+      <p>If this page says APK is not ready, open the bot and send <code>/build_apk</code>. Optional: send an icon image first, then run <code>/build_apk Hunter Agent</code>. The bot will send the download link after GitHub Actions finishes.</p>
     </section>
   </main>
 </body>
@@ -1271,6 +1295,18 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     def handle_agent_apk(self) -> None:
         apk_path = agent_apk_path()
         if not apk_path:
+            remote_ok, _ = probe_url(release_apk_url(), "HEAD")
+            if not remote_ok:
+                self.send_json(
+                    {
+                        "error": "APK not ready",
+                        "fix": "Open Telegram bot and send /build_apk. After GitHub Actions finishes, retry download.",
+                        "install_page": f"{public_server_url()}/agent",
+                    },
+                    HTTPStatus.NOT_FOUND,
+                )
+                return
+
             self.send_response(HTTPStatus.FOUND)
             self.send_header("Location", release_apk_url())
             self.end_headers()
@@ -1663,10 +1699,16 @@ async def callbacks(callback: CallbackQuery) -> None:
         await callback.message.answer(
             "To build a fresh APK:\n\n"
             "1. Send the bot an icon image, optional.\n"
-            "2. Send: /build_apk Hunter Agent\n"
+            "2. Tap Start APK build or send: /build_apk Hunter Agent\n"
             "3. Wait until I send the APK link.\n\n"
-            "Required Railway variables: GITHUB_TOKEN, GITHUB_REPO, GITHUB_WORKFLOW, AGENT_APK_URL."
+            "Required Railway variables: GITHUB_TOKEN, GITHUB_REPO, GITHUB_WORKFLOW.\n"
+            "The APK is built for Android 10+."
         )
+        return
+
+    if action == "connect_build_now":
+        await callback.answer("Starting APK build...")
+        await start_apk_build(callback.message, callback.from_user.id, "Hunter Agent")
         return
 
     if action == "pair_device":
