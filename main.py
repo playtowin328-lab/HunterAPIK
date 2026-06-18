@@ -88,12 +88,31 @@ user_last_photo: dict[int, Path] = {}
 def is_admin_user(user) -> bool:
     if not ADMIN_IDS:
         return True
-    return bool(user and str(user.id) in ADMIN_IDS)
+    if not user:
+        return False
+    user_id = str(user.id)
+    return user_id in ADMIN_IDS or is_allowed_bot_user(user_id)
+
+
+def is_root_admin_user(user) -> bool:
+    if not user:
+        return False
+    if not ADMIN_IDS:
+        return True
+    return str(user.id) in ADMIN_IDS
 
 
 async def ensure_message_admin(message: Message) -> bool:
     if is_admin_user(message.from_user):
         return True
+    user_id = message.from_user.id if message.from_user else "unknown"
+    await message.answer(
+        "Доступ закрыт. Этот бот доступен только разрешенным пользователям.\n\n"
+        f"Твой Telegram ID: `{user_id}`\n"
+        "Отправь этот ID владельцу бота, чтобы он выдал доступ.",
+        parse_mode="Markdown",
+    )
+    return False
     await message.answer("Доступ закрыт. Этот бот доступен только администраторам.")
     return False
 
@@ -102,6 +121,12 @@ async def ensure_callback_admin(callback: CallbackQuery) -> bool:
     if is_admin_user(callback.from_user):
         return True
     await callback.answer("Доступ закрыт. Только администраторы.", show_alert=True)
+    return False
+
+async def ensure_root_message(message: Message) -> bool:
+    if is_root_admin_user(message.from_user):
+        return True
+    await message.answer("Этим разделом может управлять только владелец из ADMIN_IDS.")
     return False
 
 
@@ -155,9 +180,100 @@ def init_db() -> None:
             """
         )
         connection.execute("CREATE INDEX IF NOT EXISTS idx_commands_next ON commands(owner_id, device_id, status, created_at)")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_access (
+                user_id TEXT PRIMARY KEY,
+                granted_by TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
 
 
 init_db()
+
+
+def normalize_user_id(value: str) -> str:
+    user_id = str(value or "").strip()
+    if not user_id.isdigit() or len(user_id) > 32:
+        raise ValueError("Telegram ID должен быть числом")
+    return user_id
+
+
+def is_allowed_bot_user(user_id: str) -> bool:
+    try:
+        user_id = normalize_user_id(user_id)
+    except ValueError:
+        return False
+    with db_connect() as connection:
+        row = connection.execute(
+            "SELECT user_id FROM bot_access WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return row is not None
+
+
+def grant_bot_access(user_id: str, granted_by: str) -> None:
+    user_id = normalize_user_id(user_id)
+    now = int(time.time())
+    with db_connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO bot_access(user_id, granted_by, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                granted_by = excluded.granted_by,
+                created_at = excluded.created_at
+            """,
+            (user_id, str(granted_by), now),
+        )
+
+
+def revoke_bot_access(user_id: str) -> bool:
+    user_id = normalize_user_id(user_id)
+    with db_connect() as connection:
+        cursor = connection.execute("DELETE FROM bot_access WHERE user_id = ?", (user_id,))
+    return cursor.rowcount > 0
+
+
+def list_bot_access_users() -> list[sqlite3.Row]:
+    with db_connect() as connection:
+        return list(connection.execute("SELECT * FROM bot_access ORDER BY created_at DESC"))
+
+
+def access_text() -> str:
+    root_ids = ", ".join(sorted(ADMIN_IDS)) if ADMIN_IDS else "не задано, бот в публичном режиме"
+    rows = list_bot_access_users()
+    lines = [
+        "Доступ к боту",
+        "",
+        f"Root ADMIN_IDS: {root_ids}",
+        f"Допущено через бота: {len(rows)}",
+        "",
+        "Команды владельца:",
+        "/grant 123456789 — выдать доступ",
+        "/revoke 123456789 — забрать доступ",
+        "/admins — список доступа",
+        "",
+        "Пользователь без доступа увидит свой Telegram ID и сможет прислать его тебе.",
+    ]
+    if rows:
+        lines.append("")
+        lines.append("Выданные доступы:")
+        for row in rows[:20]:
+            created = datetime.fromtimestamp(int(row["created_at"])).strftime("%d.%m %H:%M")
+            lines.append(f"- {row['user_id']} · выдал {row['granted_by']} · {created}")
+    return "\n".join(lines)
+
+
+def access_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Обновить список", callback_data="access_info")],
+            nav_row(None),
+        ]
+    )
 
 HELP_TEXT = (
     "*Hunter Agent — личный пульт устройств*\n\n"
@@ -180,7 +296,10 @@ HELP_TEXT = (
     "/build_pc_agent — собрать Windows EXE для ПК/VDS\n"
     "/guide — подробная инструкция\n"
     "/settings — текущие настройки\n"
-    "/check — диагностика деплоя"
+    "/check — диагностика деплоя\n"
+    "/admins — управление доступом\n"
+    "/grant 123456789 — выдать доступ по Telegram ID\n"
+    "/revoke 123456789 — забрать доступ"
 )
 
 SETTINGS_TEXT = (
@@ -255,6 +374,7 @@ def main_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📦 ZIP", callback_data="make_zip"),
             ],
             [InlineKeyboardButton(text="🚀 Railway", callback_data="railway_info")],
+            [InlineKeyboardButton(text="🔐 Доступ", callback_data="access_info")],
             [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
         ]
     )
@@ -314,6 +434,53 @@ async def send_my_id(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
     await message.answer(f"Твой owner_id для агента: `{message.from_user.id}`", parse_mode="Markdown")
+
+
+async def send_admins(message: Message) -> None:
+    if not await ensure_root_message(message):
+        return
+    await message.answer(access_text(), reply_markup=access_keyboard())
+
+
+async def send_grant_access(message: Message, command: CommandObject) -> None:
+    if not await ensure_root_message(message):
+        return
+    try:
+        user_id = normalize_user_id(command.args or "")
+        grant_bot_access(user_id, str(message.from_user.id))
+    except ValueError as exc:
+        await message.answer(
+            f"Не понял ID: {exc}\n\nПример: `/grant 123456789`",
+            parse_mode="Markdown",
+        )
+        return
+    await message.answer(
+        f"Доступ выдан пользователю `{user_id}`.",
+        parse_mode="Markdown",
+        reply_markup=access_keyboard(),
+    )
+
+
+async def send_revoke_access(message: Message, command: CommandObject) -> None:
+    if not await ensure_root_message(message):
+        return
+    try:
+        user_id = normalize_user_id(command.args or "")
+    except ValueError as exc:
+        await message.answer(
+            f"Не понял ID: {exc}\n\nПример: `/revoke 123456789`",
+            parse_mode="Markdown",
+        )
+        return
+    if user_id in ADMIN_IDS:
+        await message.answer("Этот пользователь указан в ADMIN_IDS. Убрать его можно только в Railway variables.")
+        return
+    removed = revoke_bot_access(user_id)
+    await message.answer(
+        f"Доступ для `{user_id}` {'забран' if removed else 'не найден в списке'}.",
+        parse_mode="Markdown",
+        reply_markup=access_keyboard(),
+    )
 
 
 async def send_status(message: Message) -> None:
@@ -2059,6 +2226,14 @@ async def callbacks(callback: CallbackQuery) -> None:
         await show_bot_screen(callback, SETTINGS_TEXT, reply_markup=nav_keyboard(None))
         return
 
+    if action == "access_info":
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Только владелец из ADMIN_IDS может управлять доступом.", show_alert=True)
+            return
+        await callback.answer()
+        await show_bot_screen(callback, access_text(), reply_markup=access_keyboard())
+        return
+
     if action == "guide":
         await callback.answer()
         await show_bot_screen(callback, GUIDE_TEXT, reply_markup=connect_keyboard(), parse_mode="Markdown")
@@ -2358,6 +2533,9 @@ async def run_bot() -> None:
     dp.message.register(send_guide, Command("guide"))
     dp.message.register(send_settings, Command("settings"))
     dp.message.register(send_my_id, Command("myid"))
+    dp.message.register(send_admins, Command("admins"))
+    dp.message.register(send_grant_access, Command("grant"))
+    dp.message.register(send_revoke_access, Command("revoke"))
     dp.message.register(send_status, Command("status"))
     dp.message.register(send_check, Command("check"))
     dp.message.register(send_connect, Command("connect"))
