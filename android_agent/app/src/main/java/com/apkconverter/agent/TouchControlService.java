@@ -77,15 +77,15 @@ public class TouchControlService extends AccessibilityService {
     }
 
     static boolean back() {
-        return performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK);
+        return performGlobalActionCompat(AccessibilityService.GLOBAL_ACTION_BACK);
     }
 
     static boolean home() {
-        return performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME);
+        return performGlobalActionCompat(AccessibilityService.GLOBAL_ACTION_HOME);
     }
 
     static boolean recents() {
-        return performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS);
+        return performGlobalActionCompat(AccessibilityService.GLOBAL_ACTION_RECENTS);
     }
 
     static boolean inputText(String text) {
@@ -139,7 +139,7 @@ public class TouchControlService extends AccessibilityService {
         return result;
     }
 
-    private static boolean performGlobalAction(int action) {
+    private static boolean performGlobalActionCompat(int action) {
         if (instance == null) {
             return false;
         }
