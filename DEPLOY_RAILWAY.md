@@ -132,6 +132,7 @@ From Telegram:
 
 ```text
 /connect
+/check
 /build_apk My Agent
 ```
 
@@ -141,3 +142,5 @@ download link or failed run logs when the build finishes.
 
 Use `/connect` as the main phone setup wizard. It includes buttons for APK
 install, QR pairing, build help, device status, and diagnostics.
+Use `/check` when something does not react: it verifies Railway URLs, APK link,
+GitHub workflow access, storage, database path, and connected devices.

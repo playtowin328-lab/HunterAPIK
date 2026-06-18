@@ -257,6 +257,7 @@ def connect_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Download / install APK", url=f"{public_server_url()}/agent")],
             [InlineKeyboardButton(text="Create new QR", callback_data="pair_device")],
             [InlineKeyboardButton(text="Build APK help", callback_data="connect_build_help")],
+            [InlineKeyboardButton(text="Run full check", callback_data="connect_check")],
             [
                 InlineKeyboardButton(text="Check devices", callback_data="my_devices"),
                 InlineKeyboardButton(text="Check status", callback_data="connect_status"),
@@ -285,6 +286,71 @@ async def send_connect(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
     await message.answer(connect_text(message.from_user.id), reply_markup=connect_keyboard())
+
+
+def probe_url(url: str, method: str = "GET") -> tuple[bool, str]:
+    if not url:
+        return False, "missing"
+    request = urllib.request.Request(url, method=method, headers={"User-Agent": "apk-converter-bot"})
+    try:
+        with urllib.request.urlopen(request, timeout=12) as response:
+            return 200 <= response.status < 400, f"HTTP {response.status}"
+    except urllib.error.HTTPError as exc:
+        return False, f"HTTP {exc.code}"
+    except Exception as exc:
+        return False, str(exc)[:120]
+
+
+def check_line(label: str, ok: bool, detail: str = "") -> str:
+    marker = "OK" if ok else "FAIL"
+    suffix = f" - {detail}" if detail else ""
+    return f"{marker}: {label}{suffix}"
+
+
+def run_deploy_checks(owner_id: int) -> str:
+    lines = ["Deployment check"]
+    health_url = f"{public_server_url()}/health"
+    agent_url = f"{public_server_url()}/agent"
+    apk_url = release_apk_url()
+
+    lines.append(check_line("BOT_TOKEN", bool(BOT_TOKEN)))
+    lines.append(check_line("ADMIN_IDS", bool(ADMIN_IDS), "off means public bot" if not ADMIN_IDS else "enabled"))
+    lines.append(check_line("PUBLIC_BASE_URL", PUBLIC_BASE_URL.startswith("https://"), PUBLIC_BASE_URL or "missing"))
+    lines.append(check_line("MINI_APP_URL", MINI_APP_URL.startswith("https://"), MINI_APP_URL or "missing"))
+    lines.append(check_line("DEVICE_API_TOKEN", bool(DEVICE_API_TOKEN), "required for direct agent auth"))
+    lines.append(check_line("GITHUB_TOKEN", bool(GITHUB_TOKEN), "required for /build_apk"))
+    lines.append(check_line("GITHUB_REPO", bool(GITHUB_REPO), GITHUB_REPO or "missing"))
+    lines.append(check_line("GITHUB_WORKFLOW", bool(GITHUB_WORKFLOW), GITHUB_WORKFLOW or "missing"))
+    lines.append(check_line("Storage dir", STORAGE_DIR.exists(), str(STORAGE_DIR)))
+    lines.append(check_line("DB parent", DB_PATH.parent.exists(), str(DB_PATH)))
+
+    health_ok, health_detail = probe_url(health_url)
+    lines.append(check_line("/health", health_ok, health_detail))
+    agent_ok, agent_detail = probe_url(agent_url)
+    lines.append(check_line("/agent", agent_ok, agent_detail))
+    apk_ok, apk_detail = probe_url(apk_url, "HEAD")
+    lines.append(check_line("APK URL", apk_ok, apk_detail))
+
+    if GITHUB_TOKEN and GITHUB_REPO and GITHUB_WORKFLOW:
+        try:
+            workflow = github_api_json(f"/repos/{GITHUB_REPO}/actions/workflows/{quote(GITHUB_WORKFLOW, safe='')}")
+            workflow_state = workflow.get("state", "unknown")
+            lines.append(check_line("GitHub workflow", workflow_state == "active", workflow_state))
+        except Exception as exc:
+            lines.append(check_line("GitHub workflow", False, str(exc)[:120]))
+
+    devices = list_devices_for_user(str(owner_id))
+    online_count = sum(1 for device in devices if device.get("online"))
+    lines.append(check_line("Devices", True, f"{len(devices)} total, {online_count} online"))
+    return "\n".join(lines)
+
+
+async def send_check(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    await message.answer("Running deployment check...")
+    result = await asyncio.to_thread(run_deploy_checks, message.from_user.id)
+    await message.answer(result)
 
 
 async def send_build_apk(message: Message, command: CommandObject) -> None:
@@ -1549,6 +1615,12 @@ async def callbacks(callback: CallbackQuery) -> None:
         )
         return
 
+    if action == "connect_check":
+        await callback.answer("Running check...")
+        result = await asyncio.to_thread(run_deploy_checks, callback.from_user.id)
+        await callback.message.answer(result)
+        return
+
     if action == "connect_build_help":
         await callback.answer()
         await callback.message.answer(
@@ -1666,6 +1738,7 @@ async def run_bot() -> None:
     dp.message.register(send_settings, Command("settings"))
     dp.message.register(send_my_id, Command("myid"))
     dp.message.register(send_status, Command("status"))
+    dp.message.register(send_check, Command("check"))
     dp.message.register(send_connect, Command("connect"))
     dp.message.register(send_build_apk, Command("build_apk"))
     dp.message.register(send_pairing_code, Command("pair"))
