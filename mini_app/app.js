@@ -16,6 +16,11 @@ const setupText = document.querySelector("#setupText");
 const installAgentButton = document.querySelector("#installAgentButton");
 const requestPairButton = document.querySelector("#requestPairButton");
 const refreshButton = document.querySelector("#refreshButton");
+const pairResult = document.querySelector("#pairResult");
+const pairQrImage = document.querySelector("#pairQrImage");
+const pairCode = document.querySelector("#pairCode");
+const openPairPageButton = document.querySelector("#openPairPageButton");
+const openAgentDeepLinkButton = document.querySelector("#openAgentDeepLinkButton");
 const totalDevices = document.querySelector("#totalDevices");
 const onlineDevices = document.querySelector("#onlineDevices");
 const userName = document.querySelector("#userName");
@@ -37,6 +42,7 @@ const typeNames = {
 };
 
 let devices = [];
+let currentPairLinks = null;
 const screenPollers = new Map();
 
 function getLocalDeviceId() {
@@ -147,6 +153,15 @@ async function loadDevicesFromApi() {
 
   const payload = await response.json();
   devices = payload.devices || [];
+}
+
+async function createPairingQr() {
+  const response = await fetch(`${apiBaseUrl}/api/pair/new?owner_id=${encodeURIComponent(ownerId)}`);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || "Не удалось создать QR");
+  }
+  return response.json();
 }
 
 async function registerDevice(device) {
@@ -546,11 +561,31 @@ installAgentButton.addEventListener("click", () => {
   openExternal(`${apiBaseUrl}/agent`);
 });
 
-requestPairButton.addEventListener("click", () => {
-  const sent = sendBotEvent("request_pair");
-  setupText.textContent = sent
-    ? "QR отправлен в чат с ботом."
-    : "Открой мини-апп из Telegram, чтобы получить QR в чат.";
+requestPairButton.addEventListener("click", async () => {
+  setupText.textContent = "Создаю QR и код подключения...";
+  try {
+    const payload = await createPairingQr();
+    currentPairLinks = payload.links;
+    pairQrImage.src = payload.qr_image_data;
+    pairCode.textContent = payload.code;
+    pairResult.classList.remove("hidden");
+    setupText.textContent = "QR готов. Открой его на телефоне или введи код в Android Agent.";
+    sendBotEvent("request_pair");
+  } catch (error) {
+    setupText.textContent = `${error.message}. Запасной способ: отправь /pair боту.`;
+  }
+});
+
+openPairPageButton.addEventListener("click", () => {
+  if (currentPairLinks?.web_link) {
+    openExternal(currentPairLinks.web_link);
+  }
+});
+
+openAgentDeepLinkButton.addEventListener("click", () => {
+  if (currentPairLinks?.app_link) {
+    openExternal(currentPairLinks.app_link);
+  }
 });
 
 refreshButton.addEventListener("click", async () => {

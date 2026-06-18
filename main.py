@@ -680,13 +680,17 @@ def pairing_keyboard(links: dict[str, str]) -> InlineKeyboardMarkup:
 
 
 def make_pairing_qr(link: str, code: str) -> BufferedInputFile:
+    return BufferedInputFile(make_pairing_qr_bytes(link), filename=f"pair-{code}.png")
+
+
+def make_pairing_qr_bytes(link: str) -> bytes:
     qr = qrcode.QRCode(version=1, box_size=10, border=3)
     qr.add_data(link)
     qr.make(fit=True)
     image = qr.make_image(fill_color="black", back_color="white").convert("RGB")
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
-    return BufferedInputFile(buffer.getvalue(), filename=f"pair-{code}.png")
+    return buffer.getvalue()
 
 
 def pairing_text(code: str, links: dict[str, str]) -> str:
@@ -1351,6 +1355,29 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 return
 
             self.send_json({"devices": list_devices_for_user(owner_id)})
+            return
+
+        if parsed_url.path == "/api/pair/new":
+            query = parse_qs(parsed_url.query)
+            owner_id = query.get("owner_id", [""])[0].strip()
+            if not owner_id:
+                self.send_json({"error": "owner_id is required"}, HTTPStatus.BAD_REQUEST)
+                return
+            if len(owner_id) > 64:
+                self.send_json({"error": "owner_id is too long"}, HTTPStatus.BAD_REQUEST)
+                return
+
+            code = create_pairing_code(owner_id)
+            links = pair_links(code)
+            qr_base64 = base64.b64encode(make_pairing_qr_bytes(links["web_link"])).decode("ascii")
+            self.send_json(
+                {
+                    "code": code,
+                    "expires_in": PAIRING_TTL_SECONDS,
+                    "links": links,
+                    "qr_image_data": f"data:image/png;base64,{qr_base64}",
+                }
+            )
             return
 
         if parsed_url.path == "/":
