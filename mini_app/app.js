@@ -204,6 +204,58 @@ async function sendCommand(device, type, payload = {}) {
   return response.json();
 }
 
+async function getCommandStatus(device, commandId) {
+  const response = await fetch(
+    `${apiBaseUrl}/api/devices/commands/status?owner_id=${encodeURIComponent(ownerId)}&device_id=${encodeURIComponent(device.device_id)}&command_id=${encodeURIComponent(commandId)}`
+  );
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || "Не удалось получить статус команды");
+  }
+  return response.json();
+}
+
+async function waitForCommandResult(device, commandPayload, timeoutMs = 9000) {
+  const commandId = commandPayload?.command?.command_id;
+  if (!commandId) {
+    return commandPayload;
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const payload = await getCommandStatus(device, commandId);
+    const status = payload.command?.status;
+    if (status && status !== "pending" && status !== "delivered") {
+      return payload;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 550));
+  }
+  return { command: { ...commandPayload.command, status: "timeout", result: "Агент не подтвердил команду за 9 секунд." } };
+}
+
+async function sendCommandAndWait(device, type, payload = {}) {
+  const commandPayload = await sendCommand(device, type, payload);
+  return waitForCommandResult(device, commandPayload);
+}
+
+function commandResultText(payload, fallback) {
+  const command = payload?.command;
+  if (!command) {
+    return fallback;
+  }
+  const result = command.result ? ` ${command.result}` : "";
+  if (command.status === "acknowledged" || command.status === "done") {
+    return `${fallback}${result}`;
+  }
+  if (command.status === "rejected") {
+    return `Отклонено.${result}`;
+  }
+  if (command.status === "timeout") {
+    return command.result;
+  }
+  return `${command.status || "Статус"}:${result}`;
+}
+
 async function manageDevice(device, action, payload = {}) {
   const response = await fetch(`${apiBaseUrl}/api/devices/manage`, {
     method: "POST",
@@ -270,8 +322,9 @@ async function sendSimpleDeviceCommand(device, type, controlNote, successText) {
   }
 
   try {
-    await sendCommand(device, type);
-    controlNote.textContent = successText;
+    controlNote.textContent = "Команда отправлена, жду ответ агента...";
+    const result = await sendCommandAndWait(device, type);
+    controlNote.textContent = commandResultText(result, successText);
   } catch (error) {
     controlNote.textContent = error.message;
   }
@@ -327,9 +380,11 @@ function render() {
       }
 
       try {
-        await sendCommand(device, "request_screen");
+        controlNote.textContent = "Запрашиваю экран, жду ответ агента...";
+        const result = await sendCommandAndWait(device, "request_screen");
         controlNote.textContent = "Запрос экрана отправлен. Подтверди запись экрана на телефоне, если Android спросит разрешение.";
-        setTimeout(() => startScreenPolling(device, screenPreview, screenImage, controlNote), 2500);
+        controlNote.textContent = commandResultText(result, "Запрос экрана обработан.");
+        setTimeout(() => startScreenPolling(device, screenPreview, screenImage, controlNote), 1200);
       } catch (error) {
         controlNote.textContent = error.message;
       }
@@ -401,8 +456,9 @@ function render() {
       }
 
       try {
-        await sendCommand(device, "input_text", { text });
+        const result = await sendCommandAndWait(device, "input_text", { text });
         controlNote.textContent = "Текст отправлен.";
+        controlNote.textContent = commandResultText(result, "Текст отправлен.");
         remoteTextInput.value = "";
       } catch (error) {
         controlNote.textContent = error.message;
@@ -492,7 +548,7 @@ function render() {
 
       try {
         if (distance > 0.06) {
-          await sendCommand(device, "swipe", {
+          const result = await sendCommandAndWait(device, "swipe", {
             x: start.x,
             y: start.y,
             end_x: end.x,
@@ -502,7 +558,7 @@ function render() {
           return;
         }
 
-        await sendCommand(device, "tap", { x: end.x, y: end.y });
+        const result = await sendCommandAndWait(device, "tap", { x: end.x, y: end.y });
         controlNote.textContent = `Тап отправлен: ${Math.round(end.x * 100)}%, ${Math.round(end.y * 100)}%.`;
       } catch (error) {
         controlNote.textContent = error.message;
@@ -517,7 +573,7 @@ function render() {
 
       const point = normalizedPoint(event);
       try {
-        await sendCommand(device, "long_tap", point);
+        const result = await sendCommandAndWait(device, "long_tap", point);
         controlNote.textContent = "Long tap отправлен.";
       } catch (error) {
         controlNote.textContent = error.message;
@@ -531,7 +587,7 @@ function render() {
       }
 
       try {
-        await sendCommand(device, "request_files");
+        const result = await sendCommandAndWait(device, "request_files");
         controlNote.textContent = "Запрос файлов отправлен агенту. Следующий модуль откроет выбор разрешённых папок на Android.";
       } catch (error) {
         controlNote.textContent = error.message;
@@ -545,7 +601,7 @@ function render() {
       }
 
       try {
-        await sendCommand(device, "request_actions");
+        const result = await sendCommandAndWait(device, "request_actions");
         controlNote.textContent = "Команда отправлена агенту. Агент подтвердит получение в своём статусе.";
       } catch (error) {
         controlNote.textContent = error.message;

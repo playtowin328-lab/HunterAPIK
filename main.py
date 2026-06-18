@@ -951,6 +951,19 @@ def complete_device_command(owner_id: str, device_id: str, command_id: str, stat
     return command
 
 
+def get_device_command(owner_id: str, device_id: str, command_id: str) -> dict | None:
+    with db_connect() as connection:
+        row = connection.execute(
+            "SELECT * FROM commands WHERE owner_id = ? AND device_id = ? AND command_id = ?",
+            (str(owner_id), str(device_id), str(command_id)),
+        ).fetchone()
+    if not row:
+        return None
+    command = dict(row)
+    command["payload"] = json.loads(command.pop("payload_json") or "{}")
+    return command
+
+
 def screen_paths(owner_id: str, device_id: str) -> tuple[Path, Path]:
     safe_owner = "".join(ch for ch in str(owner_id) if ch.isalnum() or ch in {"_", "-"})
     safe_device = "".join(ch for ch in str(device_id) if ch.isalnum() or ch in {"_", "-"})
@@ -1380,6 +1393,22 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 return
 
             self.send_json({"command": next_device_command(payload["owner_id"], payload["device_id"])})
+            return
+
+        if parsed_url.path == "/api/devices/commands/status":
+            query = parse_qs(parsed_url.query)
+            owner_id = query.get("owner_id", [""])[0].strip()
+            device_id = query.get("device_id", [""])[0].strip()
+            command_id = query.get("command_id", [""])[0].strip()
+            if not owner_id or not device_id or not command_id:
+                self.send_json({"error": "owner_id, device_id and command_id are required"}, HTTPStatus.BAD_REQUEST)
+                return
+            command = get_device_command(owner_id, device_id, command_id)
+            if not command:
+                self.send_json({"error": "command not found"}, HTTPStatus.NOT_FOUND)
+                return
+
+            self.send_json({"command": command})
             return
 
         if parsed_url.path == "/api/devices/screen":

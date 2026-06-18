@@ -76,8 +76,8 @@ public class HeartbeatService extends Service {
         String timestamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date());
 
         try {
-            DeviceApiClient.heartbeat(this);
             String commandStatus = handlePendingCommands();
+            DeviceApiClient.heartbeat(this);
             editor.putString(KEY_LAST_STATUS, "Online · " + timestamp + commandStatus);
             editor.putLong(KEY_LAST_SUCCESS, System.currentTimeMillis());
             updateNotification("Online · " + timestamp);
