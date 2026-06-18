@@ -61,6 +61,8 @@ STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
 STORAGE_DIR.mkdir(exist_ok=True)
 MINI_APP_DIR = BASE_DIR / "mini_app"
 AGENT_APK_NAME = "apk-agent.apk"
+AGENT_LITE_APK_NAME = "apk-agent-lite.apk"
+AGENT_FULL_APK_NAME = "apk-agent-full.apk"
 AGENT_APK_URL = os.getenv("AGENT_APK_URL", "").strip()
 GITHUB_REPO = os.getenv("GITHUB_REPO", "playtowin328-lab/HunterAPIK").strip()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
@@ -171,6 +173,7 @@ HELP_TEXT = (
     "/connect — мастер подключения телефона\n"
     "/pair — QR и код привязки\n"
     "/devices — список устройств\n"
+    "/apk — список Lite/Full APK и ссылки скачивания\n"
     "/build_apk — собрать Lite APK со стандартным названием\n"
     "/build_apk Название — собрать Lite APK со своим названием\n"
     "/build_apk_full Название — собрать полный APK с экраном и жестами\n"
@@ -337,6 +340,7 @@ def connect_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Скачать / установить APK", url=f"{public_server_url()}/agent")],
             [InlineKeyboardButton(text="Получить новый QR", callback_data="pair_device")],
+            [InlineKeyboardButton(text="Список APK: Lite / Full", callback_data="apk_list")],
             [InlineKeyboardButton(text="Обновить мастер", callback_data="connect_wizard")],
             [
                 InlineKeyboardButton(text="Собрать APK", callback_data="connect_build_now"),
@@ -382,6 +386,12 @@ async def send_devices(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
     await message.answer(format_devices_text(message.from_user.id), reply_markup=connect_keyboard())
+
+
+async def send_apk_list(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    await message.answer(apk_list_text(), reply_markup=apk_list_keyboard())
 
 
 def probe_url(url: str, method: str = "GET") -> tuple[bool, str]:
@@ -535,7 +545,9 @@ async def start_apk_build(message: Message, owner_id: int, app_name: str = "Hunt
     if not GITHUB_TOKEN:
         await message.answer(
             "I cannot start APK build yet. Add GITHUB_TOKEN to Railway variables, then redeploy.\n\n"
-            "Token needs repo/actions permission for this repository."
+            "Token needs repo/actions permission for this repository.\n\n"
+            "Пока токена нет, можно скачать уже опубликованные APK ниже.",
+            reply_markup=apk_list_keyboard(),
         )
         return
 
@@ -605,8 +617,12 @@ async def watch_apk_build(message: Message, started_at: datetime) -> None:
             if conclusion == "success":
                 await message.answer(
                     "APK build finished.\n\n"
-                    f"Download APK:\n{release_apk_url()}\n\n"
+                    f"Latest APK:\n{release_apk_url()}\n\n"
+                    f"Lite APK:\n{release_apk_url('lite')}\n\n"
+                    f"Full APK:\n{release_apk_url('full')}\n\n"
                     f"Install page:\n{public_server_url()}/agent"
+                    ,
+                    reply_markup=apk_list_keyboard(),
                 )
                 return
 
@@ -1125,8 +1141,44 @@ def parse_github_time(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def release_apk_url() -> str:
+def apk_release_page_url() -> str:
+    return f"https://github.com/{GITHUB_REPO}/releases/tag/android-agent-latest"
+
+
+def release_apk_url(mode: str = "latest") -> str:
+    if mode == "lite":
+        return f"https://github.com/{GITHUB_REPO}/releases/download/android-agent-latest/{AGENT_LITE_APK_NAME}"
+    if mode == "full":
+        return f"https://github.com/{GITHUB_REPO}/releases/download/android-agent-latest/{AGENT_FULL_APK_NAME}"
     return AGENT_APK_URL or f"https://github.com/{GITHUB_REPO}/releases/download/android-agent-latest/{AGENT_APK_NAME}"
+
+
+def apk_list_text() -> str:
+    token_status = "готов" if GITHUB_TOKEN else "не задан в Railway"
+    return (
+        "Список Android APK\n\n"
+        "Все APK подключаются одинаково: установил приложение, в боте нажал «Получить QR», открыл QR на телефоне и агент сам привязался.\n\n"
+        "Lite APK — базовая связь, QR, Online/Offline, батарея, сеть. Меньше разрешений.\n"
+        "Full APK — экран, тапы, свайпы, Back/Home/Recent, ввод текста. Нужны Accessibility и разрешение записи экрана.\n\n"
+        f"GITHUB_TOKEN: {token_status}\n"
+        f"Релиз: {apk_release_page_url()}"
+    )
+
+
+def apk_list_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Скачать Lite APK", url=release_apk_url("lite"))],
+            [InlineKeyboardButton(text="Скачать Full APK", url=release_apk_url("full"))],
+            [InlineKeyboardButton(text="Открыть страницу установки", url=f"{public_server_url()}/agent")],
+            [
+                InlineKeyboardButton(text="Собрать Lite", callback_data="connect_build_now"),
+                InlineKeyboardButton(text="Собрать Full", callback_data="connect_build_full"),
+            ],
+            [InlineKeyboardButton(text="Получить QR для подключения", callback_data="pair_device")],
+            nav_row("connect_wizard"),
+        ]
+    )
 
 
 def apk_download_status() -> tuple[bool, str, str]:
@@ -1512,6 +1564,12 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         apk_path = agent_apk_path()
         download_url = f"{public_server_url()}/{AGENT_APK_NAME}"
         release_url = release_apk_url()
+        lite_url = release_apk_url("lite")
+        full_url = release_apk_url("full")
+        mode_download_buttons = (
+            f'<a class="ghost" href="{escape(lite_url, quote=True)}">Скачать Lite APK</a>'
+            f'<a class="ghost" href="{escape(full_url, quote=True)}">Скачать Full APK</a>'
+        )
         actions_url = f"https://github.com/{GITHUB_REPO}/actions/workflows/{GITHUB_WORKFLOW}"
         mini_app_url = MINI_APP_URL or public_server_url()
         remote_ok = False
@@ -1568,6 +1626,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
       <span class="status">{escape(source_text)}</span>
       <p>Android Agent Lite подключает твой Android-телефон к Telegram-боту и мини-апу без доступа к экрану и жестам. Сборка рассчитана на Android 10+ и сделана так, чтобы меньше раздражать Play Protect.</p>
       {download_button}
+      {mode_download_buttons}
       <a class="ghost" href="{escape(actions_url, quote=True)}">Статус сборки APK</a>
       <a class="ghost" href="{escape(mini_app_url, quote=True)}">Открыть мини-ап</a>
     </section>
@@ -2049,6 +2108,11 @@ async def callbacks(callback: CallbackQuery) -> None:
         )
         return
 
+    if action == "apk_list":
+        await callback.answer()
+        await show_bot_screen(callback, apk_list_text(), reply_markup=apk_list_keyboard())
+        return
+
     if action == "apk_mode_compare":
         await callback.answer()
         await show_bot_screen(
@@ -2298,6 +2362,7 @@ async def run_bot() -> None:
     dp.message.register(send_check, Command("check"))
     dp.message.register(send_connect, Command("connect"))
     dp.message.register(send_devices, Command("devices"))
+    dp.message.register(send_apk_list, Command("apk"))
     dp.message.register(send_build_apk, Command("build_apk"))
     dp.message.register(send_build_apk_full, Command("build_apk_full"))
     dp.message.register(send_build_pc_agent, Command("build_pc_agent"))

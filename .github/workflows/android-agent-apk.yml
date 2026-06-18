@@ -74,43 +74,47 @@ jobs:
               curl -L --fail "$ICON_URL" -o android_agent/app/src/main/res/drawable/app_icon.png
             fi
 
-      - name: Build debug APK
+      - name: Build debug APKs
         shell: bash
         env:
           BUILD_MODE: ${{ github.event.inputs.build_mode }}
         run: |
-          mode="${BUILD_MODE:-lite}"
-          if [ "$mode" = "full" ]; then
-            gradle -p android_agent assembleFullDebug
-          else
-            gradle -p android_agent assembleLiteDebug
-          fi
+          gradle -p android_agent assembleLiteDebug assembleFullDebug
 
-      - name: Prepare APK file
+      - name: Prepare APK files
         shell: bash
         env:
           BUILD_MODE: ${{ github.event.inputs.build_mode }}
         run: |
           mode="${BUILD_MODE:-lite}"
-          if [ "$mode" = "full" ]; then
-            source_apk="android_agent/app/build/outputs/apk/full/debug/app-full-debug.apk"
-          else
-            source_apk="android_agent/app/build/outputs/apk/lite/debug/app-lite-debug.apk"
-          fi
-          test -s "$source_apk"
+          lite_apk="android_agent/app/build/outputs/apk/lite/debug/app-lite-debug.apk"
+          full_apk="android_agent/app/build/outputs/apk/full/debug/app-full-debug.apk"
+          test -s "$lite_apk"
+          test -s "$full_apk"
           mkdir -p dist
-          cp "$source_apk" dist/apk-agent.apk
-          sha256sum dist/apk-agent.apk > dist/apk-agent.sha256
+          cp "$lite_apk" dist/apk-agent-lite.apk
+          cp "$full_apk" dist/apk-agent-full.apk
+          if [ "$mode" = "full" ]; then
+            cp "$full_apk" dist/apk-agent.apk
+          else
+            cp "$lite_apk" dist/apk-agent.apk
+          fi
+          sha256sum dist/apk-agent.apk dist/apk-agent-lite.apk dist/apk-agent-full.apk > dist/apk-agent.sha256
           {
             echo "Build mode: $mode"
             echo "APK: dist/apk-agent.apk"
+            echo "Lite APK: dist/apk-agent-lite.apk"
+            echo "Full APK: dist/apk-agent-full.apk"
           } > dist/build-info.txt
 
-      - name: Upload APK
+      - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
           name: apk-agent
-          path: dist/apk-agent.apk
+          path: |
+            dist/apk-agent.apk
+            dist/apk-agent-lite.apk
+            dist/apk-agent-full.apk
 
       - name: Publish latest APK release
         if: github.ref == 'refs/heads/main'
@@ -121,6 +125,8 @@ jobs:
           body: Lite debug build by default. Install only on your own devices.
           files: |
             dist/apk-agent.apk
+            dist/apk-agent-lite.apk
+            dist/apk-agent-full.apk
             dist/apk-agent.sha256
             dist/build-info.txt
           make_latest: false
