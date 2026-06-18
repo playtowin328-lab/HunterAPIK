@@ -113,8 +113,10 @@ final class DeviceApiClient {
 
         float x = extractJsonFloat(responseText, "x", -1f);
         float y = extractJsonFloat(responseText, "y", -1f);
+        float endX = extractJsonFloat(responseText, "end_x", -1f);
+        float endY = extractJsonFloat(responseText, "end_y", -1f);
         String text = extractJsonString(responseText, "text");
-        return new RemoteCommand(commandId, type, x, y, text);
+        return new RemoteCommand(commandId, type, x, y, endX, endY, text);
     }
 
     static void completeCommand(Context context, RemoteCommand command, String status, String result) throws Exception {
@@ -322,13 +324,17 @@ final class DeviceApiClient {
         final String type;
         final float x;
         final float y;
+        final float endX;
+        final float endY;
         final String text;
 
-        RemoteCommand(String commandId, String type, float x, float y, String text) {
+        RemoteCommand(String commandId, String type, float x, float y, float endX, float endY, String text) {
             this.commandId = commandId;
             this.type = type;
             this.x = x;
             this.y = y;
+            this.endX = endX;
+            this.endY = endY;
             this.text = text;
         }
     }

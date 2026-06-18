@@ -57,7 +57,32 @@ public class TouchControlService extends AccessibilityService {
         return instance.dispatchGesture(gesture, null, null);
     }
 
+    static boolean longTapNormalized(float normalizedX, float normalizedY) {
+        if (instance == null) {
+            return false;
+        }
+
+        DisplayMetrics metrics = new DisplayMetrics();
+        WindowManager windowManager = (WindowManager) instance.getSystemService(WINDOW_SERVICE);
+        windowManager.getDefaultDisplay().getRealMetrics(metrics);
+
+        float x = clamp(normalizedX) * metrics.widthPixels;
+        float y = clamp(normalizedY) * metrics.heightPixels;
+
+        Path path = new Path();
+        path.moveTo(x, y);
+
+        GestureDescription gesture = new GestureDescription.Builder()
+                .addStroke(new GestureDescription.StrokeDescription(path, 0, 520))
+                .build();
+        return instance.dispatchGesture(gesture, null, null);
+    }
+
     static boolean swipeNormalized(float startX, float startY, float endX, float endY) {
+        return swipeNormalized(startX, startY, endX, endY, 220);
+    }
+
+    static boolean swipeNormalized(float startX, float startY, float endX, float endY, long durationMs) {
         if (instance == null) {
             return false;
         }
@@ -71,9 +96,22 @@ public class TouchControlService extends AccessibilityService {
         path.lineTo(clamp(endX) * metrics.widthPixels, clamp(endY) * metrics.heightPixels);
 
         GestureDescription gesture = new GestureDescription.Builder()
-                .addStroke(new GestureDescription.StrokeDescription(path, 0, 420))
+                .addStroke(new GestureDescription.StrokeDescription(path, 0, durationMs))
                 .build();
         return instance.dispatchGesture(gesture, null, null);
+    }
+
+    static boolean notifications() {
+        return performGlobalActionCompat(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS);
+    }
+
+    static boolean quickSettings() {
+        return performGlobalActionCompat(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS);
+    }
+
+    static boolean lockScreen() {
+        return android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P
+                && performGlobalActionCompat(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN);
     }
 
     static boolean back() {

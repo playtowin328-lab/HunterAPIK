@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.IBinder;
+import android.provider.Settings;
 
 import java.text.DateFormat;
 import java.util.Date;
@@ -24,7 +25,7 @@ public class HeartbeatService extends Service {
 
     private static final String CHANNEL_ID = "apk_agent_connection";
     private static final int NOTIFICATION_ID = 41;
-    private static final int HEARTBEAT_SECONDS = 5;
+    private static final int COMMAND_POLL_SECONDS = 1;
     private static final int MAX_COMMANDS_PER_TICK = 6;
 
     private ScheduledExecutorService executor;
@@ -67,10 +68,10 @@ public class HeartbeatService extends Service {
         }
 
         executor = Executors.newSingleThreadScheduledExecutor();
-        executor.scheduleWithFixedDelay(this::sendHeartbeat, 0, HEARTBEAT_SECONDS, TimeUnit.SECONDS);
+        executor.scheduleWithFixedDelay(this::agentTick, 0, COMMAND_POLL_SECONDS, TimeUnit.SECONDS);
     }
 
-    private void sendHeartbeat() {
+    private void agentTick() {
         SharedPreferences.Editor editor = AgentConfig.prefs(this).edit();
         String timestamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date());
 
@@ -139,12 +140,46 @@ public class HeartbeatService extends Service {
                 boolean dispatched = TouchControlService.tapNormalized(command.x, command.y);
                 result = dispatched ? "Tap dispatched." : "Tap dispatch failed.";
             }
+        } else if ("long_tap".equals(command.type)) {
+            if (!BuildConfig.FULL_CONTROL) {
+                result = "Long tap rejected. Lite build has no Accessibility control.";
+            } else if (!TouchControlService.isReady()) {
+                result = "Long tap rejected. Enable APK Agent Accessibility Service in Android settings.";
+            } else if (command.x < 0 || command.y < 0) {
+                result = "Long tap rejected. Coordinates are missing.";
+            } else {
+                boolean dispatched = TouchControlService.longTapNormalized(command.x, command.y);
+                result = dispatched ? "Long tap dispatched." : "Long tap dispatch failed.";
+            }
+        } else if ("swipe".equals(command.type)) {
+            if (!BuildConfig.FULL_CONTROL) {
+                result = "Swipe rejected. Lite build has no Accessibility control.";
+            } else if (!TouchControlService.isReady()) {
+                result = "Swipe rejected. Enable APK Agent Accessibility Service in Android settings.";
+            } else if (command.x < 0 || command.y < 0 || command.endX < 0 || command.endY < 0) {
+                result = "Swipe rejected. Coordinates are missing.";
+            } else {
+                boolean dispatched = TouchControlService.swipeNormalized(command.x, command.y, command.endX, command.endY);
+                result = dispatched ? "Swipe dispatched." : "Swipe dispatch failed.";
+            }
         } else if ("back".equals(command.type)) {
             result = BuildConfig.FULL_CONTROL && TouchControlService.back() ? "Back dispatched." : "Back failed or disabled in Lite build.";
         } else if ("home".equals(command.type)) {
             result = BuildConfig.FULL_CONTROL && TouchControlService.home() ? "Home dispatched." : "Home failed or disabled in Lite build.";
         } else if ("recents".equals(command.type)) {
             result = BuildConfig.FULL_CONTROL && TouchControlService.recents() ? "Recents dispatched." : "Recents failed or disabled in Lite build.";
+        } else if ("notifications".equals(command.type)) {
+            result = BuildConfig.FULL_CONTROL && TouchControlService.notifications() ? "Notifications opened." : "Notifications failed or disabled in Lite build.";
+        } else if ("quick_settings".equals(command.type)) {
+            result = BuildConfig.FULL_CONTROL && TouchControlService.quickSettings() ? "Quick settings opened." : "Quick settings failed or disabled in Lite build.";
+        } else if ("lock_screen".equals(command.type)) {
+            result = BuildConfig.FULL_CONTROL && TouchControlService.lockScreen() ? "Screen locked." : "Lock screen failed or disabled in Lite build.";
+        } else if ("open_settings".equals(command.type)) {
+            result = openSystemActivity(Settings.ACTION_SETTINGS) ? "Settings opened." : "Settings open failed.";
+        } else if ("open_wifi_settings".equals(command.type)) {
+            result = openSystemActivity(Settings.ACTION_WIFI_SETTINGS) ? "Wi-Fi settings opened." : "Wi-Fi settings open failed.";
+        } else if ("open_battery_settings".equals(command.type)) {
+            result = openSystemActivity(Settings.ACTION_BATTERY_SAVER_SETTINGS) ? "Battery settings opened." : "Battery settings open failed.";
         } else if ("swipe_up".equals(command.type)) {
             result = BuildConfig.FULL_CONTROL && TouchControlService.swipeNormalized(0.5f, 0.78f, 0.5f, 0.25f)
                     ? "Swipe up dispatched."
@@ -189,6 +224,16 @@ public class HeartbeatService extends Service {
 
         DeviceApiClient.completeCommand(this, command, "acknowledged", result);
         return "\nКоманда: " + command.type + "\n" + result;
+    }
+
+    private boolean openSystemActivity(String action) {
+        try {
+            Intent intent = new Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            return true;
+        } catch (Exception exc) {
+            return false;
+        }
     }
 
     private void stopAgent() {

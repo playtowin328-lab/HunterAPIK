@@ -352,6 +352,30 @@ function render() {
       sendSimpleDeviceCommand(device, "recents", controlNote, "Recent apps отправлен.");
     });
 
+    card.querySelector(".notifications-button").addEventListener("click", () => {
+      sendSimpleDeviceCommand(device, "notifications", controlNote, "Шторка уведомлений отправлена.");
+    });
+
+    card.querySelector(".quick-settings-button").addEventListener("click", () => {
+      sendSimpleDeviceCommand(device, "quick_settings", controlNote, "Быстрые настройки отправлены.");
+    });
+
+    card.querySelector(".lock-screen-button").addEventListener("click", () => {
+      sendSimpleDeviceCommand(device, "lock_screen", controlNote, "Блокировка экрана отправлена.");
+    });
+
+    card.querySelector(".settings-button").addEventListener("click", () => {
+      sendSimpleDeviceCommand(device, "open_settings", controlNote, "Открытие Settings отправлено.");
+    });
+
+    card.querySelector(".wifi-settings-button").addEventListener("click", () => {
+      sendSimpleDeviceCommand(device, "open_wifi_settings", controlNote, "Открытие Wi-Fi отправлено.");
+    });
+
+    card.querySelector(".battery-settings-button").addEventListener("click", () => {
+      sendSimpleDeviceCommand(device, "open_battery_settings", controlNote, "Открытие Battery отправлено.");
+    });
+
     card.querySelector(".swipe-up-button").addEventListener("click", () => {
       sendSimpleDeviceCommand(device, "swipe_up", controlNote, "Swipe up отправлен.");
     });
@@ -436,21 +460,65 @@ function render() {
       }
     });
 
-    screenImage.addEventListener("click", async (event) => {
+    let pointerStart = null;
+    const normalizedPoint = (event) => {
+      const rect = screenImage.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+        y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+      };
+    };
+
+    screenImage.addEventListener("pointerdown", (event) => {
+      pointerStart = normalizedPoint(event);
+      screenImage.setPointerCapture?.(event.pointerId);
+    });
+
+    screenImage.addEventListener("pointercancel", () => {
+      pointerStart = null;
+    });
+
+    screenImage.addEventListener("pointerup", async (event) => {
       if (!device.online) {
-        controlNote.textContent = "Тап недоступен, пока устройство offline.";
+        controlNote.textContent = "Жест недоступен, пока устройство offline.";
+        pointerStart = null;
         return;
       }
 
-      const rect = screenImage.getBoundingClientRect();
-      const x = (event.clientX - rect.left) / rect.width;
-      const y = (event.clientY - rect.top) / rect.height;
+      const start = pointerStart || normalizedPoint(event);
+      const end = normalizedPoint(event);
+      const distance = Math.hypot(end.x - start.x, end.y - start.y);
+      pointerStart = null;
+
       try {
-        await sendCommand(device, "tap", {
-          x: Math.max(0, Math.min(1, x)),
-          y: Math.max(0, Math.min(1, y)),
-        });
-        controlNote.textContent = `Тап отправлен: ${Math.round(x * 100)}%, ${Math.round(y * 100)}%.`;
+        if (distance > 0.06) {
+          await sendCommand(device, "swipe", {
+            x: start.x,
+            y: start.y,
+            end_x: end.x,
+            end_y: end.y,
+          });
+          controlNote.textContent = "Свайп по экрану отправлен.";
+          return;
+        }
+
+        await sendCommand(device, "tap", { x: end.x, y: end.y });
+        controlNote.textContent = `Тап отправлен: ${Math.round(end.x * 100)}%, ${Math.round(end.y * 100)}%.`;
+      } catch (error) {
+        controlNote.textContent = error.message;
+      }
+    });
+
+    screenImage.addEventListener("dblclick", async (event) => {
+      if (!device.online) {
+        controlNote.textContent = "Long tap недоступен, пока устройство offline.";
+        return;
+      }
+
+      const point = normalizedPoint(event);
+      try {
+        await sendCommand(device, "long_tap", point);
+        controlNote.textContent = "Long tap отправлен.";
       } catch (error) {
         controlNote.textContent = error.message;
       }
