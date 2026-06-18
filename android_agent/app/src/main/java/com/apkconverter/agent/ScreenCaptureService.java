@@ -18,6 +18,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.util.DisplayMetrics;
 import android.view.WindowManager;
 
@@ -39,6 +40,7 @@ public class ScreenCaptureService extends Service {
     private VirtualDisplay virtualDisplay;
     private ImageReader imageReader;
     private HandlerThread handlerThread;
+    private PowerManager.WakeLock wakeLock;
     private final ExecutorService uploadExecutor = Executors.newSingleThreadExecutor();
     private long lastUploadAt;
 
@@ -87,6 +89,7 @@ public class ScreenCaptureService extends Service {
         if (mediaProjection != null) {
             return;
         }
+        acquireWakeLock();
 
         MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
         mediaProjection = manager.getMediaProjection(resultCode, resultData);
@@ -112,7 +115,7 @@ public class ScreenCaptureService extends Service {
 
         imageReader.setOnImageAvailableListener(reader -> {
             long now = System.currentTimeMillis();
-            if (now - lastUploadAt < 2000) {
+            if (now - lastUploadAt < 900) {
                 Image skipped = reader.acquireLatestImage();
                 if (skipped != null) {
                     skipped.close();
@@ -191,8 +194,29 @@ public class ScreenCaptureService extends Service {
             handlerThread.quitSafely();
             handlerThread = null;
         }
+        releaseWakeLock();
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
+    }
+
+    private void acquireWakeLock() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            return;
+        }
+        PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "apkconverter:screen-capture"
+        );
+        wakeLock.setReferenceCounted(false);
+        wakeLock.acquire(30 * 60 * 1000L);
+    }
+
+    private void releaseWakeLock() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
+        wakeLock = null;
     }
 
     private Notification buildNotification(String status) {

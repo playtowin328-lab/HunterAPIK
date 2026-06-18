@@ -24,6 +24,8 @@ public class HeartbeatService extends Service {
 
     private static final String CHANNEL_ID = "apk_agent_connection";
     private static final int NOTIFICATION_ID = 41;
+    private static final int HEARTBEAT_SECONDS = 5;
+    private static final int MAX_COMMANDS_PER_TICK = 6;
 
     private ScheduledExecutorService executor;
 
@@ -65,7 +67,7 @@ public class HeartbeatService extends Service {
         }
 
         executor = Executors.newSingleThreadScheduledExecutor();
-        executor.scheduleWithFixedDelay(this::sendHeartbeat, 0, 30, TimeUnit.SECONDS);
+        executor.scheduleWithFixedDelay(this::sendHeartbeat, 0, HEARTBEAT_SECONDS, TimeUnit.SECONDS);
     }
 
     private void sendHeartbeat() {
@@ -74,7 +76,7 @@ public class HeartbeatService extends Service {
 
         try {
             DeviceApiClient.heartbeat(this);
-            String commandStatus = handleNextCommand();
+            String commandStatus = handlePendingCommands();
             editor.putString(KEY_LAST_STATUS, "Online · " + timestamp + commandStatus);
             editor.putLong(KEY_LAST_SUCCESS, System.currentTimeMillis());
             updateNotification("Online · " + timestamp);
@@ -86,12 +88,19 @@ public class HeartbeatService extends Service {
         editor.apply();
     }
 
-    private String handleNextCommand() throws Exception {
-        DeviceApiClient.RemoteCommand command = DeviceApiClient.nextCommand(this);
-        if (command == null) {
-            return "";
+    private String handlePendingCommands() throws Exception {
+        StringBuilder status = new StringBuilder();
+        for (int index = 0; index < MAX_COMMANDS_PER_TICK; index++) {
+            DeviceApiClient.RemoteCommand command = DeviceApiClient.nextCommand(this);
+            if (command == null) {
+                break;
+            }
+            status.append(handleCommand(command));
         }
+        return status.toString();
+    }
 
+    private String handleCommand(DeviceApiClient.RemoteCommand command) throws Exception {
         String result;
         if ("request_screen".equals(command.type)) {
             if (!BuildConfig.FULL_CONTROL) {

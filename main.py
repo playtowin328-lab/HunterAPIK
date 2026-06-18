@@ -342,6 +342,7 @@ def connect_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Собрать APK", callback_data="connect_build_now"),
                 InlineKeyboardButton(text="Как собрать", callback_data="connect_build_help"),
             ],
+            [InlineKeyboardButton(text="Собрать Full APK для экрана и управления", callback_data="connect_build_full")],
             [InlineKeyboardButton(text="Полная проверка", callback_data="connect_check")],
             [
                 InlineKeyboardButton(text="Мои устройства", callback_data="my_devices"),
@@ -2127,6 +2128,11 @@ async def callbacks(callback: CallbackQuery) -> None:
     if action == "connect_build_now":
         await callback.answer("Starting APK build...")
         await start_apk_build(callback.message, callback.from_user.id, "Hunter Agent Lite", "lite")
+        return
+
+    if action == "connect_build_full":
+        await callback.answer("Starting Full APK build...")
+        await start_apk_build(callback.message, callback.from_user.id, "Hunter Agent Full", "full")
         return
 
     if action == "pair_device":

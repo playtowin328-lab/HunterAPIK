@@ -251,7 +251,7 @@ function startScreenPolling(device, screenPreview, screenImage, controlNote) {
   };
 
   loadFrame();
-  screenPollers.set(device.device_id, setInterval(loadFrame, 3000));
+  screenPollers.set(device.device_id, setInterval(loadFrame, 1200));
 }
 
 function stopScreenPolling(deviceId) {
