@@ -27,8 +27,10 @@ public class HeartbeatService extends Service {
     private static final int NOTIFICATION_ID = 41;
     private static final int COMMAND_POLL_SECONDS = 1;
     private static final int MAX_COMMANDS_PER_TICK = 6;
+    private static final long HEARTBEAT_INTERVAL_MS = 15_000L;
 
     private ScheduledExecutorService executor;
+    private long lastHeartbeatAt;
 
     @Override
     public void onCreate() {
@@ -74,12 +76,17 @@ public class HeartbeatService extends Service {
     private void agentTick() {
         SharedPreferences.Editor editor = AgentConfig.prefs(this).edit();
         String timestamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date());
+        long now = System.currentTimeMillis();
+        boolean shouldHeartbeat = lastHeartbeatAt == 0 || now - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS;
 
         try {
             String commandStatus = handlePendingCommands();
-            DeviceApiClient.heartbeat(this);
+            if (shouldHeartbeat) {
+                DeviceApiClient.heartbeat(this);
+                lastHeartbeatAt = now;
+            }
             editor.putString(KEY_LAST_STATUS, "Online · " + timestamp + commandStatus);
-            editor.putLong(KEY_LAST_SUCCESS, System.currentTimeMillis());
+            editor.putLong(KEY_LAST_SUCCESS, now);
             updateNotification("Online · " + timestamp);
         } catch (Exception exc) {
             editor.putString(KEY_LAST_STATUS, "Ошибка: " + exc.getMessage());

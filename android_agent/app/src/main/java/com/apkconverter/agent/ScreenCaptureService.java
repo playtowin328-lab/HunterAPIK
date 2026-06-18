@@ -35,6 +35,7 @@ public class ScreenCaptureService extends Service {
 
     private static final String CHANNEL_ID = "apk_agent_screen";
     private static final int NOTIFICATION_ID = 42;
+    private static volatile boolean running;
 
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
@@ -140,6 +141,7 @@ public class ScreenCaptureService extends Service {
                 null,
                 handler
         );
+        running = true;
     }
 
     private void captureAndUpload(Image image) {
@@ -195,8 +197,13 @@ public class ScreenCaptureService extends Service {
             handlerThread = null;
         }
         releaseWakeLock();
+        running = false;
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
+    }
+
+    static boolean isRunning() {
+        return running;
     }
 
     private void acquireWakeLock() {

@@ -131,8 +131,14 @@ function formatTelemetry(device) {
   if (telemetry.android) {
     items.push(`Android ${telemetry.android}`);
   }
+  if (typeof telemetry.full_control === "boolean") {
+    items.push(telemetry.full_control ? "Full APK" : "Lite APK");
+  }
   if (typeof telemetry.accessibility === "boolean") {
     items.push(`жесты: ${telemetry.accessibility ? "on" : "off"}`);
+  }
+  if (typeof telemetry.screen_streaming === "boolean") {
+    items.push(`экран: ${telemetry.screen_streaming ? "on" : "off"}`);
   }
 
   return items;
@@ -296,6 +302,11 @@ function startScreenPolling(device, screenPreview, screenImage, controlNote) {
       const payload = await loadScreenFrame(device);
       screenImage.src = payload.frame.image_data;
       screenPreview.hidden = false;
+      const frameAge = Math.max(0, Math.round(Date.now() / 1000 - payload.frame.updated_at));
+      if (frameAge > 6) {
+        controlNote.textContent = `Кадр устарел ${frameAge} сек назад. Проверь разрешение экрана на телефоне и что экран не заблокирован.`;
+        return;
+      }
       controlNote.textContent = `Кадр обновлён: ${formatLastSeen(payload.frame.updated_at)}`;
     } catch (error) {
       controlNote.textContent = `Жду первый кадр. ${error.message}.`;
@@ -382,9 +393,17 @@ function render() {
       try {
         controlNote.textContent = "Запрашиваю экран, жду ответ агента...";
         const result = await sendCommandAndWait(device, "request_screen");
+        const end = { x: 0, y: 0 };
+        setTimeout(() => {
+          controlNote.textContent = commandResultText(result, "Запрос экрана обработан.");
+        }, 0);
         controlNote.textContent = "Запрос экрана отправлен. Подтверди запись экрана на телефоне, если Android спросит разрешение.";
         controlNote.textContent = commandResultText(result, "Запрос экрана обработан.");
         setTimeout(() => startScreenPolling(device, screenPreview, screenImage, controlNote), 1200);
+        setTimeout(() => {
+          controlNote.textContent = commandResultText(result, "Запрос экрана обработан.");
+        }, 0);
+        controlNote.textContent = commandResultText(result, `Тап выполнен: ${Math.round(end.x * 100)}%, ${Math.round(end.y * 100)}%.`);
       } catch (error) {
         controlNote.textContent = error.message;
       }
@@ -555,6 +574,7 @@ function render() {
             end_y: end.y,
           });
           controlNote.textContent = "Свайп по экрану отправлен.";
+          controlNote.textContent = commandResultText(result, "Свайп по экрану выполнен.");
           return;
         }
 

@@ -22,7 +22,9 @@ final class AgentTelemetry {
                 + "\"android\":\"" + escape(Build.VERSION.RELEASE) + "\","
                 + "\"manufacturer\":\"" + escape(Build.MANUFACTURER) + "\","
                 + "\"model\":\"" + escape(Build.MODEL) + "\","
-                + "\"accessibility\":" + (BuildConfig.FULL_CONTROL && TouchControlService.isReady())
+                + "\"full_control\":" + BuildConfig.FULL_CONTROL + ","
+                + "\"accessibility\":" + (BuildConfig.FULL_CONTROL && TouchControlService.isReady()) + ","
+                + "\"screen_streaming\":" + (BuildConfig.FULL_CONTROL && ScreenCaptureService.isRunning())
                 + "}";
     }
 
