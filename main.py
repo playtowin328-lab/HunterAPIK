@@ -202,6 +202,10 @@ def main_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🚀 Railway", callback_data="railway_info"),
             ],
             [
+                InlineKeyboardButton(text="🛠 Собрать APK", callback_data="connect_build_help"),
+                InlineKeyboardButton(text="✅ Полная проверка", callback_data="connect_check"),
+            ],
+            [
                 InlineKeyboardButton(text="📄 PDF", callback_data="make_pdf"),
                 InlineKeyboardButton(text="🖼 PNG", callback_data="make_png"),
                 InlineKeyboardButton(text="📝 Текст", callback_data="make_text"),
@@ -1603,6 +1607,14 @@ async def handle_web_app_data(message: Message) -> None:
         payload = json.loads(message.web_app_data.data)
     except (TypeError, json.JSONDecodeError):
         await message.answer("Мини-апп прислал данные, но я не смог их прочитать.")
+        return
+
+    if payload.get("event") == "request_pair":
+        await send_pairing_details(message, message.from_user.id)
+        return
+
+    if payload.get("event") == "request_connect":
+        await send_connect(message)
         return
 
     if payload.get("event") != "device_status_changed":

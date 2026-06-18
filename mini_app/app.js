@@ -12,6 +12,10 @@ const deviceType = document.querySelector("#deviceType");
 const deviceList = document.querySelector("#deviceList");
 const currentDeviceText = document.querySelector("#currentDeviceText");
 const connectCurrentDevice = document.querySelector("#connectCurrentDevice");
+const setupText = document.querySelector("#setupText");
+const installAgentButton = document.querySelector("#installAgentButton");
+const requestPairButton = document.querySelector("#requestPairButton");
+const refreshButton = document.querySelector("#refreshButton");
 const totalDevices = document.querySelector("#totalDevices");
 const onlineDevices = document.querySelector("#onlineDevices");
 const userName = document.querySelector("#userName");
@@ -44,6 +48,23 @@ function getLocalDeviceId() {
   const newId = crypto.randomUUID();
   localStorage.setItem(localDeviceIdKey, newId);
   return newId;
+}
+
+function openExternal(url) {
+  if (tg?.openLink) {
+    tg.openLink(url);
+    return;
+  }
+  window.open(url, "_blank", "noopener");
+}
+
+function sendBotEvent(event, payload = {}) {
+  if (!tg?.sendData) {
+    setupText.textContent = "Открой мини-апп из Telegram, чтобы бот мог прислать QR в чат.";
+    return false;
+  }
+  tg.sendData(JSON.stringify({ event, ...payload }));
+  return true;
 }
 
 function detectCurrentDevice() {
@@ -244,8 +265,12 @@ async function sendSimpleDeviceCommand(device, type, controlNote, successText) {
 function render() {
   deviceList.innerHTML = "";
   totalDevices.textContent = devices.length;
-  onlineDevices.textContent = devices.filter((device) => device.online).length;
+  const onlineCount = devices.filter((device) => device.online).length;
+  onlineDevices.textContent = onlineCount;
   userName.textContent = profileName;
+  setupText.textContent = devices.length
+    ? `${devices.length} устройств, online: ${onlineCount}.`
+    : "Установи APK, получи QR и запусти Android Agent на телефоне.";
 
   if (!devices.length) {
     deviceList.innerHTML = `<p class="empty-state">Пока нет подключенных устройств. Запусти агент на телефоне или нажми "Подключить" для проверки.</p>`;
@@ -495,13 +520,8 @@ deviceForm.addEventListener("submit", async (event) => {
 });
 
 connectCurrentDevice.addEventListener("click", async () => {
-  currentDeviceText.textContent = "Opening Android Agent installer...";
-  const url = `${apiBaseUrl}/agent`;
-  if (tg?.openLink) {
-    tg.openLink(url);
-    return;
-  }
-  window.open(url, "_blank", "noopener");
+  currentDeviceText.textContent = "Открываю установку Android Agent...";
+  openExternal(`${apiBaseUrl}/agent`);
   return;
 
   const currentDevice = detectCurrentDevice();
@@ -519,6 +539,23 @@ connectCurrentDevice.addEventListener("click", async () => {
   } catch (error) {
     currentDeviceText.textContent = `${error.message}. Для продакшена устройство должен добавлять агент.`;
   }
+});
+
+installAgentButton.addEventListener("click", () => {
+  setupText.textContent = "Открываю страницу установки APK...";
+  openExternal(`${apiBaseUrl}/agent`);
+});
+
+requestPairButton.addEventListener("click", () => {
+  const sent = sendBotEvent("request_pair");
+  setupText.textContent = sent
+    ? "QR отправлен в чат с ботом."
+    : "Открой мини-апп из Telegram, чтобы получить QR в чат.";
+});
+
+refreshButton.addEventListener("click", async () => {
+  setupText.textContent = "Обновляю список устройств...";
+  await refreshDevices();
 });
 
 themeButton.addEventListener("click", () => {

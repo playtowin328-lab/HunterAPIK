@@ -104,6 +104,65 @@ h1 {
   margin-bottom: 14px;
 }
 
+.setup-panel {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.setup-panel h2 {
+  font-size: 19px;
+}
+
+.setup-panel p:not(.eyebrow) {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.setup-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.setup-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.setup-steps span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-strong);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.setup-steps strong {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+}
+
 .summary > div {
   min-width: 0;
   padding: 12px;
@@ -138,6 +197,10 @@ h1 {
   gap: 8px;
   align-items: end;
   margin-bottom: 16px;
+}
+
+.hidden {
+  display: none !important;
 }
 
 .connect-panel {
@@ -401,6 +464,10 @@ h2 {
   color: var(--danger);
 }
 
+.ghost-button.neutral {
+  color: var(--accent-strong);
+}
+
 .empty-state {
   padding: 16px;
   border: 1px dashed var(--line);
@@ -439,6 +506,14 @@ h2 {
 }
 
 @media (max-width: 520px) {
+  .setup-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .setup-steps {
+    grid-template-columns: 1fr;
+  }
+
   .device-form {
     grid-template-columns: 1fr;
   }

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>APK Converter Devices</title>
+    <title>Hunter Agent Devices</title>
     <link rel="stylesheet" href="./styles.css">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
@@ -11,11 +11,29 @@
     <main class="app-shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">APK Converter</p>
-          <h1>Мои устройства</h1>
+          <p class="eyebrow">Hunter Agent</p>
+          <h1>Пульт устройств</h1>
         </div>
-        <button class="icon-button" id="themeButton" type="button" aria-label="Переключить тему">◐</button>
+        <button class="icon-button" id="themeButton" type="button" aria-label="Сменить тему">◐</button>
       </header>
+
+      <section class="setup-panel" aria-label="Подключение телефона">
+        <div>
+          <p class="eyebrow">Подключение</p>
+          <h2>Установи агент и получи QR</h2>
+          <p id="setupText">Телефон появится здесь после установки APK, pairing и запуска Android Agent.</p>
+        </div>
+        <div class="setup-actions">
+          <button class="primary-button" id="installAgentButton" type="button">Скачать APK</button>
+          <button class="secondary-button" id="requestPairButton" type="button">Получить QR</button>
+          <button class="ghost-button neutral" id="refreshButton" type="button">Обновить</button>
+        </div>
+        <div class="setup-steps" aria-label="Шаги подключения">
+          <span><strong>1</strong> APK</span>
+          <span><strong>2</strong> QR</span>
+          <span><strong>3</strong> Online</span>
+        </div>
+      </section>
 
       <section class="summary" aria-label="Статистика устройств">
         <div>
@@ -24,7 +42,7 @@
         </div>
         <div>
           <span class="metric" id="onlineDevices">0</span>
-          <span class="label">Активны</span>
+          <span class="label">Online</span>
         </div>
         <div>
           <span class="metric" id="userName">Я</span>
@@ -32,10 +50,10 @@
         </div>
       </section>
 
-      <form class="device-form" id="deviceForm">
+      <form class="device-form hidden" id="deviceForm">
         <label>
           <span>Модель</span>
-          <input id="deviceName" name="deviceName" type="text" value="POCO C75" autocomplete="off" maxlength="40" required>
+          <input id="deviceName" name="deviceName" type="text" value="POCO C75" autocomplete="off" maxlength="40">
         </label>
         <label>
           <span>Тип</span>
@@ -50,10 +68,10 @@
 
       <section class="connect-panel" aria-label="Подключение текущего устройства">
         <div>
-          <h2>Это устройство</h2>
+          <h2>Текущий браузер</h2>
           <p id="currentDeviceText">Определяю платформу...</p>
         </div>
-        <button class="secondary-button" id="connectCurrentDevice" type="button">Подключить</button>
+        <button class="secondary-button" id="connectCurrentDevice" type="button">Открыть установку</button>
       </section>
 
       <section class="device-list" id="deviceList" aria-label="Список устройств"></section>
@@ -78,27 +96,27 @@
             <button class="secondary-button stop-screen-button" type="button">Стоп экран</button>
             <button class="secondary-button files-button" type="button">Файлы</button>
             <button class="secondary-button commands-button" type="button">Команды</button>
-            <button class="ghost-button id-button" type="button">ID</button>
+            <button class="ghost-button id-button neutral" type="button">ID</button>
           </div>
           <div class="nav-actions">
-            <button class="ghost-button back-button" type="button">Back</button>
-            <button class="ghost-button home-button" type="button">Home</button>
-            <button class="ghost-button recents-button" type="button">Recent</button>
+            <button class="ghost-button neutral back-button" type="button">Back</button>
+            <button class="ghost-button neutral home-button" type="button">Home</button>
+            <button class="ghost-button neutral recents-button" type="button">Recent</button>
           </div>
           <div class="swipe-actions">
-            <button class="ghost-button swipe-up-button" type="button">Swipe ↑</button>
-            <button class="ghost-button swipe-down-button" type="button">Swipe ↓</button>
-            <button class="ghost-button swipe-left-button" type="button">Swipe ←</button>
-            <button class="ghost-button swipe-right-button" type="button">Swipe →</button>
+            <button class="ghost-button neutral swipe-up-button" type="button">Swipe ↑</button>
+            <button class="ghost-button neutral swipe-down-button" type="button">Swipe ↓</button>
+            <button class="ghost-button neutral swipe-left-button" type="button">Swipe ←</button>
+            <button class="ghost-button neutral swipe-right-button" type="button">Swipe →</button>
           </div>
           <div class="text-actions">
             <input class="remote-text-input" type="text" placeholder="Текст на телефон" maxlength="240">
             <button class="secondary-button send-text-button" type="button">Send</button>
-            <button class="ghost-button enter-button" type="button">Enter</button>
-            <button class="ghost-button delete-key-button" type="button">Del</button>
+            <button class="ghost-button neutral enter-button" type="button">Enter</button>
+            <button class="ghost-button neutral delete-key-button" type="button">Del</button>
           </div>
           <div class="manage-actions">
-            <button class="ghost-button rename-device-button" type="button">Rename</button>
+            <button class="ghost-button neutral rename-device-button" type="button">Rename</button>
             <button class="ghost-button revoke-device-button" type="button">Revoke</button>
             <button class="ghost-button delete-device-button" type="button">Delete</button>
           </div>
