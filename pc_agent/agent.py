@@ -1,13 +1,17 @@
 import argparse
+import base64
 import json
 import os
 import platform
+import re
+import shutil
 import socket
+import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
-from urllib import error, request
+from urllib import error, parse, request
 
 
 APP_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "HunterPCAgent"
@@ -49,6 +53,251 @@ def api_request(method: str, url: str, payload: dict | None = None, secret: str 
         raise RuntimeError(f"HTTP {exc.code}: {text}") from exc
 
 
+def adb_path() -> str:
+    configured = os.getenv("ADB_PATH", "").strip()
+    if configured:
+        return configured
+    found = shutil.which("adb")
+    if found:
+        return found
+    return "adb"
+
+
+def adb_run(serial: str | None, args: list[str], timeout: int = 12, binary: bool = False) -> bytes | str:
+    command = [adb_path()]
+    if serial:
+        command += ["-s", serial]
+    command += args
+    completed = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(stderr or f"adb exited with {completed.returncode}")
+    if binary:
+        return completed.stdout
+    return completed.stdout.decode("utf-8", errors="replace").strip()
+
+
+def adb_devices() -> list[str]:
+    output = adb_run(None, ["devices"], timeout=8)
+    devices: list[str] = []
+    for line in str(output).splitlines()[1:]:
+        parts = line.strip().split()
+        if len(parts) >= 2 and parts[1] == "device":
+            devices.append(parts[0])
+    return devices
+
+
+def adb_shell(serial: str, command: str, timeout: int = 12) -> str:
+    return str(adb_run(serial, ["shell", command], timeout=timeout))
+
+
+def adb_prop(serial: str, name: str) -> str:
+    try:
+        return adb_shell(serial, f"getprop {name}", timeout=6).strip()
+    except Exception:
+        return ""
+
+
+def adb_device_id(serial: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", serial).strip("-")
+    return f"adb-{safe[:80]}"
+
+
+def adb_device_name(serial: str) -> str:
+    manufacturer = adb_prop(serial, "ro.product.manufacturer")
+    model = adb_prop(serial, "ro.product.model")
+    name = " ".join(part for part in [manufacturer, model] if part).strip()
+    return name[:60] or f"Android ADB {serial}"
+
+
+def adb_screen_size(serial: str) -> tuple[int, int]:
+    output = adb_shell(serial, "wm size", timeout=6)
+    match = re.search(r"(\d+)x(\d+)", output)
+    if not match:
+        return 1080, 1920
+    return int(match.group(1)), int(match.group(2))
+
+
+def adb_coord(serial: str, x: float, y: float) -> tuple[int, int]:
+    width, height = adb_screen_size(serial)
+    return max(0, min(width - 1, round(x * width))), max(0, min(height - 1, round(y * height)))
+
+
+def adb_input_text(value: str) -> str:
+    # Android input text uses %s for spaces and needs shell-sensitive chars removed.
+    clean = re.sub(r"[^0-9A-Za-zА-Яа-яЁё _.,@:+\\-/]", "", value)[:200]
+    return clean.replace(" ", "%s")
+
+
+def adb_register_device(config: dict, serial: str) -> dict:
+    server = config["server_url"].rstrip("/")
+    android_version = adb_prop(serial, "ro.build.version.release")
+    sdk = adb_prop(serial, "ro.build.version.sdk")
+    device_id = adb_device_id(serial)
+    payload = {
+        "owner_id": config["owner_id"],
+        "device_id": device_id,
+        "bridge_device_id": config["device_id"],
+        "name": adb_device_name(serial),
+        "type": "phone",
+        "platform": f"Android {android_version or '?'} / SDK {sdk or '?'} via ADB",
+        "agent": "adb-bridge",
+        "telemetry": {
+            "adb_serial": serial,
+            "bridge_device_id": config["device_id"],
+            "bridge_name": config["device_name"],
+            "transport": "adb",
+            "screen": "adb screencap",
+            "control": "adb shell input",
+        },
+    }
+    return api_request("POST", f"{server}/api/devices/heartbeat", payload, config["device_secret"])
+
+
+def adb_next_command(config: dict, device_id: str) -> dict | None:
+    server = config["server_url"].rstrip("/")
+    query = parse.urlencode(
+        {
+            "owner_id": config["owner_id"],
+            "device_id": device_id,
+            "bridge_device_id": config["device_id"],
+        }
+    )
+    url = (
+        f"{server}/api/devices/commands/next"
+        f"?{query}"
+    )
+    data = api_request("GET", url, secret=config["device_secret"])
+    return data.get("command")
+
+
+def adb_complete_command(config: dict, device_id: str, command: dict, status: str, result: str) -> None:
+    server = config["server_url"].rstrip("/")
+    payload = {
+        "owner_id": config["owner_id"],
+        "device_id": device_id,
+        "bridge_device_id": config["device_id"],
+        "command_id": command["command_id"],
+        "status": status,
+        "result": result[:500],
+    }
+    api_request("POST", f"{server}/api/devices/commands/complete", payload, config["device_secret"])
+
+
+def adb_upload_screen(config: dict, device_id: str, serial: str) -> str:
+    server = config["server_url"].rstrip("/")
+    image = adb_run(serial, ["exec-out", "screencap", "-p"], timeout=15, binary=True)
+    if not isinstance(image, bytes) or not image.startswith(b"\x89PNG"):
+        raise RuntimeError("ADB returned an invalid screen frame")
+    payload = {
+        "owner_id": config["owner_id"],
+        "device_id": device_id,
+        "bridge_device_id": config["device_id"],
+        "image_base64": base64.b64encode(image).decode("ascii"),
+    }
+    api_request("POST", f"{server}/api/devices/screen", payload, config["device_secret"])
+    return f"Screen uploaded: {len(image) // 1024} KB"
+
+
+def adb_handle_command(config: dict, serial: str, device_id: str, command: dict) -> str:
+    command_type = command.get("type", "")
+    payload = command.get("payload") or {}
+
+    if command_type in {"request_screen", "ping"}:
+        return adb_upload_screen(config, device_id, serial)
+    if command_type == "stop_screen":
+        return "ADB screen is on-demand; nothing to stop."
+    if command_type == "tap":
+        x, y = adb_coord(serial, float(payload.get("x", 0)), float(payload.get("y", 0)))
+        adb_shell(serial, f"input tap {x} {y}", timeout=6)
+        return f"Tap {x},{y}"
+    if command_type == "long_tap":
+        x, y = adb_coord(serial, float(payload.get("x", 0)), float(payload.get("y", 0)))
+        adb_shell(serial, f"input swipe {x} {y} {x} {y} 650", timeout=8)
+        return f"Long tap {x},{y}"
+    if command_type == "swipe":
+        x1, y1 = adb_coord(serial, float(payload.get("x", 0)), float(payload.get("y", 0)))
+        x2, y2 = adb_coord(serial, float(payload.get("end_x", 0)), float(payload.get("end_y", 0)))
+        adb_shell(serial, f"input swipe {x1} {y1} {x2} {y2} 220", timeout=8)
+        return f"Swipe {x1},{y1} -> {x2},{y2}"
+    if command_type == "back":
+        adb_shell(serial, "input keyevent KEYCODE_BACK", timeout=6)
+        return "Back"
+    if command_type == "home":
+        adb_shell(serial, "input keyevent KEYCODE_HOME", timeout=6)
+        return "Home"
+    if command_type == "recents":
+        adb_shell(serial, "input keyevent KEYCODE_APP_SWITCH", timeout=6)
+        return "Recents"
+    if command_type == "notifications":
+        adb_shell(serial, "cmd statusbar expand-notifications", timeout=6)
+        return "Notifications opened"
+    if command_type == "quick_settings":
+        adb_shell(serial, "cmd statusbar expand-settings", timeout=6)
+        return "Quick settings opened"
+    if command_type == "lock_screen":
+        adb_shell(serial, "input keyevent KEYCODE_POWER", timeout=6)
+        return "Power key"
+    if command_type == "open_settings":
+        adb_shell(serial, "am start -a android.settings.SETTINGS", timeout=8)
+        return "Settings opened"
+    if command_type == "open_wifi_settings":
+        adb_shell(serial, "am start -a android.settings.WIFI_SETTINGS", timeout=8)
+        return "Wi-Fi settings opened"
+    if command_type == "open_battery_settings":
+        adb_shell(serial, "am start -a android.settings.BATTERY_SAVER_SETTINGS", timeout=8)
+        return "Battery settings opened"
+    if command_type == "swipe_up":
+        adb_shell(serial, "input swipe 500 1600 500 500 220", timeout=8)
+        return "Swipe up"
+    if command_type == "swipe_down":
+        adb_shell(serial, "input swipe 500 500 500 1600 220", timeout=8)
+        return "Swipe down"
+    if command_type == "swipe_left":
+        adb_shell(serial, "input swipe 900 900 120 900 220", timeout=8)
+        return "Swipe left"
+    if command_type == "swipe_right":
+        adb_shell(serial, "input swipe 120 900 900 900 220", timeout=8)
+        return "Swipe right"
+    if command_type == "input_text":
+        text = adb_input_text(str(payload.get("text", "")))
+        if not text:
+            return "No text to input"
+        adb_shell(serial, f"input text {text}", timeout=8)
+        return "Text input"
+    if command_type == "key_enter":
+        adb_shell(serial, "input keyevent KEYCODE_ENTER", timeout=6)
+        return "Enter"
+    if command_type == "key_delete":
+        adb_shell(serial, "input keyevent KEYCODE_DEL", timeout=6)
+        return "Delete"
+    if command_type == "request_actions":
+        return "ADB bridge supports screen, tap, long tap, swipe, navigation keys and settings shortcuts."
+    if command_type == "request_files":
+        return "File browsing is not enabled in ADB bridge yet."
+    return f"Unsupported ADB command: {command_type}"
+
+
+def adb_bridge_tick(config: dict) -> None:
+    for serial in adb_devices():
+        device_id = adb_device_id(serial)
+        adb_register_device(config, serial)
+        command = adb_next_command(config, device_id)
+        if not command:
+            continue
+        try:
+            result = adb_handle_command(config, serial, device_id, command)
+            adb_complete_command(config, device_id, command, "acknowledged", result)
+        except Exception as exc:
+            adb_complete_command(config, device_id, command, "failed", str(exc))
+
+
 def claim_pairing(config: dict, server_url: str, code: str) -> dict:
     server = server_url.rstrip("/")
     payload = {
@@ -85,15 +334,20 @@ def heartbeat(config: dict) -> None:
     api_request("POST", f"{server}/api/devices/heartbeat", payload, config["device_secret"])
 
 
-def run_loop(config: dict, interval: int) -> None:
+def run_loop(config: dict, interval: int, adb_enabled: bool) -> None:
     if not config.get("server_url") or not config.get("owner_id") or not config.get("device_secret"):
         raise RuntimeError("PC Agent is not paired yet. Run: hunter-pc-agent.exe pair --server URL --code 123456")
 
     print("Hunter PC Agent started. Keep this window open.")
-    print("Remote desktop tip: use WireGuard + RDP/SSH/RustDesk for screen control.")
+    if adb_enabled:
+        print("ADB bridge enabled. Connect an Android phone with USB debugging or Wireless debugging.")
+    else:
+        print("Remote desktop tip: use WireGuard + RDP/SSH/RustDesk for screen control.")
     while True:
         try:
             heartbeat(config)
+            if adb_enabled:
+                adb_bridge_tick(config)
             print(time.strftime("%H:%M:%S"), "online")
         except Exception as exc:
             print(time.strftime("%H:%M:%S"), "error:", exc)
@@ -111,6 +365,7 @@ def main() -> int:
 
     run_parser = subparsers.add_parser("run", help="Run heartbeat loop")
     run_parser.add_argument("--interval", type=int, default=30, help="Heartbeat interval seconds")
+    run_parser.add_argument("--adb", action="store_true", help="Enable Android Debug Bridge device control")
 
     args = parser.parse_args()
     config = load_config()
@@ -123,7 +378,7 @@ def main() -> int:
         return 0
 
     if args.command == "run":
-        run_loop(config, max(10, args.interval))
+        run_loop(config, max(3, args.interval), args.adb)
         return 0
 
     parser.print_help()

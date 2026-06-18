@@ -172,6 +172,23 @@ hunter-pc-agent.exe pair --server https://web-production-715d7.up.railway.app --
 hunter-pc-agent.exe run
 ```
 
+ADB-мост для Android рядом с ПК:
+
+```powershell
+adb devices
+hunter-pc-agent.exe run --adb --interval 3
+```
+
+Как подключать телефон через ADB:
+
+1. Установи Android Platform Tools на ПК и добавь `adb` в PATH.
+2. На телефоне включи `Для разработчиков` и `USB debugging` или `Wireless debugging`.
+3. Подключи телефон к ПК и подтверди RSA-ключ на экране телефона.
+4. Запусти PC Agent с `--adb`. В мини-апе появится отдельное устройство `adb-...`.
+5. Кнопка `Экран`, тапы, свайпы, Back/Home/Recents и ввод текста будут идти через официальный ADB.
+
+ADB работает только с твоим физически/локально авторизованным устройством. Без подтверждения debugging на самом телефоне мост не подключится.
+
 Для полноценного экрана ПК используй нормальный канал:
 
 - Windows/VDS: WireGuard + RDP.

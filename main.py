@@ -666,6 +666,13 @@ def pc_agent_text() -> str:
         f"`{PC_AGENT_EXE_NAME} pair --server {public_server_url()} --code 123456 --name \"Home PC\"`\n"
         "5. Потом запусти:\n"
         f"`{PC_AGENT_EXE_NAME} run`\n\n"
+        "ADB-мост для Android рядом с ПК:\n"
+        "1. Установи Android Platform Tools, чтобы команда `adb` была доступна в PATH.\n"
+        "2. На телефоне включи Developer options → USB debugging или Wireless debugging.\n"
+        "3. Подключи телефон к ПК и подтверди RSA-ключ на экране телефона.\n"
+        "4. Запусти PC Agent так:\n"
+        f"`{PC_AGENT_EXE_NAME} run --adb --interval 3`\n"
+        "После этого телефон появится в мини-апе как отдельное устройство `adb-...`: экран, тапы, свайпы и системные кнопки идут через официальный ADB.\n\n"
         "Экран ПК лучше подключать легально через WireGuard + RDP/SSH или RustDesk. "
         "Наш PC Agent не скрывается и не выполняет произвольные команды."
     )
@@ -1165,7 +1172,13 @@ def save_screen_frame(owner_id: str, device_id: str, image_base64: str) -> dict:
 
     image_path, meta_path = screen_paths(owner_id, device_id)
     image_path.write_bytes(image_bytes)
-    meta = {"owner_id": str(owner_id), "device_id": str(device_id), "updated_at": int(time.time())}
+    content_type = "image/png" if image_bytes.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg"
+    meta = {
+        "owner_id": str(owner_id),
+        "device_id": str(device_id),
+        "updated_at": int(time.time()),
+        "content_type": content_type,
+    }
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
 
@@ -1177,7 +1190,8 @@ def load_screen_frame(owner_id: str, device_id: str) -> dict | None:
 
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     image_base64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
-    return {**meta, "image_data": f"data:image/jpeg;base64,{image_base64}"}
+    content_type = meta.get("content_type") or "image/jpeg"
+    return {**meta, "image_data": f"data:{content_type};base64,{image_base64}"}
 
 
 def create_pairing_code(owner_id: int) -> str:
@@ -1559,7 +1573,20 @@ def is_authorized_device_request(headers, payload: dict) -> bool:
             "SELECT secret FROM devices WHERE owner_id = ? AND device_id = ?",
             (owner_id, device_id),
         ).fetchone()
-    return bool(row and secrets.compare_digest(str(row["secret"]), provided_secret))
+        if row and secrets.compare_digest(str(row["secret"]), provided_secret):
+            return True
+
+        bridge_device_id = str(payload.get("bridge_device_id", "")).strip()
+        if not bridge_device_id:
+            return False
+        bridge = connection.execute(
+            """
+            SELECT secret FROM devices
+            WHERE owner_id = ? AND device_id = ? AND agent IN ('pc-agent', 'adb-bridge')
+            """,
+            (owner_id, bridge_device_id),
+        ).fetchone()
+    return bool(bridge and secrets.compare_digest(str(bridge["secret"]), provided_secret))
 
 
 class MiniAppRequestHandler(SimpleHTTPRequestHandler):
@@ -1603,6 +1630,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             payload = {
                 "owner_id": query.get("owner_id", [""])[0].strip(),
                 "device_id": query.get("device_id", [""])[0].strip(),
+                "bridge_device_id": query.get("bridge_device_id", [""])[0].strip(),
             }
             if not payload["owner_id"] or not payload["device_id"]:
                 self.send_json({"error": "owner_id and device_id are required"}, HTTPStatus.BAD_REQUEST)
