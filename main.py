@@ -343,6 +343,7 @@ def connect_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Как собрать", callback_data="connect_build_help"),
             ],
             [InlineKeyboardButton(text="Собрать Full APK для экрана и управления", callback_data="connect_build_full")],
+            [InlineKeyboardButton(text="Lite или Full: что выбрать?", callback_data="apk_mode_compare")],
             [InlineKeyboardButton(text="Полная проверка", callback_data="connect_check")],
             [
                 InlineKeyboardButton(text="Мои устройства", callback_data="my_devices"),
@@ -2014,6 +2015,21 @@ async def callbacks(callback: CallbackQuery) -> None:
             "3. Бот запустит GitHub Actions и пришлет ссылку на готовый APK.\n\n"
             "По умолчанию собирается Lite APK для Android 10+: подключение, QR и статус устройства. "
             "Полная сборка запускается командой `/build_apk_full Hunter Agent Full` и может требовать больше разрешений на телефоне.",
+            reply_markup=connect_keyboard(),
+            parse_mode="Markdown",
+        )
+        return
+
+    if action == "apk_mode_compare":
+        await callback.answer()
+        await show_bot_screen(
+            callback,
+            "*Как выбрать APK*\n\n"
+            "*Lite APK* — если нужно просто подключить телефон, видеть Online/Offline, батарею, сеть и проверить связь. "
+            "Он просит меньше разрешений и обычно устанавливается спокойнее.\n\n"
+            "*Full APK* — если нужно видеть экран, нажимать, свайпать, Back/Home/Recent, вводить текст и открывать системные разделы. "
+            "После установки на телефоне нужно вручную включить Accessibility, работу в фоне и подтвердить запись экрана.\n\n"
+            "Для твоей задачи с управлением телефоном выбирай *Full APK*.",
             reply_markup=connect_keyboard(),
             parse_mode="Markdown",
         )

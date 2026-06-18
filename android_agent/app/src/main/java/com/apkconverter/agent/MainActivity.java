@@ -14,12 +14,16 @@ import android.provider.Settings;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 
 import java.util.concurrent.ExecutorService;
@@ -37,6 +41,11 @@ public class MainActivity extends Activity {
     private TextView permissionsText;
     private TextView statusText;
     private TextView deviceIdText;
+    private Switch agentSwitch;
+    private Switch notificationSwitch;
+    private Switch batterySwitch;
+    private Switch accessibilitySwitch;
+    private Switch screenSwitch;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     @Override
@@ -69,29 +78,36 @@ public class MainActivity extends Activity {
     private ScrollView buildContentView() {
         int padding = dp(16);
 
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setBackgroundColor(Color.rgb(245, 247, 251));
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(padding, padding, padding, padding);
         root.setGravity(Gravity.CENTER_HORIZONTAL);
 
-        TextView title = new TextView(this);
-        title.setText("Hunter Android Agent");
-        title.setTextSize(26);
-        title.setGravity(Gravity.START);
-        root.addView(title, matchWidth());
+        LinearLayout hero = card();
+        TextView title = text("Hunter Android Agent", 26, Color.rgb(9, 32, 40), true);
+        TextView mode = badge(BuildConfig.FULL_CONTROL ? "FULL CONTROL" : "LITE");
+        TextView subtitle = text(
+                BuildConfig.FULL_CONTROL
+                        ? "Полный режим: экран, жесты и управление после твоих разрешений."
+                        : "Lite режим: безопасное подключение, QR и статус без экрана и жестов.",
+                14,
+                Color.rgb(82, 99, 112),
+                false
+        );
+        hero.addView(title, matchWidth());
+        hero.addView(mode, matchWidthWithTopMargin(6));
+        hero.addView(subtitle, matchWidthWithTopMargin(8));
+        root.addView(hero, matchWidth());
 
-        TextView subtitle = new TextView(this);
-        subtitle.setText(BuildConfig.FULL_CONTROL
-                ? "Полный режим: подключение, экран и жесты после твоих разрешений."
-                : "Безопасный Lite-режим: подключение телефона без доступа к экрану и жестам.");
-        subtitle.setTextSize(14);
-        subtitle.setPadding(0, dp(6), 0, dp(14));
-        root.addView(subtitle, matchWidth());
+        LinearLayout connectCard = card();
+        connectCard.addView(sectionTitle("Подключение"));
 
         permissionsText = new TextView(this);
         permissionsText.setTextSize(14);
-        permissionsText.setPadding(0, 0, 0, dp(12));
-        root.addView(permissionsText, matchWidth());
+        permissionsText.setTextColor(Color.rgb(82, 99, 112));
 
         serverUrlInput = input("Server URL, например https://web-production-715d7.up.railway.app");
         pairingCodeInput = input("Код из QR или команды /pair");
@@ -99,99 +115,135 @@ public class MainActivity extends Activity {
         tokenInput = input("Токен не нужен при подключении через QR");
         deviceNameInput = input("Имя устройства, например POCO C75");
 
-        root.addView(label("Сервер"));
-        root.addView(serverUrlInput, matchWidth());
-        root.addView(label("Код подключения"));
-        root.addView(pairingCodeInput, matchWidth());
-        root.addView(label("Owner ID"));
-        root.addView(ownerIdInput, matchWidth());
-        root.addView(label("Токен, резервный режим"));
-        root.addView(tokenInput, matchWidth());
-        root.addView(label("Имя устройства"));
-        root.addView(deviceNameInput, matchWidth());
+        addField(connectCard, "Сервер", serverUrlInput);
+        addField(connectCard, "Код подключения", pairingCodeInput);
+        addField(connectCard, "Owner ID", ownerIdInput);
+        addField(connectCard, "Токен, резервный режим", tokenInput);
+        addField(connectCard, "Имя устройства", deviceNameInput);
 
-        Button saveButton = button("Сохранить настройки");
+        Button saveButton = primaryButton("Сохранить настройки");
         saveButton.setOnClickListener(view -> {
             savePrefs();
             renderStatus();
         });
 
-        Button pairButton = button("Подключить по коду");
+        Button pairButton = primaryButton("Подключить по коду");
         pairButton.setOnClickListener(view -> {
             savePrefs();
             pairWithCurrentCode();
         });
 
-        Button pasteButton = button("Вставить QR-ссылку или код");
+        Button pasteButton = secondaryButton("Вставить QR-ссылку или код");
         pasteButton.setOnClickListener(view -> pastePairFromClipboard());
 
-        Button startButton = button("Запустить агент");
-        startButton.setOnClickListener(view -> {
+        connectCard.addView(saveButton, matchWidthWithTopMargin());
+        connectCard.addView(pasteButton, matchWidthWithTopMargin());
+        connectCard.addView(pairButton, matchWidthWithTopMargin());
+        root.addView(connectCard, matchWidthWithTopMargin(12));
+
+        LinearLayout togglesCard = card();
+        togglesCard.addView(sectionTitle("Переключатели"));
+        agentSwitch = switchRow("Агент работает в фоне");
+        agentSwitch.setOnClickListener(view -> {
             savePrefs();
-            startAgentService();
+            if (agentSwitch.isChecked()) {
+                startAgentService();
+            } else {
+                startService(new Intent(this, HeartbeatService.class).setAction(HeartbeatService.ACTION_STOP));
+            }
             renderStatus();
         });
 
-        Button stopButton = button("Остановить агент");
-        stopButton.setOnClickListener(view -> {
-            startService(new Intent(this, HeartbeatService.class).setAction(HeartbeatService.ACTION_STOP));
+        notificationSwitch = switchRow("Уведомления");
+        notificationSwitch.setOnClickListener(view -> {
+            openNotificationSettings();
             renderStatus();
         });
 
-        Button testButton = button("Проверить связь");
+        batterySwitch = switchRow(BuildConfig.FULL_CONTROL ? "Не ограничивать фон" : "Фон без автозапуска в Lite");
+        batterySwitch.setOnClickListener(view -> {
+            openBatterySettings();
+            renderStatus();
+        });
+
+        accessibilitySwitch = switchRow(BuildConfig.FULL_CONTROL ? "Жесты и тапы" : "Жесты отключены в Lite");
+        accessibilitySwitch.setOnClickListener(view -> {
+            openAccessibilitySettings();
+            renderStatus();
+        });
+
+        screenSwitch = switchRow(BuildConfig.FULL_CONTROL ? "Передача экрана" : "Экран отключен в Lite");
+        screenSwitch.setOnClickListener(view -> {
+            requestScreenCapture();
+            renderStatus();
+        });
+
+        togglesCard.addView(agentSwitch, matchWidthWithTopMargin(8));
+        togglesCard.addView(notificationSwitch, matchWidthWithTopMargin(6));
+        togglesCard.addView(batterySwitch, matchWidthWithTopMargin(6));
+        togglesCard.addView(accessibilitySwitch, matchWidthWithTopMargin(6));
+        togglesCard.addView(screenSwitch, matchWidthWithTopMargin(6));
+        togglesCard.addView(permissionsText, matchWidthWithTopMargin(10));
+        root.addView(togglesCard, matchWidthWithTopMargin(12));
+
+        LinearLayout actionsCard = card();
+        actionsCard.addView(sectionTitle("Действия"));
+
+        Button setupButton = primaryButton(BuildConfig.FULL_CONTROL ? "Мастер разрешений" : "Проверить Lite режим");
+        setupButton.setOnClickListener(view -> startPermissionWizard());
+
+        Button testButton = secondaryButton("Проверить связь");
         testButton.setOnClickListener(view -> {
             savePrefs();
-            statusText.setText("Проверяю...");
+            setStatus("Проверяю связь...");
             executor.execute(() -> {
                 try {
                     DeviceApiClient.heartbeat(this);
-                    runOnUiThread(() -> statusText.setText("Тест успешен"));
+                    runOnUiThread(() -> setStatus("Тест успешен. Сервер принимает устройство."));
                 } catch (Exception exc) {
-                    runOnUiThread(() -> statusText.setText("Ошибка теста: " + exc.getMessage()));
+                    runOnUiThread(() -> setStatus("Ошибка теста: " + exc.getMessage()));
                 }
             });
         });
 
-        Button accessibilityButton = button("Разрешить жесты и тапы");
+        Button accessibilityButton = secondaryButton("Открыть Accessibility");
         accessibilityButton.setOnClickListener(view -> {
-            Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
-            startActivity(intent);
+            openAccessibilitySettings();
+            renderStatus();
         });
 
-        Button setupButton = button(BuildConfig.FULL_CONTROL ? "Открыть мастер разрешений" : "Проверить безопасный режим");
-        setupButton.setOnClickListener(view -> startPermissionWizard());
-
-        Button notificationButton = button("Разрешить уведомления");
+        Button notificationButton = secondaryButton("Открыть уведомления");
         notificationButton.setOnClickListener(view -> openNotificationSettings());
 
-        Button screenButton = button(BuildConfig.FULL_CONTROL ? "Разрешить просмотр экрана" : "Экран недоступен в Lite");
+        Button screenButton = secondaryButton(BuildConfig.FULL_CONTROL ? "Запустить экран" : "Экран недоступен в Lite");
         screenButton.setOnClickListener(view -> requestScreenCapture());
 
-        Button batteryButton = button(BuildConfig.FULL_CONTROL ? "Разрешить работу в фоне" : "Фон без автозапуска в Lite");
+        Button batteryButton = secondaryButton(BuildConfig.FULL_CONTROL ? "Настроить фон" : "Фон без автозапуска в Lite");
         batteryButton.setOnClickListener(view -> openBatterySettings());
 
-        root.addView(saveButton, matchWidthWithTopMargin());
-        root.addView(pasteButton, matchWidthWithTopMargin());
-        root.addView(pairButton, matchWidthWithTopMargin());
-        root.addView(setupButton, matchWidthWithTopMargin());
-        root.addView(notificationButton, matchWidthWithTopMargin());
-        root.addView(startButton, matchWidthWithTopMargin());
-        root.addView(stopButton, matchWidthWithTopMargin());
-        root.addView(testButton, matchWidthWithTopMargin());
-        root.addView(screenButton, matchWidthWithTopMargin());
-        root.addView(accessibilityButton, matchWidthWithTopMargin());
-        root.addView(batteryButton, matchWidthWithTopMargin());
+        actionsCard.addView(setupButton, matchWidthWithTopMargin());
+        actionsCard.addView(testButton, matchWidthWithTopMargin());
+        actionsCard.addView(screenButton, matchWidthWithTopMargin());
+        actionsCard.addView(accessibilityButton, matchWidthWithTopMargin());
+        actionsCard.addView(notificationButton, matchWidthWithTopMargin());
+        actionsCard.addView(batteryButton, matchWidthWithTopMargin());
+        root.addView(actionsCard, matchWidthWithTopMargin(12));
 
         deviceIdText = new TextView(this);
         deviceIdText.setTextSize(13);
-        deviceIdText.setPadding(0, dp(18), 0, dp(8));
-        root.addView(deviceIdText, matchWidth());
+        deviceIdText.setTextColor(Color.rgb(82, 99, 112));
 
         statusText = new TextView(this);
         statusText.setTextSize(15);
-        root.addView(statusText, matchWidth());
+        statusText.setTextColor(Color.rgb(9, 32, 40));
+        statusText.setPadding(0, dp(8), 0, 0);
 
-        ScrollView scrollView = new ScrollView(this);
+        LinearLayout statusCard = card();
+        statusCard.addView(sectionTitle("Статус"));
+        statusCard.addView(deviceIdText, matchWidth());
+        statusCard.addView(statusText, matchWidth());
+        root.addView(statusCard, matchWidthWithTopMargin(12));
+
         scrollView.addView(root);
         return scrollView;
     }
@@ -223,6 +275,22 @@ public class MainActivity extends Activity {
         boolean accessibilityReady = BuildConfig.FULL_CONTROL && TouchControlService.isReady();
         boolean batteryReady = !BuildConfig.FULL_CONTROL || batteryReady();
 
+        if (agentSwitch != null) {
+            agentSwitch.setChecked(enabled);
+        }
+        if (notificationSwitch != null) {
+            notificationSwitch.setChecked(notificationsReady);
+        }
+        if (batterySwitch != null) {
+            batterySwitch.setChecked(batteryReady);
+        }
+        if (accessibilitySwitch != null) {
+            accessibilitySwitch.setChecked(accessibilityReady);
+        }
+        if (screenSwitch != null) {
+            screenSwitch.setChecked(false);
+        }
+
         deviceIdText.setText("Device ID: " + AgentConfig.getDeviceId(this));
         permissionsText.setText(
                 "Разрешения:\n"
@@ -240,11 +308,75 @@ public class MainActivity extends Activity {
         );
     }
 
+    private void setStatus(String text) {
+        statusText.setText(text);
+    }
+
+    private LinearLayout card() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(16), dp(14), dp(16), dp(14));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Color.WHITE);
+        background.setCornerRadius(dp(14));
+        background.setStroke(dp(1), Color.rgb(221, 229, 236));
+        layout.setBackground(background);
+        return layout;
+    }
+
+    private TextView text(String value, int size, int color, boolean bold) {
+        TextView textView = new TextView(this);
+        textView.setText(value);
+        textView.setTextSize(size);
+        textView.setTextColor(color);
+        if (bold) {
+            textView.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        }
+        return textView;
+    }
+
+    private TextView sectionTitle(String value) {
+        TextView textView = text(value, 17, Color.rgb(9, 32, 40), true);
+        textView.setPadding(0, 0, 0, dp(6));
+        return textView;
+    }
+
+    private TextView badge(String value) {
+        TextView textView = text(value, 12, BuildConfig.FULL_CONTROL ? Color.WHITE : Color.rgb(9, 96, 104), true);
+        textView.setGravity(Gravity.CENTER);
+        textView.setPadding(dp(10), dp(5), dp(10), dp(5));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(BuildConfig.FULL_CONTROL ? Color.rgb(14, 124, 134) : Color.rgb(218, 246, 242));
+        background.setCornerRadius(dp(999));
+        textView.setBackground(background);
+        return textView;
+    }
+
+    private void addField(LinearLayout parent, String title, EditText editText) {
+        parent.addView(label(title));
+        parent.addView(editText, matchWidth());
+    }
+
+    private Switch switchRow(String text) {
+        Switch row = new Switch(this);
+        row.setText(text);
+        row.setTextSize(15);
+        row.setTextColor(Color.rgb(9, 32, 40));
+        row.setPadding(0, dp(4), 0, dp(4));
+        return row;
+    }
+
     private EditText input(String hint) {
         EditText editText = new EditText(this);
         editText.setHint(hint);
         editText.setSingleLine(true);
         editText.setTextSize(15);
+        editText.setPadding(dp(12), dp(10), dp(12), dp(10));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Color.rgb(248, 251, 253));
+        background.setCornerRadius(dp(10));
+        background.setStroke(dp(1), Color.rgb(221, 229, 236));
+        editText.setBackground(background);
         return editText;
     }
 
@@ -252,13 +384,41 @@ public class MainActivity extends Activity {
         TextView textView = new TextView(this);
         textView.setText(text);
         textView.setTextSize(12);
-        textView.setPadding(0, dp(10), 0, 0);
+        textView.setTextColor(Color.rgb(82, 99, 112));
+        textView.setPadding(0, dp(10), 0, dp(4));
         return textView;
     }
 
     private Button button(String text) {
         Button button = new Button(this);
         button.setText(text);
+        button.setAllCaps(false);
+        button.setTextSize(14);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setMinHeight(dp(46));
+        return button;
+    }
+
+    private Button primaryButton(String text) {
+        Button button = button(text);
+        button.setTextColor(Color.WHITE);
+        GradientDrawable background = new GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                new int[]{Color.rgb(14, 124, 134), Color.rgb(47, 183, 160)}
+        );
+        background.setCornerRadius(dp(12));
+        button.setBackground(background);
+        return button;
+    }
+
+    private Button secondaryButton(String text) {
+        Button button = button(text);
+        button.setTextColor(Color.rgb(14, 124, 134));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Color.rgb(235, 247, 248));
+        background.setCornerRadius(dp(12));
+        background.setStroke(dp(1), Color.rgb(190, 225, 226));
+        button.setBackground(background);
         return button;
     }
 
@@ -270,8 +430,12 @@ public class MainActivity extends Activity {
     }
 
     private LinearLayout.LayoutParams matchWidthWithTopMargin() {
+        return matchWidthWithTopMargin(8);
+    }
+
+    private LinearLayout.LayoutParams matchWidthWithTopMargin(int topMarginDp) {
         LinearLayout.LayoutParams params = matchWidth();
-        params.topMargin = dp(8);
+        params.topMargin = dp(topMarginDp);
         return params;
     }
 
@@ -468,6 +632,9 @@ public class MainActivity extends Activity {
             startForegroundService(intent);
         } else {
             startService(intent);
+        }
+        if (screenSwitch != null) {
+            screenSwitch.setChecked(true);
         }
         statusText.setText("Передача экрана запущена");
     }
