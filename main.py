@@ -1198,26 +1198,21 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     def handle_agent_page(self) -> None:
         apk_path = agent_apk_path()
         download_url = f"{public_server_url()}/{AGENT_APK_NAME}"
+        mini_app_url = MINI_APP_URL or public_server_url()
+        apk_available = bool(apk_path or AGENT_APK_URL)
+        download_href = download_url if apk_path else AGENT_APK_URL
         if apk_path:
-            status = (
-                "<p>APK is ready. Download it on your Android phone, allow install "
-                "from this browser if Android asks, then open the /pair QR again.</p>"
-                f'<a href="{escape(download_url, quote=True)}">Download APK</a>'
-            )
+            source_text = "APK is ready from this server."
         elif AGENT_APK_URL:
-            status = (
-                "<p>APK is built by GitHub Actions and published as a release file. "
-                "Download it on your Android phone, allow install from this browser "
-                "if Android asks, then open the /pair QR again.</p>"
-                f'<a href="{escape(AGENT_APK_URL, quote=True)}">Download APK</a>'
-            )
+            source_text = "APK is published by GitHub Actions release."
         else:
-            status = (
-                "<p>APK is not uploaded yet. Build the Android app in Android Studio "
-                "and put the file as <code>mini_app/apk-agent.apk</code> before deploy, "
-                "upload it to the Railway volume as <code>/data/apk-agent.apk</code>, "
-                "or set <code>AGENT_APK_URL</code> to a release download link.</p>"
-            )
+            source_text = "APK is not ready yet. Run /build_apk in Telegram or set AGENT_APK_URL."
+
+        download_button = (
+            f'<a href="{escape(download_href, quote=True)}">Download APK</a>'
+            if apk_available
+            else '<button disabled>APK not ready</button>'
+        )
 
         html = f"""<!doctype html>
 <html lang="en">
@@ -1226,18 +1221,41 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Android Agent</title>
   <style>
-    body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:#101820; color:#f5fbff; font-family:system-ui,sans-serif; }}
-    main {{ width:min(92vw,460px); padding:24px; border-radius:14px; background:#17232f; box-shadow:0 18px 50px rgba(0,0,0,.35); }}
+    body {{ margin:0; min-height:100vh; background:#101820; color:#f5fbff; font-family:system-ui,sans-serif; }}
+    main {{ width:min(92vw,560px); margin:0 auto; padding:28px 0 36px; }}
+    section {{ padding:18px; border-radius:14px; background:#17232f; box-shadow:0 18px 50px rgba(0,0,0,.28); }}
     h1 {{ margin:0 0 10px; font-size:28px; }}
+    h2 {{ margin:20px 0 8px; font-size:18px; }}
     p {{ color:#b8c7d6; line-height:1.45; }}
+    ol {{ color:#d7e6f3; line-height:1.55; padding-left:22px; }}
     code {{ padding:2px 6px; border-radius:6px; background:#0d141b; color:#7ee0d3; }}
-    a {{ display:block; width:100%; margin-top:12px; padding:13px 14px; border-radius:10px; background:#13a68f; color:white; font-weight:800; text-align:center; text-decoration:none; box-sizing:border-box; }}
+    a, button {{ display:block; width:100%; margin-top:12px; padding:13px 14px; border:0; border-radius:10px; background:#13a68f; color:white; font-weight:800; text-align:center; text-decoration:none; box-sizing:border-box; }}
+    button[disabled] {{ background:#41515f; color:#aebdca; }}
+    .ghost {{ background:#243445; }}
+    .status {{ display:inline-block; padding:6px 9px; border-radius:999px; background:#0d141b; color:#7ee0d3; font-size:13px; }}
   </style>
 </head>
 <body>
   <main>
-    <h1>Android Agent</h1>
-    {status}
+    <section>
+      <h1>Android Agent</h1>
+      <span class="status">{escape(source_text)}</span>
+      <p>This APK connects your Android phone to the Telegram bot and Mini App.</p>
+      {download_button}
+      <a class="ghost" href="{escape(mini_app_url, quote=True)}">Open Mini App</a>
+
+      <h2>Install steps</h2>
+      <ol>
+        <li>Download the APK on your Android phone.</li>
+        <li>If Android blocks it, allow installs from this browser or file manager.</li>
+        <li>Open Telegram bot and send <code>/pair</code> or <code>/connect</code>.</li>
+        <li>Open the QR link on the phone and tap <code>Open Android Agent</code>.</li>
+        <li>In Android Agent, allow notifications, screen view, and accessibility only if you need control.</li>
+      </ol>
+
+      <h2>If APK is not ready</h2>
+      <p>Send an icon image to the bot, then run <code>/build_apk Hunter Agent</code>. The bot will send the download link after GitHub Actions finishes.</p>
+    </section>
   </main>
 </body>
 </html>"""
