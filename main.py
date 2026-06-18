@@ -256,6 +256,7 @@ def connect_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Download / install APK", url=f"{public_server_url()}/agent")],
             [InlineKeyboardButton(text="Create new QR", callback_data="pair_device")],
+            [InlineKeyboardButton(text="Refresh wizard", callback_data="connect_wizard")],
             [InlineKeyboardButton(text="Build APK help", callback_data="connect_build_help")],
             [InlineKeyboardButton(text="Run full check", callback_data="connect_check")],
             [
@@ -286,6 +287,12 @@ async def send_connect(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
     await message.answer(connect_text(message.from_user.id), reply_markup=connect_keyboard())
+
+
+async def send_devices(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    await message.answer(format_devices_text(message.from_user.id), reply_markup=connect_keyboard())
 
 
 def probe_url(url: str, method: str = "GET") -> tuple[bool, str]:
@@ -476,8 +483,13 @@ async def send_pairing_code(message: Message) -> None:
 def pairing_keyboard(links: dict[str, str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="Download / install APK", url=f"{links['server']}/agent")],
             [InlineKeyboardButton(text="Open pair page", url=links["web_link"])],
             [InlineKeyboardButton(text="Open Android Agent", url=links["app_link"])],
+            [
+                InlineKeyboardButton(text="Check devices", callback_data="my_devices"),
+                InlineKeyboardButton(text="Connection wizard", callback_data="connect_wizard"),
+            ],
         ]
     )
 
@@ -1740,6 +1752,7 @@ async def run_bot() -> None:
     dp.message.register(send_status, Command("status"))
     dp.message.register(send_check, Command("check"))
     dp.message.register(send_connect, Command("connect"))
+    dp.message.register(send_devices, Command("devices"))
     dp.message.register(send_build_apk, Command("build_apk"))
     dp.message.register(send_pairing_code, Command("pair"))
     dp.message.register(handle_web_app_data, F.web_app_data)
