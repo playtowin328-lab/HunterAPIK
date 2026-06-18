@@ -270,10 +270,10 @@ function render() {
   userName.textContent = profileName;
   setupText.textContent = devices.length
     ? `${devices.length} устройств, online: ${onlineCount}.`
-    : "Собери APK, установи Android Agent, получи QR и подтверди разрешения на телефоне.";
+    : "Установи Lite APK, получи QR и запусти Android Agent на телефоне.";
 
   if (!devices.length) {
-    deviceList.innerHTML = `<p class="empty-state">Пока нет подключенных устройств. Нажми "Скачать APK", затем "Получить QR" и пройди мастер разрешений в Android Agent.</p>`;
+    deviceList.innerHTML = `<p class="empty-state">Пока нет подключенных устройств. Нажми "Скачать APK", затем "Получить QR" и запусти Android Agent. Экран и жесты доступны только в Full-сборке.</p>`;
     return;
   }
 

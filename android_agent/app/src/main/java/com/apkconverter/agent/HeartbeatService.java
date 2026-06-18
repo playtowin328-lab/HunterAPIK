@@ -94,23 +94,35 @@ public class HeartbeatService extends Service {
 
         String result;
         if ("request_screen".equals(command.type)) {
+            if (!BuildConfig.FULL_CONTROL) {
+                result = "Screen preview is disabled in Lite build.";
+                DeviceApiClient.completeCommand(this, command, "rejected", result);
+                return "\nКоманда: " + command.type + "\n" + result;
+            }
             Intent intent = new Intent(this, MainActivity.class)
                     .setAction(MainActivity.ACTION_REQUEST_SCREEN_CAPTURE)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
             result = "Screen permission requested on device.";
         } else if ("stop_screen".equals(command.type)) {
+            if (!BuildConfig.FULL_CONTROL) {
+                result = "Screen preview is disabled in Lite build.";
+                DeviceApiClient.completeCommand(this, command, "rejected", result);
+                return "\nКоманда: " + command.type + "\n" + result;
+            }
             Intent intent = new Intent(this, ScreenCaptureService.class).setAction(ScreenCaptureService.ACTION_STOP);
             startService(intent);
             result = "Screen capture stop requested.";
         } else if ("request_files".equals(command.type)) {
             result = "Files request received. Storage picker module is not enabled yet.";
         } else if ("request_actions".equals(command.type)) {
-            result = TouchControlService.isReady()
+            result = BuildConfig.FULL_CONTROL && TouchControlService.isReady()
                     ? "Actions module is ready for taps and navigation."
-                    : "Actions request received. Enable APK Agent Accessibility Service.";
+                    : "Actions are disabled in Lite build.";
         } else if ("tap".equals(command.type)) {
-            if (!TouchControlService.isReady()) {
+            if (!BuildConfig.FULL_CONTROL) {
+                result = "Tap rejected. Lite build has no Accessibility control.";
+            } else if (!TouchControlService.isReady()) {
                 result = "Tap rejected. Enable APK Agent Accessibility Service in Android settings.";
             } else if (command.x < 0 || command.y < 0) {
                 result = "Tap rejected. Coordinates are missing.";
@@ -119,29 +131,31 @@ public class HeartbeatService extends Service {
                 result = dispatched ? "Tap dispatched." : "Tap dispatch failed.";
             }
         } else if ("back".equals(command.type)) {
-            result = TouchControlService.back() ? "Back dispatched." : "Back failed. Enable Accessibility Service.";
+            result = BuildConfig.FULL_CONTROL && TouchControlService.back() ? "Back dispatched." : "Back failed or disabled in Lite build.";
         } else if ("home".equals(command.type)) {
-            result = TouchControlService.home() ? "Home dispatched." : "Home failed. Enable Accessibility Service.";
+            result = BuildConfig.FULL_CONTROL && TouchControlService.home() ? "Home dispatched." : "Home failed or disabled in Lite build.";
         } else if ("recents".equals(command.type)) {
-            result = TouchControlService.recents() ? "Recents dispatched." : "Recents failed. Enable Accessibility Service.";
+            result = BuildConfig.FULL_CONTROL && TouchControlService.recents() ? "Recents dispatched." : "Recents failed or disabled in Lite build.";
         } else if ("swipe_up".equals(command.type)) {
-            result = TouchControlService.swipeNormalized(0.5f, 0.78f, 0.5f, 0.25f)
+            result = BuildConfig.FULL_CONTROL && TouchControlService.swipeNormalized(0.5f, 0.78f, 0.5f, 0.25f)
                     ? "Swipe up dispatched."
-                    : "Swipe up failed. Enable Accessibility Service.";
+                    : "Swipe up failed or disabled in Lite build.";
         } else if ("swipe_down".equals(command.type)) {
-            result = TouchControlService.swipeNormalized(0.5f, 0.25f, 0.5f, 0.78f)
+            result = BuildConfig.FULL_CONTROL && TouchControlService.swipeNormalized(0.5f, 0.25f, 0.5f, 0.78f)
                     ? "Swipe down dispatched."
-                    : "Swipe down failed. Enable Accessibility Service.";
+                    : "Swipe down failed or disabled in Lite build.";
         } else if ("swipe_left".equals(command.type)) {
-            result = TouchControlService.swipeNormalized(0.82f, 0.5f, 0.18f, 0.5f)
+            result = BuildConfig.FULL_CONTROL && TouchControlService.swipeNormalized(0.82f, 0.5f, 0.18f, 0.5f)
                     ? "Swipe left dispatched."
-                    : "Swipe left failed. Enable Accessibility Service.";
+                    : "Swipe left failed or disabled in Lite build.";
         } else if ("swipe_right".equals(command.type)) {
-            result = TouchControlService.swipeNormalized(0.18f, 0.5f, 0.82f, 0.5f)
+            result = BuildConfig.FULL_CONTROL && TouchControlService.swipeNormalized(0.18f, 0.5f, 0.82f, 0.5f)
                     ? "Swipe right dispatched."
-                    : "Swipe right failed. Enable Accessibility Service.";
+                    : "Swipe right failed or disabled in Lite build.";
         } else if ("input_text".equals(command.type)) {
-            if (!TouchControlService.isReady()) {
+            if (!BuildConfig.FULL_CONTROL) {
+                result = "Text input failed. Lite build has no Accessibility control.";
+            } else if (!TouchControlService.isReady()) {
                 result = "Text input failed. Enable Accessibility Service.";
             } else if (command.text == null || command.text.isEmpty()) {
                 result = "Text input failed. Text is empty.";
@@ -151,13 +165,13 @@ public class HeartbeatService extends Service {
                         : "Text input failed. Focus an editable field on the phone.";
             }
         } else if ("key_enter".equals(command.type)) {
-            result = TouchControlService.enter()
+            result = BuildConfig.FULL_CONTROL && TouchControlService.enter()
                     ? "Enter inserted."
-                    : "Enter failed. Focus an editable field and enable Accessibility Service.";
+                    : "Enter failed or disabled in Lite build.";
         } else if ("key_delete".equals(command.type)) {
-            result = TouchControlService.delete()
+            result = BuildConfig.FULL_CONTROL && TouchControlService.delete()
                     ? "Delete dispatched."
-                    : "Delete failed. Focus an editable field and enable Accessibility Service.";
+                    : "Delete failed or disabled in Lite build.";
         } else if ("ping".equals(command.type)) {
             result = "Ping received.";
         } else {

@@ -81,7 +81,9 @@ public class MainActivity extends Activity {
         root.addView(title, matchWidth());
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Подключает этот телефон к Telegram-боту и мини-апу. Управление работает только после твоих разрешений.");
+        subtitle.setText(BuildConfig.FULL_CONTROL
+                ? "Полный режим: подключение, экран и жесты после твоих разрешений."
+                : "Безопасный Lite-режим: подключение телефона без доступа к экрану и жестам.");
         subtitle.setTextSize(14);
         subtitle.setPadding(0, dp(6), 0, dp(14));
         root.addView(subtitle, matchWidth());
@@ -156,16 +158,16 @@ public class MainActivity extends Activity {
             startActivity(intent);
         });
 
-        Button setupButton = button("Открыть мастер разрешений");
+        Button setupButton = button(BuildConfig.FULL_CONTROL ? "Открыть мастер разрешений" : "Проверить безопасный режим");
         setupButton.setOnClickListener(view -> startPermissionWizard());
 
         Button notificationButton = button("Разрешить уведомления");
         notificationButton.setOnClickListener(view -> openNotificationSettings());
 
-        Button screenButton = button("Разрешить просмотр экрана");
+        Button screenButton = button(BuildConfig.FULL_CONTROL ? "Разрешить просмотр экрана" : "Экран недоступен в Lite");
         screenButton.setOnClickListener(view -> requestScreenCapture());
 
-        Button batteryButton = button("Разрешить работу в фоне");
+        Button batteryButton = button(BuildConfig.FULL_CONTROL ? "Разрешить работу в фоне" : "Фон без автозапуска в Lite");
         batteryButton.setOnClickListener(view -> openBatterySettings());
 
         root.addView(saveButton, matchWidthWithTopMargin());
@@ -218,21 +220,22 @@ public class MainActivity extends Activity {
         String lastStatus = prefs.getString(HeartbeatService.KEY_LAST_STATUS, "Сигнал ещё не отправлялся");
         boolean paired = !prefs.getString(AgentConfig.KEY_DEVICE_SECRET, "").isEmpty();
         boolean notificationsReady = notificationsReady();
-        boolean accessibilityReady = TouchControlService.isReady();
-        boolean batteryReady = batteryReady();
+        boolean accessibilityReady = BuildConfig.FULL_CONTROL && TouchControlService.isReady();
+        boolean batteryReady = !BuildConfig.FULL_CONTROL || batteryReady();
 
         deviceIdText.setText("Device ID: " + AgentConfig.getDeviceId(this));
         permissionsText.setText(
                 "Разрешения:\n"
                         + "Уведомления: " + (notificationsReady ? "готово" : "нужно разрешить") + "\n"
                         + "Работа в фоне: " + (batteryReady ? "готово" : "нужно отключить оптимизацию батареи") + "\n"
-                        + "Жесты/Accessibility: " + (accessibilityReady ? "готово" : "открой настройки и включи Hunter Agent") + "\n"
-                        + "Экран: нажми «Разрешить просмотр экрана», когда нужен preview"
+                        + "Жесты/Accessibility: " + (BuildConfig.FULL_CONTROL ? (accessibilityReady ? "готово" : "открой настройки и включи Hunter Agent") : "отключено в Lite") + "\n"
+                        + "Экран: " + (BuildConfig.FULL_CONTROL ? "нажми «Разрешить просмотр экрана», когда нужен preview" : "отключен в Lite")
         );
         statusText.setText(
                 (enabled ? "Агент включён" : "Агент выключен")
                         + "\nПодключение: " + (paired ? "готово" : "нужно открыть QR или ввести код")
-                        + "\nЖесты: " + (TouchControlService.isReady() ? "включены" : "нужно включить вручную")
+                        + "\nРежим: " + (BuildConfig.FULL_CONTROL ? "полный" : "Lite")
+                        + "\nЖесты: " + (BuildConfig.FULL_CONTROL ? (TouchControlService.isReady() ? "включены" : "нужно включить вручную") : "отключены")
                         + "\n" + lastStatus
         );
     }
@@ -319,11 +322,19 @@ public class MainActivity extends Activity {
     }
 
     private void openAccessibilitySettings() {
+        if (!BuildConfig.FULL_CONTROL) {
+            statusText.setText("Lite-сборка не запрашивает Accessibility, чтобы установка была безопаснее.");
+            return;
+        }
         statusText.setText("В настройках Accessibility включи Hunter Agent, затем вернись сюда.");
         startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
     }
 
     private void openBatterySettings() {
+        if (!BuildConfig.FULL_CONTROL) {
+            statusText.setText("Lite-сборка не запрашивает отключение оптимизации батареи. Для связи держи агент запущенным.");
+            return;
+        }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !batteryReady()) {
                 Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
@@ -341,6 +352,10 @@ public class MainActivity extends Activity {
 
     private void startPermissionWizard() {
         requestNotificationPermission();
+        if (!BuildConfig.FULL_CONTROL) {
+            statusText.setText("Lite-режим готов: подключение и heartbeat работают без доступа к экрану, жестам и автозапуску.");
+            return;
+        }
         if (!batteryReady()) {
             statusText.setText("Шаг 1: разреши работу в фоне, чтобы Android не останавливал агент.");
             openBatterySettings();
@@ -425,6 +440,10 @@ public class MainActivity extends Activity {
     }
 
     private void requestScreenCapture() {
+        if (!BuildConfig.FULL_CONTROL) {
+            statusText.setText("Просмотр экрана отключен в Lite-сборке. Для него нужна отдельная полная сборка.");
+            return;
+        }
         MediaProjectionManager manager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_SCREEN_CAPTURE);
     }

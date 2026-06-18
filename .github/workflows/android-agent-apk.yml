@@ -11,6 +11,10 @@ on:
         description: "Public PNG/JPG icon URL"
         required: false
         default: ""
+      build_mode:
+        description: "Build mode: lite or full"
+        required: false
+        default: "lite"
   push:
     paths:
       - "android_agent/**"
@@ -67,18 +71,40 @@ jobs:
           if [ -n "$ICON_URL" ]; then
             mkdir -p android_agent/app/src/main/res/drawable
             rm -f android_agent/app/src/main/res/drawable/app_icon.xml
-            curl -L --fail "$ICON_URL" -o android_agent/app/src/main/res/drawable/app_icon.png
-          fi
+              curl -L --fail "$ICON_URL" -o android_agent/app/src/main/res/drawable/app_icon.png
+            fi
 
       - name: Build debug APK
-        run: gradle -p android_agent assembleDebug
+        shell: bash
+        env:
+          BUILD_MODE: ${{ github.event.inputs.build_mode }}
+        run: |
+          mode="${BUILD_MODE:-lite}"
+          if [ "$mode" = "full" ]; then
+            gradle -p android_agent assembleFullDebug
+          else
+            gradle -p android_agent assembleLiteDebug
+          fi
 
       - name: Prepare APK file
+        shell: bash
+        env:
+          BUILD_MODE: ${{ github.event.inputs.build_mode }}
         run: |
+          mode="${BUILD_MODE:-lite}"
+          if [ "$mode" = "full" ]; then
+            source_apk="android_agent/app/build/outputs/apk/full/debug/app-full-debug.apk"
+          else
+            source_apk="android_agent/app/build/outputs/apk/lite/debug/app-lite-debug.apk"
+          fi
+          test -s "$source_apk"
           mkdir -p dist
-          cp android_agent/app/build/outputs/apk/debug/app-debug.apk dist/apk-agent.apk
-          test -s dist/apk-agent.apk
+          cp "$source_apk" dist/apk-agent.apk
           sha256sum dist/apk-agent.apk > dist/apk-agent.sha256
+          {
+            echo "Build mode: $mode"
+            echo "APK: dist/apk-agent.apk"
+          } > dist/build-info.txt
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -92,9 +118,10 @@ jobs:
         with:
           tag_name: android-agent-latest
           name: Android Agent Latest
-          body: Debug build of APK Agent. Install only on your own devices.
+          body: Lite debug build by default. Install only on your own devices.
           files: |
             dist/apk-agent.apk
             dist/apk-agent.sha256
+            dist/build-info.txt
           make_latest: false
           overwrite_files: true

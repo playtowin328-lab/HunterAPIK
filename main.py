@@ -168,8 +168,9 @@ HELP_TEXT = (
     "/connect — мастер подключения телефона\n"
     "/pair — QR и код привязки\n"
     "/devices — список устройств\n"
-    "/build_apk — собрать APK со стандартным названием\n"
-    "/build_apk Название — собрать APK со своим названием\n"
+    "/build_apk — собрать Lite APK со стандартным названием\n"
+    "/build_apk Название — собрать Lite APK со своим названием\n"
+    "/build_apk_full Название — собрать полный APK с экраном и жестами\n"
     "/guide — подробная инструкция\n"
     "/settings — текущие настройки\n"
     "/check — диагностика деплоя"
@@ -191,8 +192,8 @@ SETTINGS_TEXT = (
 GUIDE_TEXT = (
     "*Подробная инструкция*\n\n"
     "*1. Собрать APK*\n"
-    "Нажми `Собрать APK` или отправь `/build_apk`. Если хочешь свой значок, сначала отправь картинку боту, "
-    "потом выполни `/build_apk Название приложения`. После успешной сборки бот пришлет ссылку на APK.\n\n"
+    "Нажми `Собрать APK` или отправь `/build_apk`. По умолчанию собирается Lite APK: подключение, QR и статус без доступа к экрану и жестам. "
+    "Это снижает шанс блокировки Play Protect. Полный режим запускается отдельно: `/build_apk_full Название`.\n\n"
     "*2. Установить на Android*\n"
     "Открой `/agent` на телефоне и скачай APK. Если Android предупреждает про установку из браузера, "
     "разреши установку из этого источника. Это обычное ограничение Android для APK вне Play Market; "
@@ -201,7 +202,7 @@ GUIDE_TEXT = (
     "Нажми `Получить QR` или отправь `/pair`. Открой QR-ссылку на телефоне. Android Agent сам заполнит сервер и код, "
     "после чего запустит агент.\n\n"
     "*4. Разрешения на телефоне*\n"
-    "Приложение попросит уведомления для фоновой работы, затем предложит настройки батареи, Accessibility для жестов "
+    "Lite APK просит минимум разрешений. Полный APK дополнительно просит батарею, Accessibility для жестов "
     "и системное разрешение записи экрана. Экран и жесты работают только после твоего подтверждения на телефоне.\n\n"
     "*5. Проверка*\n"
     "В боте нажми `Мои устройства` или открой мини-ап. Телефон должен стать `Online`. "
@@ -410,11 +411,20 @@ async def send_build_apk(message: Message, command: CommandObject) -> None:
         return
 
     app_name = (command.args or "Hunter Agent").strip() or "Hunter Agent"
-    await start_apk_build(message, message.from_user.id, app_name)
+    await start_apk_build(message, message.from_user.id, app_name, "lite")
 
 
-async def start_apk_build(message: Message, owner_id: int, app_name: str = "Hunter Agent") -> None:
+async def send_build_apk_full(message: Message, command: CommandObject) -> None:
+    if not await ensure_message_admin(message):
+        return
+
+    app_name = (command.args or "Hunter Agent Full").strip() or "Hunter Agent Full"
+    await start_apk_build(message, message.from_user.id, app_name, "full")
+
+
+async def start_apk_build(message: Message, owner_id: int, app_name: str = "Hunter Agent", build_mode: str = "lite") -> None:
     app_name = (app_name or "Hunter Agent").strip()[:40] or "Hunter Agent"
+    build_mode = "full" if build_mode == "full" else "lite"
 
     if not GITHUB_TOKEN:
         await message.answer(
@@ -433,19 +443,26 @@ async def start_apk_build(message: Message, owner_id: int, app_name: str = "Hunt
 
     started_at = datetime.now(timezone.utc)
     try:
-        await asyncio.to_thread(trigger_github_apk_build, app_name, icon_url)
+        await asyncio.to_thread(trigger_github_apk_build, app_name, icon_url, build_mode)
     except Exception as exc:
         await message.answer(f"GitHub APK build did not start: {exc}")
         return
 
     release_url = f"https://github.com/{GITHUB_REPO}/releases/tag/android-agent-latest"
+    mode_note = (
+        "Lite: без экрана, Accessibility и автозапуска, меньше риск блокировки Play Protect."
+        if build_mode == "lite"
+        else "Full: экран и жесты включены, Play Protect может предупреждать или блокировать установку."
+    )
     await message.answer(
-        "APK build started.\n\n"
-        f"App name: {app_name[:40]}\n"
-        f"Icon: {'custom' if icon_url else 'default'}\n\n"
-        "I will watch GitHub Actions and send the APK link when it is ready.\n"
-        "Android support: Android 10+ debug APK.\n"
-        f"Release page: {release_url}"
+        "Сборка APK запущена.\n\n"
+        f"Название: {app_name[:40]}\n"
+        f"Режим: {build_mode}\n"
+        f"Иконка: {'своя' if icon_url else 'стандартная'}\n"
+        f"{mode_note}\n\n"
+        "Я проверю GitHub Actions и пришлю ссылку, когда APK будет готов.\n"
+        "Поддержка: Android 10+ debug APK.\n"
+        f"Страница релиза: {release_url}"
     )
     asyncio.create_task(watch_apk_build(message, started_at))
 
@@ -850,7 +867,7 @@ def prepare_build_icon(owner_id: int, source_path: Path) -> str | None:
     return build_asset_url(owner_id, "icon.png")
 
 
-def trigger_github_apk_build(app_name: str, icon_url: str | None) -> None:
+def trigger_github_apk_build(app_name: str, icon_url: str | None, build_mode: str = "lite") -> None:
     if not GITHUB_TOKEN:
         raise RuntimeError("GITHUB_TOKEN is missing")
     if not GITHUB_REPO:
@@ -862,6 +879,7 @@ def trigger_github_apk_build(app_name: str, icon_url: str | None) -> None:
         "inputs": {
             "app_name": app_name[:40],
             "icon_url": icon_url or "",
+            "build_mode": "full" if build_mode == "full" else "lite",
         },
     }
     request = urllib.request.Request(
@@ -1310,7 +1328,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     <section>
       <h1>Установка Android Agent</h1>
       <span class="status">{escape(source_text)}</span>
-      <p>Android Agent подключает твой Android-телефон к Telegram-боту и мини-апу. Сборка рассчитана на Android 10+.</p>
+      <p>Android Agent Lite подключает твой Android-телефон к Telegram-боту и мини-апу без доступа к экрану и жестам. Сборка рассчитана на Android 10+ и сделана так, чтобы меньше раздражать Play Protect.</p>
       {download_button}
       <a class="ghost" href="{escape(actions_url, quote=True)}">Статус сборки APK</a>
       <a class="ghost" href="{escape(mini_app_url, quote=True)}">Открыть мини-ап</a>
@@ -1321,7 +1339,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
       <div class="grid">
         <div class="step"><strong>1. APK</strong><p>Скачай APK на телефон и подтверди установку.</p></div>
         <div class="step"><strong>2. QR</strong><p>В боте нажми «Получить новый QR» и открой ссылку на телефоне.</p></div>
-        <div class="step"><strong>3. Online</strong><p>Разреши нужные функции в Android Agent и проверь мини-ап.</p></div>
+        <div class="step"><strong>3. Online</strong><p>Запусти агент и проверь мини-ап. Экран и жесты доступны только в отдельной Full-сборке.</p></div>
       </div>
     </section>
 
@@ -1338,10 +1356,9 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     <section>
       <h2>Какие разрешения попросит агент</h2>
       <ul>
-        <li>Уведомления — чтобы Android не убивал фоновый сервис.</li>
-        <li>Батарея — чтобы подключение не засыпало через пару минут.</li>
-        <li>Запись экрана — только после системного подтверждения, для просмотра экрана в мини-апе.</li>
-        <li>Accessibility — только если нужны жесты, тапы, Back/Home/Recent и ввод текста.</li>
+        <li>Lite APK: интернет, сеть и уведомления для связи с ботом.</li>
+        <li>Full APK: дополнительно батарея, запись экрана и Accessibility для жестов.</li>
+        <li>Если Google Play Защита блокирует Full APK, используй Lite APK или публикуй приложение через официальный Google Play/internal testing.</li>
       </ul>
     </section>
 
@@ -1773,6 +1790,8 @@ async def callbacks(callback: CallbackQuery) -> None:
             "1. Если нужен свой значок, сначала отправь боту картинку.\n"
             "2. Нажми «Собрать APK» или отправь `/build_apk Hunter Agent`.\n"
             "3. Дождись сообщения со ссылкой на скачивание.\n\n"
+            "Обычная сборка — Lite: без экрана, Accessibility и автозапуска, чтобы Play Protect реже блокировал установку.\n"
+            "Полная сборка: `/build_apk_full Hunter Agent Full`. Она может получать предупреждения Google из-за функций удаленного управления.\n\n"
             "Нужные переменные Railway: GITHUB_TOKEN, GITHUB_REPO, GITHUB_WORKFLOW.\n"
             "APK собирается для Android 10+.",
             parse_mode="Markdown",
@@ -1781,7 +1800,7 @@ async def callbacks(callback: CallbackQuery) -> None:
 
     if action == "connect_build_now":
         await callback.answer("Starting APK build...")
-        await start_apk_build(callback.message, callback.from_user.id, "Hunter Agent")
+        await start_apk_build(callback.message, callback.from_user.id, "Hunter Agent Lite", "lite")
         return
 
     if action == "pair_device":
@@ -1895,6 +1914,7 @@ async def run_bot() -> None:
     dp.message.register(send_connect, Command("connect"))
     dp.message.register(send_devices, Command("devices"))
     dp.message.register(send_build_apk, Command("build_apk"))
+    dp.message.register(send_build_apk_full, Command("build_apk_full"))
     dp.message.register(send_pairing_code, Command("pair"))
     dp.message.register(handle_web_app_data, F.web_app_data)
     dp.message.register(handle_photo, F.photo)

@@ -6,12 +6,31 @@ android {
     namespace "com.apkconverter.agent"
     compileSdk 35
 
+    flavorDimensions "mode"
+
     defaultConfig {
         applicationId "com.apkconverter.agent"
         minSdk 29
         targetSdk 35
         versionCode 1
         versionName "0.2.0"
+    }
+
+    productFlavors {
+        lite {
+            dimension "mode"
+            applicationIdSuffix ".lite"
+            versionNameSuffix "-lite"
+            buildConfigField "boolean", "FULL_CONTROL", "false"
+        }
+        full {
+            dimension "mode"
+            buildConfigField "boolean", "FULL_CONTROL", "true"
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     compileOptions {
