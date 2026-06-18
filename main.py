@@ -194,7 +194,7 @@ def main_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [mini_app_button],
             [
-                InlineKeyboardButton(text="🔗 Подключить телефон", callback_data="pair_device"),
+                InlineKeyboardButton(text="🔗 Подключить телефон", callback_data="connect_wizard"),
                 InlineKeyboardButton(text="📡 Мои устройства", callback_data="my_devices"),
             ],
             [
@@ -249,6 +249,42 @@ async def send_status(message: Message) -> None:
         f"DB: {DB_PATH}",
     ]
     await message.answer("\n".join(lines))
+
+
+def connect_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Download / install APK", url=f"{public_server_url()}/agent")],
+            [InlineKeyboardButton(text="Create new QR", callback_data="pair_device")],
+            [InlineKeyboardButton(text="Build APK help", callback_data="connect_build_help")],
+            [
+                InlineKeyboardButton(text="Check devices", callback_data="my_devices"),
+                InlineKeyboardButton(text="Check status", callback_data="connect_status"),
+            ],
+        ]
+    )
+
+
+def connect_text(owner_id: int) -> str:
+    apk_source = "ready" if agent_apk_path() or AGENT_APK_URL else "missing"
+    devices = list_devices_for_user(str(owner_id))
+    online_count = sum(1 for device in devices if device.get("online"))
+    return (
+        "Phone connection wizard\n\n"
+        "1. Download and install Android Agent APK.\n"
+        "2. Tap Create new QR.\n"
+        "3. Open the QR link on the phone.\n"
+        "4. In Android Agent, allow notifications, screen view, and accessibility if you need control.\n"
+        "5. Return here and tap Check devices.\n\n"
+        f"APK: {apk_source}\n"
+        f"Devices: {len(devices)} total, {online_count} online"
+    )
+
+
+async def send_connect(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    await message.answer(connect_text(message.from_user.id), reply_markup=connect_keyboard())
 
 
 async def send_build_apk(message: Message, command: CommandObject) -> None:
@@ -1498,6 +1534,32 @@ async def callbacks(callback: CallbackQuery) -> None:
         await callback.answer()
         return
 
+    if action == "connect_wizard":
+        await callback.answer()
+        await callback.message.answer(connect_text(callback.from_user.id), reply_markup=connect_keyboard())
+        return
+
+    if action == "connect_status":
+        await callback.answer()
+        await callback.message.answer(
+            "Connection status\n\n"
+            f"{connect_text(callback.from_user.id)}\n\n"
+            f"Install page: {public_server_url()}/agent\n"
+            f"APK link: {release_apk_url()}"
+        )
+        return
+
+    if action == "connect_build_help":
+        await callback.answer()
+        await callback.message.answer(
+            "To build a fresh APK:\n\n"
+            "1. Send the bot an icon image, optional.\n"
+            "2. Send: /build_apk Hunter Agent\n"
+            "3. Wait until I send the APK link.\n\n"
+            "Required Railway variables: GITHUB_TOKEN, GITHUB_REPO, GITHUB_WORKFLOW, AGENT_APK_URL."
+        )
+        return
+
     if action == "pair_device":
         await callback.answer("Preparing QR...")
         await send_pairing_details(callback.message, callback.from_user.id)
@@ -1604,6 +1666,7 @@ async def run_bot() -> None:
     dp.message.register(send_settings, Command("settings"))
     dp.message.register(send_my_id, Command("myid"))
     dp.message.register(send_status, Command("status"))
+    dp.message.register(send_connect, Command("connect"))
     dp.message.register(send_build_apk, Command("build_apk"))
     dp.message.register(send_pairing_code, Command("pair"))
     dp.message.register(handle_web_app_data, F.web_app_data)

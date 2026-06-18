@@ -131,9 +131,13 @@ After that release exists, `/agent` will show a working download button and
 From Telegram:
 
 ```text
+/connect
 /build_apk My Agent
 ```
 
 If you send an image to the bot before `/build_apk`, that image becomes the APK icon.
 The bot starts GitHub Actions, watches the workflow run, and sends the APK
 download link or failed run logs when the build finishes.
+
+Use `/connect` as the main phone setup wizard. It includes buttons for APK
+install, QR pairing, build help, device status, and diagnostics.
