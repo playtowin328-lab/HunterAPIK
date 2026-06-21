@@ -309,6 +309,82 @@ select:focus {
   gap: 10px;
 }
 
+.remote-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.remote-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.remote-head h2 {
+  font-size: 19px;
+}
+
+.remote-head p:not(.eyebrow) {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.remote-screen {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #000000;
+}
+
+.remote-screen img {
+  display: block;
+  width: 100%;
+  max-height: min(68vh, 620px);
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+  object-fit: contain;
+}
+
+.remote-quality,
+.remote-primary-actions,
+.remote-secondary-actions,
+.remote-text-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.remote-quality {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.remote-primary-actions {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.remote-secondary-actions {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.remote-text-actions {
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+}
+
+.remote-quality-button.active {
+  background: var(--surface-strong);
+  color: var(--hot);
+  box-shadow: inset 0 0 0 1px rgba(14, 124, 134, 0.28);
+}
+
 .device-card {
   display: grid;
   grid-template-columns: 62px minmax(0, 1fr);
@@ -594,5 +670,14 @@ h2 {
   .connect-panel {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .remote-primary-actions,
+  .remote-secondary-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .remote-text-actions {
+    grid-template-columns: 1fr 1fr;
   }
 }

@@ -87,6 +87,45 @@
         <button class="secondary-button" id="connectCurrentDevice" type="button">Открыть установку</button>
       </section>
 
+      <section class="remote-panel hidden" id="remotePanel" aria-label="Пульт выбранного устройства">
+        <div class="remote-head">
+          <div>
+            <p class="eyebrow">Пульт</p>
+            <h2 id="remoteDeviceTitle">Устройство</h2>
+            <p id="remoteDeviceMeta">Выбери устройство из списка</p>
+          </div>
+          <button class="ghost-button neutral" id="closeRemotePanel" type="button">Скрыть</button>
+        </div>
+        <div class="remote-screen" id="remoteScreenPreview" hidden>
+          <img id="remoteScreenImage" alt="Live screen выбранного устройства">
+        </div>
+        <div class="remote-quality" role="group" aria-label="Качество live screen">
+          <button class="ghost-button neutral remote-quality-button" data-quality="fast" type="button">Быстро</button>
+          <button class="ghost-button neutral remote-quality-button" data-quality="balanced" type="button">Баланс</button>
+          <button class="ghost-button neutral remote-quality-button" data-quality="quality" type="button">Качество</button>
+        </div>
+        <div class="remote-primary-actions">
+          <button class="secondary-button remote-screen-button" type="button">Экран</button>
+          <button class="secondary-button remote-stop-screen-button" type="button">Стоп</button>
+          <button class="ghost-button neutral remote-command-button" data-command="back" type="button">Back</button>
+          <button class="ghost-button neutral remote-command-button" data-command="home" type="button">Home</button>
+          <button class="ghost-button neutral remote-command-button" data-command="recents" type="button">Recent</button>
+        </div>
+        <div class="remote-secondary-actions">
+          <button class="ghost-button neutral remote-command-button" data-command="notifications" type="button">Notify</button>
+          <button class="ghost-button neutral remote-command-button" data-command="quick_settings" type="button">Quick</button>
+          <button class="ghost-button neutral remote-command-button" data-command="lock_screen" type="button">Lock</button>
+          <button class="ghost-button neutral remote-command-button" data-command="open_settings" type="button">Settings</button>
+        </div>
+        <div class="remote-text-actions">
+          <input id="remotePanelTextInput" type="text" placeholder="Текст на телефон" maxlength="240">
+          <button class="secondary-button" id="remotePanelSendText" type="button">Send</button>
+          <button class="ghost-button neutral remote-command-button" data-command="key_enter" type="button">Enter</button>
+          <button class="ghost-button neutral remote-command-button" data-command="key_delete" type="button">Del</button>
+        </div>
+        <p class="control-note" id="remoteControlNote">Выбери устройство из списка.</p>
+      </section>
+
       <section class="device-list" id="deviceList" aria-label="Список устройств"></section>
     </main>
 
@@ -105,6 +144,7 @@
           <p class="meta"></p>
           <div class="telemetry"></div>
           <div class="actions">
+            <button class="primary-button open-remote-button" type="button">Пульт</button>
             <button class="secondary-button screen-button" type="button">Экран</button>
             <button class="secondary-button stop-screen-button" type="button">Стоп экран</button>
             <button class="secondary-button files-button" type="button">Файлы</button>

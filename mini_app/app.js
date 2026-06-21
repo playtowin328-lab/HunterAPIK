@@ -25,6 +25,15 @@ const totalDevices = document.querySelector("#totalDevices");
 const onlineDevices = document.querySelector("#onlineDevices");
 const userName = document.querySelector("#userName");
 const template = document.querySelector("#deviceCardTemplate");
+const remotePanel = document.querySelector("#remotePanel");
+const remoteDeviceTitle = document.querySelector("#remoteDeviceTitle");
+const remoteDeviceMeta = document.querySelector("#remoteDeviceMeta");
+const closeRemotePanel = document.querySelector("#closeRemotePanel");
+const remoteScreenPreview = document.querySelector("#remoteScreenPreview");
+const remoteScreenImage = document.querySelector("#remoteScreenImage");
+const remoteControlNote = document.querySelector("#remoteControlNote");
+const remotePanelTextInput = document.querySelector("#remotePanelTextInput");
+const remotePanelSendText = document.querySelector("#remotePanelSendText");
 
 const telegramUser = tg?.initDataUnsafe?.user;
 const profileName = telegramUser?.first_name || telegramUser?.username || "Я";
@@ -43,6 +52,8 @@ const typeNames = {
 
 let devices = [];
 let currentPairLinks = null;
+let selectedDeviceId = localStorage.getItem("hunter_selected_device_id") || "";
+let remotePanelCollapsed = false;
 const screenPollers = new Map();
 const pendingScreenRequests = new Set();
 const qualityProfiles = {
@@ -74,6 +85,17 @@ function qualityPayload(device) {
   const quality = getDeviceQuality(device);
   const profile = qualityProfiles[quality];
   return { stream: true, quality, max_size: profile.max_size };
+}
+
+function selectedDevice() {
+  return devices.find((device) => device.device_id === selectedDeviceId) || null;
+}
+
+function selectDevice(device) {
+  selectedDeviceId = device.device_id;
+  remotePanelCollapsed = false;
+  localStorage.setItem("hunter_selected_device_id", selectedDeviceId);
+  renderRemotePanel(false);
 }
 
 function getLocalDeviceId() {
@@ -445,7 +467,7 @@ function stopScreenPolling(deviceId) {
   pendingScreenRequests.delete(deviceId);
 }
 
-async function sendSimpleDeviceCommand(device, type, controlNote, successText) {
+async function sendSimpleDeviceCommand(device, type, controlNote, successText, payload = {}) {
   if (!device.online) {
     controlNote.textContent = "Устройство offline. Запусти агент на телефоне.";
     return;
@@ -453,15 +475,76 @@ async function sendSimpleDeviceCommand(device, type, controlNote, successText) {
 
   try {
     controlNote.textContent = "Команда отправлена, жду ответ агента...";
-    const result = await sendCommandAndWait(device, type);
+    const result = await sendCommandAndWait(device, type, payload);
     controlNote.textContent = commandResultText(result, successText);
   } catch (error) {
     controlNote.textContent = error.message;
   }
 }
 
+function updateRemoteQualityButtons(device) {
+  const qualityButtons = [...remotePanel.querySelectorAll(".remote-quality-button")];
+  const currentQuality = device ? getDeviceQuality(device) : "balanced";
+  qualityButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.quality === currentQuality);
+  });
+}
+
+function renderRemotePanel(restartScreen = false) {
+  const device = selectedDevice();
+  if (!device || remotePanelCollapsed) {
+    remotePanel.classList.add("hidden");
+    return;
+  }
+
+  remotePanel.classList.remove("hidden");
+  remoteDeviceTitle.textContent = device.name;
+  remoteDeviceMeta.textContent = `${device.platform || "unknown"} · ${device.agent || "agent"} · ${device.online ? "Online" : "Offline"}`;
+  updateRemoteQualityButtons(device);
+  const diagnosticsText = formatDiagnostics(device);
+  remoteControlNote.textContent = device.online
+    ? diagnosticsText || "Пульт готов. Запусти экран или отправь команду."
+    : `Устройство offline.${diagnosticsText ? ` Последнее: ${diagnosticsText}` : ""}`;
+
+  if (restartScreen && device.online) {
+    startScreenPolling(device, remoteScreenPreview, remoteScreenImage, remoteControlNote);
+  }
+}
+
+async function startRemoteScreen() {
+  const device = selectedDevice();
+  if (!device) {
+    return;
+  }
+  if (/iphone|ios|ipad/i.test(`${device.platform} ${device.name}`)) {
+    remoteControlNote.textContent = "iPhone требует Apple screen sharing или approved-сервис.";
+    return;
+  }
+  if (!device.online) {
+    remoteControlNote.textContent = "Устройство offline. Запусти агент или ADB-мост.";
+    return;
+  }
+  try {
+    remoteControlNote.textContent = "Запрашиваю экран...";
+    const result = await sendCommandAndWait(device, "request_screen", qualityPayload(device));
+    remoteControlNote.textContent = commandResultText(result, `Экран запущен: ${qualityProfiles[getDeviceQuality(device)].label}.`);
+    startScreenPolling(device, remoteScreenPreview, remoteScreenImage, remoteControlNote);
+  } catch (error) {
+    remoteControlNote.textContent = error.message;
+  }
+}
+
+async function sendRemoteCommand(type, payload = {}, successText = "Команда выполнена.") {
+  const device = selectedDevice();
+  if (!device) {
+    return;
+  }
+  await sendSimpleDeviceCommand(device, type, remoteControlNote, successText, payload);
+}
+
 function render() {
   const activeScreenIds = new Set(screenPollers.keys());
+  const restartRemoteScreen = Boolean(selectedDeviceId && activeScreenIds.has(selectedDeviceId));
   activeScreenIds.forEach((deviceId) => stopScreenPolling(deviceId));
   deviceList.innerHTML = "";
   totalDevices.textContent = devices.length;
@@ -473,8 +556,14 @@ function render() {
     : "Установи Lite APK, получи QR и запусти Android Agent на телефоне.";
 
   if (!devices.length) {
+    renderRemotePanel(false);
     deviceList.innerHTML = `<p class="empty-state">Пока нет подключенных устройств. Нажми "Скачать APK", затем "Получить QR" и запусти Android Agent. Экран и жесты доступны только в Full-сборке.</p>`;
     return;
+  }
+
+  if (!selectedDevice() && devices.length) {
+    selectedDeviceId = devices[0].device_id;
+    localStorage.setItem("hunter_selected_device_id", selectedDeviceId);
   }
 
   devices.forEach((device) => {
@@ -492,6 +581,11 @@ function render() {
     const telemetry = card.querySelector(".telemetry");
     const telemetryItems = formatTelemetry(device);
     telemetry.innerHTML = telemetryItems.map((item) => `<span>${item}</span>`).join("");
+
+    card.querySelector(".open-remote-button").addEventListener("click", () => {
+      selectDevice(device);
+      remotePanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
 
     const qualityButtons = [...card.querySelectorAll(".quality-button")];
     const updateQualityButtons = () => {
@@ -779,6 +873,8 @@ function render() {
       startScreenPolling(device, screenPreview, screenImage, controlNote);
     }
   });
+
+  renderRemotePanel(restartRemoteScreen);
 }
 
 function renderCurrentDevice() {
@@ -869,6 +965,107 @@ openPairPageButton.addEventListener("click", () => {
 openAgentDeepLinkButton.addEventListener("click", () => {
   if (currentPairLinks?.app_link) {
     openExternal(currentPairLinks.app_link);
+  }
+});
+
+closeRemotePanel.addEventListener("click", () => {
+  const device = selectedDevice();
+  if (device) {
+    stopScreenPolling(device.device_id);
+  }
+  remotePanelCollapsed = true;
+  remotePanel.classList.add("hidden");
+});
+
+remotePanel.querySelector(".remote-screen-button").addEventListener("click", startRemoteScreen);
+
+remotePanel.querySelector(".remote-stop-screen-button").addEventListener("click", async () => {
+  const device = selectedDevice();
+  if (!device) {
+    return;
+  }
+  await sendRemoteCommand("stop_screen", {}, "Команда остановки экрана отправлена.");
+  stopScreenPolling(device.device_id);
+});
+
+remotePanel.querySelectorAll(".remote-quality-button").forEach((button) => {
+  button.addEventListener("click", () => {
+    const device = selectedDevice();
+    if (!device) {
+      return;
+    }
+    const quality = setDeviceQuality(device, button.dataset.quality);
+    updateRemoteQualityButtons(device);
+    remoteControlNote.textContent = `Режим экрана: ${qualityProfiles[quality].label}.`;
+    if (screenPollers.has(device.device_id)) {
+      startScreenPolling(device, remoteScreenPreview, remoteScreenImage, remoteControlNote);
+    }
+  });
+});
+
+remotePanel.querySelectorAll(".remote-command-button").forEach((button) => {
+  button.addEventListener("click", () => {
+    sendRemoteCommand(button.dataset.command, {}, `${button.textContent.trim()} отправлен.`);
+  });
+});
+
+remotePanelSendText.addEventListener("click", async () => {
+  const text = remotePanelTextInput.value.trim();
+  if (!text) {
+    remoteControlNote.textContent = "Введи текст для отправки.";
+    return;
+  }
+  await sendRemoteCommand("input_text", { text }, "Текст отправлен.");
+  remotePanelTextInput.value = "";
+});
+
+let remotePointerStart = null;
+function remoteNormalizedPoint(event) {
+  const rect = remoteScreenImage.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+    y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+  };
+}
+
+remoteScreenImage.addEventListener("pointerdown", (event) => {
+  remotePointerStart = remoteNormalizedPoint(event);
+  remoteScreenImage.setPointerCapture?.(event.pointerId);
+});
+
+remoteScreenImage.addEventListener("pointercancel", () => {
+  remotePointerStart = null;
+});
+
+remoteScreenImage.addEventListener("pointerup", async (event) => {
+  const device = selectedDevice();
+  if (!device || !device.online) {
+    remoteControlNote.textContent = "Жест недоступен, пока устройство offline.";
+    remotePointerStart = null;
+    return;
+  }
+
+  const start = remotePointerStart || remoteNormalizedPoint(event);
+  const end = remoteNormalizedPoint(event);
+  const distance = Math.hypot(end.x - start.x, end.y - start.y);
+  remotePointerStart = null;
+
+  try {
+    if (distance > 0.06) {
+      const result = await sendCommandAndWait(device, "swipe", {
+        x: start.x,
+        y: start.y,
+        end_x: end.x,
+        end_y: end.y,
+      });
+      remoteControlNote.textContent = commandResultText(result, "Свайп выполнен.");
+      return;
+    }
+
+    const result = await sendCommandAndWait(device, "tap", { x: end.x, y: end.y });
+    remoteControlNote.textContent = commandResultText(result, `Тап: ${Math.round(end.x * 100)}%, ${Math.round(end.y * 100)}%.`);
+  } catch (error) {
+    remoteControlNote.textContent = error.message;
   }
 });
 
