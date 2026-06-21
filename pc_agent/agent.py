@@ -19,6 +19,14 @@ CONFIG_PATH = APP_DIR / "config.json"
 STARTUP_SCRIPT_NAME = "Hunter ADB Bridge.cmd"
 ADB_INFO_CACHE: dict[str, dict] = {}
 ADB_PREPARED: set[str] = set()
+AGENT_METRICS = {
+    "last_loop_ms": 0,
+    "last_adb_devices": 0,
+    "last_command_ms": 0,
+    "last_screen_ms": 0,
+    "commands_handled": 0,
+    "last_error": "",
+}
 
 
 def load_config() -> dict:
@@ -233,6 +241,12 @@ def adb_register_device(config: dict, serial: str) -> dict:
             "screen": "adb screencap",
             "control": "adb shell input",
             "low_latency": True,
+            "loop_ms": AGENT_METRICS["last_loop_ms"],
+            "command_ms": AGENT_METRICS["last_command_ms"],
+            "screen_ms": AGENT_METRICS["last_screen_ms"],
+            "commands_handled": AGENT_METRICS["commands_handled"],
+            "adb_devices": AGENT_METRICS["last_adb_devices"],
+            "last_error": AGENT_METRICS["last_error"],
         },
     }
     return api_request("POST", f"{server}/api/devices/heartbeat", payload, config["device_secret"])
@@ -270,6 +284,7 @@ def adb_complete_command(config: dict, device_id: str, command: dict, status: st
 
 def adb_upload_screen(config: dict, device_id: str, serial: str) -> str:
     server = config["server_url"].rstrip("/")
+    started = time.perf_counter()
     try:
         adb_shell(serial, "input keyevent KEYCODE_WAKEUP", timeout=4)
     except Exception:
@@ -284,6 +299,7 @@ def adb_upload_screen(config: dict, device_id: str, serial: str) -> str:
         "image_base64": base64.b64encode(image).decode("ascii"),
     }
     api_request("POST", f"{server}/api/devices/screen", payload, config["device_secret"])
+    AGENT_METRICS["last_screen_ms"] = round((time.perf_counter() - started) * 1000)
     return f"Screen uploaded: {len(image) // 1024} KB"
 
 
@@ -367,17 +383,25 @@ def adb_handle_command(config: dict, serial: str, device_id: str, command: dict)
 
 
 def adb_bridge_tick(config: dict) -> None:
-    for serial in adb_devices():
+    devices = adb_devices()
+    AGENT_METRICS["last_adb_devices"] = len(devices)
+    for serial in devices:
         device_id = adb_device_id(serial)
         adb_register_device(config, serial)
         for _ in range(5):
             command = adb_next_command(config, device_id)
             if not command:
                 break
+            started = time.perf_counter()
             try:
                 result = adb_handle_command(config, serial, device_id, command)
+                AGENT_METRICS["last_command_ms"] = round((time.perf_counter() - started) * 1000)
+                AGENT_METRICS["commands_handled"] += 1
+                AGENT_METRICS["last_error"] = ""
                 adb_complete_command(config, device_id, command, "acknowledged", result)
             except Exception as exc:
+                AGENT_METRICS["last_command_ms"] = round((time.perf_counter() - started) * 1000)
+                AGENT_METRICS["last_error"] = str(exc)[:160]
                 adb_complete_command(config, device_id, command, "failed", str(exc))
 
 
@@ -452,6 +476,9 @@ def heartbeat(config: dict) -> None:
             "hostname": socket.gethostname(),
             "python": platform.python_version(),
             "machine": platform.machine(),
+            "loop_ms": AGENT_METRICS["last_loop_ms"],
+            "adb_devices": AGENT_METRICS["last_adb_devices"],
+            "last_error": AGENT_METRICS["last_error"],
         },
     }
     api_request("POST", f"{server}/api/devices/heartbeat", payload, config["device_secret"])
@@ -467,12 +494,16 @@ def run_loop(config: dict, interval: int, adb_enabled: bool) -> None:
     else:
         print("Remote desktop tip: use WireGuard + RDP/SSH/RustDesk for screen control.")
     while True:
+        started = time.perf_counter()
         try:
             heartbeat(config)
             if adb_enabled:
                 adb_bridge_tick(config)
+            AGENT_METRICS["last_loop_ms"] = round((time.perf_counter() - started) * 1000)
             print(time.strftime("%H:%M:%S"), "online")
         except Exception as exc:
+            AGENT_METRICS["last_loop_ms"] = round((time.perf_counter() - started) * 1000)
+            AGENT_METRICS["last_error"] = str(exc)[:160]
             print(time.strftime("%H:%M:%S"), "error:", exc)
         time.sleep(interval)
 

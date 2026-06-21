@@ -1178,6 +1178,62 @@ def get_device_command(owner_id: str, device_id: str, command_id: str) -> dict |
     return command
 
 
+def device_diagnostics(owner_id: str, device_id: str) -> dict:
+    now = int(time.time())
+    diagnostics: dict = {
+        "pending_commands": 0,
+        "delivered_commands": 0,
+        "oldest_pending_age": 0,
+        "last_command": None,
+        "frame_age": None,
+    }
+    with db_connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT status, MIN(created_at) AS oldest, COUNT(*) AS count
+            FROM commands
+            WHERE owner_id = ? AND device_id = ? AND status IN ('pending', 'delivered')
+            GROUP BY status
+            """,
+            (str(owner_id), str(device_id)),
+        ).fetchall()
+        for row in rows:
+            if row["status"] == "pending":
+                diagnostics["pending_commands"] = int(row["count"])
+                diagnostics["oldest_pending_age"] = max(0, now - int(row["oldest"] or now))
+            elif row["status"] == "delivered":
+                diagnostics["delivered_commands"] = int(row["count"])
+
+        last = connection.execute(
+            """
+            SELECT type, status, created_at, updated_at, result
+            FROM commands
+            WHERE owner_id = ? AND device_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (str(owner_id), str(device_id)),
+        ).fetchone()
+
+    if last:
+        diagnostics["last_command"] = {
+            "type": last["type"],
+            "status": last["status"],
+            "age": max(0, now - int(last["updated_at"] or now)),
+            "duration_ms": max(0, int(last["updated_at"] or now) - int(last["created_at"] or now)) * 1000,
+            "result": str(last["result"] or "")[:160],
+        }
+
+    _, meta_path = screen_paths(owner_id, device_id)
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            diagnostics["frame_age"] = max(0, now - int(meta.get("updated_at", now)))
+        except (OSError, ValueError, json.JSONDecodeError):
+            diagnostics["frame_age"] = None
+    return diagnostics
+
+
 def screen_paths(owner_id: str, device_id: str) -> tuple[Path, Path]:
     safe_owner = "".join(ch for ch in str(owner_id) if ch.isalnum() or ch in {"_", "-"})
     safe_device = "".join(ch for ch in str(device_id) if ch.isalnum() or ch in {"_", "-"})
@@ -1536,6 +1592,7 @@ def list_devices_for_user(owner_id: str) -> list[dict]:
             "created_at": int(row["created_at"]),
         }
         item["online"] = now - item["last_seen"] <= DEVICE_TTL_SECONDS
+        item["diagnostics"] = device_diagnostics(item["owner_id"], item["device_id"])
         result.append(item)
 
     return result

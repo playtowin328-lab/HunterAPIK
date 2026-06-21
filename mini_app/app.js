@@ -125,6 +125,7 @@ function formatLastSeen(value) {
 
 function formatTelemetry(device) {
   const telemetry = device.telemetry || {};
+  const diagnostics = device.diagnostics || {};
   const items = [];
 
   if (typeof telemetry.battery_percent === "number" && telemetry.battery_percent >= 0) {
@@ -145,8 +146,56 @@ function formatTelemetry(device) {
   if (typeof telemetry.screen_streaming === "boolean") {
     items.push(`экран: ${telemetry.screen_streaming ? "on" : "off"}`);
   }
+  if (typeof telemetry.loop_ms === "number" && telemetry.loop_ms > 0) {
+    items.push(`agent loop: ${telemetry.loop_ms} ms`);
+  }
+  if (typeof telemetry.command_ms === "number" && telemetry.command_ms > 0) {
+    items.push(`adb cmd: ${telemetry.command_ms} ms`);
+  }
+  if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) {
+    items.push(`screen: ${telemetry.screen_ms} ms`);
+  }
+  if (diagnostics.pending_commands) {
+    items.push(`очередь: ${diagnostics.pending_commands}`);
+  }
+  if (typeof diagnostics.frame_age === "number") {
+    items.push(`кадр: ${diagnostics.frame_age} сек`);
+  }
+  if (telemetry.last_error) {
+    items.push(`ошибка: ${telemetry.last_error}`);
+  }
 
   return items;
+}
+
+function formatDiagnostics(device) {
+  const diagnostics = device.diagnostics || {};
+  const telemetry = device.telemetry || {};
+  const parts = [];
+
+  if (typeof diagnostics.frame_age === "number") {
+    parts.push(`кадр ${diagnostics.frame_age} сек`);
+  }
+  if (diagnostics.pending_commands) {
+    parts.push(`очередь ${diagnostics.pending_commands}`);
+  }
+  if (diagnostics.delivered_commands) {
+    parts.push(`доставлено ${diagnostics.delivered_commands}`);
+  }
+  if (diagnostics.last_command) {
+    const last = diagnostics.last_command;
+    parts.push(`последняя: ${last.type} · ${last.status} · ${last.duration_ms || 0} ms`);
+  }
+  if (typeof telemetry.loop_ms === "number" && telemetry.loop_ms > 0) {
+    parts.push(`агент ${telemetry.loop_ms} ms`);
+  }
+  if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) {
+    parts.push(`экран ${telemetry.screen_ms} ms`);
+  }
+  if (telemetry.last_error) {
+    parts.push(`ошибка: ${telemetry.last_error}`);
+  }
+  return parts.join(" · ");
 }
 
 function setTelegramTheme() {
@@ -227,6 +276,7 @@ async function getCommandStatus(device, commandId) {
 }
 
 async function waitForCommandResult(device, commandPayload, timeoutMs = 9000) {
+  const startedAt = performance.now();
   const commandId = commandPayload?.command?.command_id;
   if (!commandId) {
     return commandPayload;
@@ -237,6 +287,9 @@ async function waitForCommandResult(device, commandPayload, timeoutMs = 9000) {
     const payload = await getCommandStatus(device, commandId);
     const status = payload.command?.status;
     if (status && status !== "pending" && status !== "delivered") {
+      if (payload.command) {
+        payload.command.client_latency_ms = Math.round(performance.now() - startedAt);
+      }
       return payload;
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -255,9 +308,10 @@ function commandResultText(payload, fallback) {
   if (!command) {
     return fallback;
   }
+  const latency = command.client_latency_ms ? ` · ${command.client_latency_ms} ms` : "";
   const result = command.result ? ` ${command.result}` : "";
   if (command.status === "acknowledged" || command.status === "done") {
-    return `${fallback}${result}`;
+    return `${fallback}${latency}${result}`;
   }
   if (command.status === "rejected") {
     return `Отклонено.${result}`;
@@ -409,9 +463,10 @@ function render() {
     const controlNote = card.querySelector(".control-note");
     const screenPreview = card.querySelector(".screen-preview");
     const screenImage = screenPreview.querySelector("img");
+    const diagnosticsText = formatDiagnostics(device);
     controlNote.textContent = device.online
-      ? "Готов к командам агента. Просмотр экрана требует отдельного разрешения на телефоне."
-      : "Устройство offline. Запусти агент на телефоне.";
+      ? diagnosticsText || "Готов к командам агента. Просмотр экрана требует отдельного разрешения на телефоне."
+      : `Устройство offline.${diagnosticsText ? ` Последнее: ${diagnosticsText}` : " Запусти агент на телефоне."}`;
 
     card.querySelector(".screen-button").addEventListener("click", async () => {
       if (/iphone|ios|ipad/i.test(`${device.platform} ${device.name}`)) {
