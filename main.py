@@ -30,13 +30,6 @@ from aiogram.types import (
     WebAppInfo,
 )
 from dotenv import load_dotenv
-from PIL import Image, ImageEnhance, ImageFilter, UnidentifiedImageError
-import qrcode
-
-try:
-    import pytesseract
-except Exception:
-    pytesseract = None
 
 load_dotenv()
 
@@ -83,6 +76,22 @@ PAIRING_TTL_SECONDS = int(os.getenv("PAIRING_TTL_SECONDS", "600"))
 
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
+APP_STARTED_AT = time.time()
+BOT_POLLING_READY = False
+
+
+def pil_modules():
+    from PIL import Image, ImageEnhance, ImageFilter, UnidentifiedImageError
+
+    return Image, ImageEnhance, ImageFilter, UnidentifiedImageError
+
+
+def tesseract_module():
+    try:
+        import pytesseract
+    except Exception:
+        return None
+    return pytesseract
 
 
 def is_admin_user(user) -> bool:
@@ -906,6 +915,8 @@ def make_pairing_qr(link: str, code: str) -> BufferedInputFile:
 
 
 def make_pairing_qr_bytes(link: str) -> bytes:
+    import qrcode
+
     qr = qrcode.QRCode(version=1, box_size=10, border=3)
     qr.add_data(link)
     qr.make(fit=True)
@@ -1299,6 +1310,7 @@ def prepare_build_icon(owner_id: int, source_path: Path) -> str | None:
     if not source_path.exists():
         return None
 
+    Image, _, _, _ = pil_modules()
     user_assets = BUILD_ASSET_DIR / str(owner_id)
     user_assets.mkdir(parents=True, exist_ok=True)
     output_path = user_assets / "icon.png"
@@ -1668,7 +1680,15 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed_url = urlparse(self.path)
         if parsed_url.path == "/health":
-            self.send_json({"ok": True, "service": "apk-converter-bot"})
+            self.send_json(
+                {
+                    "ok": True,
+                    "service": "apk-converter-bot",
+                    "uptime_sec": round(time.time() - APP_STARTED_AT, 2),
+                    "bot_polling_ready": BOT_POLLING_READY,
+                    "mini_app": True,
+                }
+            )
             return
 
         if parsed_url.path == "/pair":
@@ -2163,16 +2183,19 @@ def start_web_app() -> ThreadingHTTPServer:
 
 
 def image_to_pdf(image_path: Path, output_path: Path) -> None:
+    Image, _, _, _ = pil_modules()
     with Image.open(image_path) as image:
         image.convert("RGB").save(output_path, "PDF", resolution=100.0)
 
 
 def image_to_png(image_path: Path, output_path: Path) -> None:
+    Image, _, _, _ = pil_modules()
     with Image.open(image_path) as image:
         image.convert("RGBA").save(output_path, "PNG")
 
 
 def enhance_image(image_path: Path, output_path: Path) -> None:
+    Image, ImageEnhance, ImageFilter, _ = pil_modules()
     with Image.open(image_path) as source:
         image = source.convert("RGB")
         image = image.filter(ImageFilter.SHARPEN)
@@ -2187,10 +2210,12 @@ def image_to_zip(image_path: Path, output_path: Path) -> None:
 
 
 def recognize_text(image_path: Path) -> str:
+    pytesseract = tesseract_module()
     if pytesseract is None:
         return "OCR-модуль не установлен. Установи pytesseract и Tesseract OCR."
 
     try:
+        Image, _, _, _ = pil_modules()
         with Image.open(image_path) as image:
             text = pytesseract.image_to_string(image, lang="rus+eng").strip()
         return text or "Текст на фото не найден."
@@ -2200,12 +2225,12 @@ def recognize_text(image_path: Path) -> str:
 
 def ensure_valid_image(image_path: Path) -> bool:
     try:
+        Image, _, _, UnidentifiedImageError = pil_modules()
         with Image.open(image_path) as image:
             image.verify()
         return True
     except (UnidentifiedImageError, OSError):
         return False
-
 
 async def get_last_photo_or_warn(callback: CallbackQuery) -> Path | None:
     user_id = callback.from_user.id
@@ -2623,11 +2648,11 @@ async def callbacks(callback: CallbackQuery) -> None:
 
 async def run_bot() -> None:
     if not BOT_TOKEN:
-        raise RuntimeError("Не найден BOT_TOKEN. Создай .env по примеру .env.example")
+        raise RuntimeError("BOT_TOKEN is missing. Add it to Railway variables.")
 
+    web_server = start_web_app()
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
-
     dp.message.register(send_start, CommandStart())
     dp.message.register(send_start, Command("help"))
     dp.message.register(send_guide, Command("guide"))
@@ -2652,7 +2677,8 @@ async def run_bot() -> None:
     dp.callback_query.register(callbacks)
 
     print("APK Converter bot started")
-    web_server = start_web_app()
+    global BOT_POLLING_READY
+    BOT_POLLING_READY = True
     try:
         await dp.start_polling(bot)
     finally:
