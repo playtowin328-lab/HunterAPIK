@@ -26,7 +26,7 @@ public class HeartbeatService extends Service {
 
     private static final String CHANNEL_ID = "apk_agent_connection";
     private static final int NOTIFICATION_ID = 41;
-    private static final int COMMAND_POLL_SECONDS = 1;
+    private static final long COMMAND_POLL_INTERVAL_MS = 500L;
     private static final int MAX_COMMANDS_PER_TICK = 6;
     private static final long HEARTBEAT_INTERVAL_MS = 15_000L;
 
@@ -85,7 +85,7 @@ public class HeartbeatService extends Service {
         }
 
         executor = Executors.newSingleThreadScheduledExecutor();
-        executor.scheduleWithFixedDelay(this::agentTick, 0, COMMAND_POLL_SECONDS, TimeUnit.SECONDS);
+        executor.scheduleWithFixedDelay(this::agentTick, 0, COMMAND_POLL_INTERVAL_MS, TimeUnit.MILLISECONDS);
     }
 
     private void agentTick() {

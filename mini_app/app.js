@@ -164,6 +164,8 @@ function formatTelemetry(device) {
   if (typeof telemetry.screen_streaming === "boolean") items.push(`экран: ${telemetry.screen_streaming ? "on" : "off"}`);
   if (typeof telemetry.loop_ms === "number" && telemetry.loop_ms > 0) items.push(`agent: ${telemetry.loop_ms} ms`);
   if (typeof telemetry.command_ms === "number" && telemetry.command_ms > 0) items.push(`cmd: ${telemetry.command_ms} ms`);
+  if (typeof telemetry.gesture_ms === "number" && telemetry.gesture_ms > 0) items.push(`gesture: ${telemetry.gesture_ms} ms`);
+  if (telemetry.gesture_result) items.push(`gesture: ${telemetry.gesture_result}`);
   if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) items.push(`screen: ${telemetry.screen_ms} ms`);
   if (typeof telemetry.screen_frames === "number" && telemetry.screen_frames > 0) items.push(`frames: ${telemetry.screen_frames}`);
   if (typeof telemetry.screen_dropped === "number" && telemetry.screen_dropped > 0) items.push(`drop: ${telemetry.screen_dropped}`);
@@ -188,6 +190,8 @@ function formatDiagnostics(device) {
   }
   if (typeof telemetry.loop_ms === "number" && telemetry.loop_ms > 0) parts.push(`агент ${telemetry.loop_ms} ms`);
   if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) parts.push(`экран ${telemetry.screen_ms} ms`);
+  if (typeof telemetry.gesture_ms === "number" && telemetry.gesture_ms > 0) parts.push(`жест ${telemetry.gesture_ms} ms`);
+  if (telemetry.gesture_result) parts.push(telemetry.gesture_result);
   if (telemetry.last_error) parts.push(`ошибка: ${telemetry.last_error}`);
   return parts.join(" · ");
 }
@@ -407,9 +411,24 @@ async function startRemoteScreen() {
 
 function normalizedPoint(event, image) {
   const rect = image.getBoundingClientRect();
+  const naturalRatio = image.naturalWidth && image.naturalHeight ? image.naturalWidth / image.naturalHeight : rect.width / rect.height;
+  const viewRatio = rect.width / rect.height;
+  let contentWidth = rect.width;
+  let contentHeight = rect.height;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  if (naturalRatio > viewRatio) {
+    contentHeight = rect.width / naturalRatio;
+    offsetY = (rect.height - contentHeight) / 2;
+  } else if (naturalRatio < viewRatio) {
+    contentWidth = rect.height * naturalRatio;
+    offsetX = (rect.width - contentWidth) / 2;
+  }
+
   return {
-    x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
-    y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+    x: Math.max(0, Math.min(1, (event.clientX - rect.left - offsetX) / contentWidth)),
+    y: Math.max(0, Math.min(1, (event.clientY - rect.top - offsetY) / contentHeight)),
   };
 }
 

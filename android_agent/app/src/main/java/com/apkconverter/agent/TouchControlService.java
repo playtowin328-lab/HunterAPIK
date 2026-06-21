@@ -1,9 +1,11 @@
 package com.apkconverter.agent;
 
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.AccessibilityService.GestureResultCallback;
 import android.accessibilityservice.GestureDescription;
 import android.graphics.Path;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.util.DisplayMetrics;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
@@ -11,6 +13,8 @@ import android.view.accessibility.AccessibilityNodeInfo;
 
 public class TouchControlService extends AccessibilityService {
     private static TouchControlService instance;
+    private static volatile long lastGestureMs;
+    private static volatile String lastGestureResult = "";
 
     @Override
     protected void onServiceConnected() {
@@ -38,11 +42,16 @@ public class TouchControlService extends AccessibilityService {
 
     static boolean tapNormalized(float normalizedX, float normalizedY) {
         if (instance == null) {
+            recordGesture("tap", 0, false, "service not ready");
             return false;
         }
 
         DisplayMetrics metrics = new DisplayMetrics();
         WindowManager windowManager = (WindowManager) instance.getSystemService(WINDOW_SERVICE);
+        if (windowManager == null) {
+            recordGesture("tap", 0, false, "window service unavailable");
+            return false;
+        }
         windowManager.getDefaultDisplay().getRealMetrics(metrics);
 
         float x = clamp(normalizedX) * metrics.widthPixels;
@@ -54,16 +63,21 @@ public class TouchControlService extends AccessibilityService {
         GestureDescription gesture = new GestureDescription.Builder()
                 .addStroke(new GestureDescription.StrokeDescription(path, 0, 80))
                 .build();
-        return instance.dispatchGesture(gesture, null, null);
+        return dispatch("tap", gesture);
     }
 
     static boolean longTapNormalized(float normalizedX, float normalizedY) {
         if (instance == null) {
+            recordGesture("long_tap", 0, false, "service not ready");
             return false;
         }
 
         DisplayMetrics metrics = new DisplayMetrics();
         WindowManager windowManager = (WindowManager) instance.getSystemService(WINDOW_SERVICE);
+        if (windowManager == null) {
+            recordGesture("long_tap", 0, false, "window service unavailable");
+            return false;
+        }
         windowManager.getDefaultDisplay().getRealMetrics(metrics);
 
         float x = clamp(normalizedX) * metrics.widthPixels;
@@ -75,7 +89,7 @@ public class TouchControlService extends AccessibilityService {
         GestureDescription gesture = new GestureDescription.Builder()
                 .addStroke(new GestureDescription.StrokeDescription(path, 0, 520))
                 .build();
-        return instance.dispatchGesture(gesture, null, null);
+        return dispatch("long_tap", gesture);
     }
 
     static boolean swipeNormalized(float startX, float startY, float endX, float endY) {
@@ -84,11 +98,16 @@ public class TouchControlService extends AccessibilityService {
 
     static boolean swipeNormalized(float startX, float startY, float endX, float endY, long durationMs) {
         if (instance == null) {
+            recordGesture("swipe", 0, false, "service not ready");
             return false;
         }
 
         DisplayMetrics metrics = new DisplayMetrics();
         WindowManager windowManager = (WindowManager) instance.getSystemService(WINDOW_SERVICE);
+        if (windowManager == null) {
+            recordGesture("swipe", 0, false, "window service unavailable");
+            return false;
+        }
         windowManager.getDefaultDisplay().getRealMetrics(metrics);
 
         Path path = new Path();
@@ -98,7 +117,15 @@ public class TouchControlService extends AccessibilityService {
         GestureDescription gesture = new GestureDescription.Builder()
                 .addStroke(new GestureDescription.StrokeDescription(path, 0, durationMs))
                 .build();
-        return instance.dispatchGesture(gesture, null, null);
+        return dispatch("swipe", gesture);
+    }
+
+    static long getLastGestureMs() {
+        return lastGestureMs;
+    }
+
+    static String getLastGestureResult() {
+        return lastGestureResult == null ? "" : lastGestureResult;
     }
 
     static boolean notifications() {
@@ -181,7 +208,40 @@ public class TouchControlService extends AccessibilityService {
         if (instance == null) {
             return false;
         }
-        return instance.performGlobalAction(action);
+        long started = SystemClock.elapsedRealtime();
+        boolean result = instance.performGlobalAction(action);
+        recordGesture("global_action", SystemClock.elapsedRealtime() - started, result, result ? "accepted" : "rejected");
+        return result;
+    }
+
+    private static boolean dispatch(String label, GestureDescription gesture) {
+        long started = SystemClock.elapsedRealtime();
+        boolean accepted = instance.dispatchGesture(gesture, new GestureResultCallback() {
+            @Override
+            public void onCompleted(GestureDescription gestureDescription) {
+                recordGesture(label, SystemClock.elapsedRealtime() - started, true, "completed");
+            }
+
+            @Override
+            public void onCancelled(GestureDescription gestureDescription) {
+                recordGesture(label, SystemClock.elapsedRealtime() - started, false, "cancelled");
+            }
+        }, null);
+        recordGesture(label, SystemClock.elapsedRealtime() - started, accepted, accepted ? "accepted" : "rejected");
+        return accepted;
+    }
+
+    private static void recordGesture(String label, long durationMs, boolean success, String detail) {
+        lastGestureMs = Math.max(0, durationMs);
+        lastGestureResult = label + ":" + (success ? "ok" : "fail") + ":" + detail;
+        TouchControlService service = instance;
+        if (service != null) {
+            AgentConfig.prefs(service)
+                    .edit()
+                    .putLong(AgentConfig.KEY_LAST_GESTURE_MS, lastGestureMs)
+                    .putString(AgentConfig.KEY_LAST_GESTURE_RESULT, lastGestureResult)
+                    .apply();
+        }
     }
 
     private static float clamp(float value) {

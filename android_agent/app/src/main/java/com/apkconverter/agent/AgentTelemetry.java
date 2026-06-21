@@ -28,6 +28,8 @@ final class AgentTelemetry {
                 + "\"screen_streaming\":" + (BuildConfig.FULL_CONTROL && ScreenCaptureService.isRunning()) + ","
                 + "\"loop_ms\":" + prefs.getLong(AgentConfig.KEY_LAST_LOOP_MS, 0) + ","
                 + "\"command_ms\":" + prefs.getLong(AgentConfig.KEY_LAST_COMMAND_MS, 0) + ","
+                + "\"gesture_ms\":" + prefs.getLong(AgentConfig.KEY_LAST_GESTURE_MS, 0) + ","
+                + "\"gesture_result\":\"" + escape(prefs.getString(AgentConfig.KEY_LAST_GESTURE_RESULT, "")) + "\","
                 + "\"error_count\":" + prefs.getInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0) + ","
                 + "\"last_error\":\"" + escape(prefs.getString(AgentConfig.KEY_LAST_ERROR, "")) + "\","
                 + "\"screen_ms\":" + ScreenCaptureService.getLastUploadMs() + ","
