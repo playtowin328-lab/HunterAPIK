@@ -70,6 +70,15 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        if (AgentConfig.prefs(this).getBoolean(AgentConfig.KEY_ENABLED, false)) {
+            AgentStarter.start(this);
+        }
+        renderStatus();
+    }
+
+    @Override
     protected void onDestroy() {
         executor.shutdownNow();
         super.onDestroy();
@@ -149,7 +158,7 @@ public class MainActivity extends Activity {
             if (agentSwitch.isChecked()) {
                 startAgentService();
             } else {
-                startService(new Intent(this, HeartbeatService.class).setAction(HeartbeatService.ACTION_STOP));
+                AgentStarter.stop(this);
             }
             renderStatus();
         });
@@ -464,12 +473,7 @@ public class MainActivity extends Activity {
     }
 
     private void startAgentService() {
-        Intent intent = new Intent(this, HeartbeatService.class).setAction(HeartbeatService.ACTION_START);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent);
-        } else {
-            startService(intent);
-        }
+        AgentStarter.start(this);
     }
 
     private void openNotificationSettings() {

@@ -65,7 +65,18 @@ public class HeartbeatService extends Service {
             executor.shutdownNow();
         }
         releaseWakeLock();
+        if (AgentConfig.prefs(this).getBoolean(AgentConfig.KEY_ENABLED, false)) {
+            AgentStarter.scheduleRestart(this);
+        }
         super.onDestroy();
+    }
+
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        if (AgentConfig.prefs(this).getBoolean(AgentConfig.KEY_ENABLED, false)) {
+            AgentStarter.scheduleRestart(this);
+        }
+        super.onTaskRemoved(rootIntent);
     }
 
     private void startHeartbeatLoop() {
