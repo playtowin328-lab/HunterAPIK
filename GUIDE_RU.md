@@ -200,7 +200,7 @@ hunter-pc-agent.exe doctor --adb
 
 ```powershell
 hunter-pc-agent.exe pair --server https://web-production-715d7.up.railway.app --code 123456 --name "Home PC"
-hunter-pc-agent.exe run --adb --interval 3
+hunter-pc-agent.exe run --adb --interval 1
 ```
 
 Для поездок схема такая: домашний ПК должен быть включен, PC Agent должен быть в автозапуске, а телефон должен быть подключен по USB или заранее настроенному Wireless debugging. Тогда ты открываешь мини-ап из любой страны и работаешь через домашний мост.

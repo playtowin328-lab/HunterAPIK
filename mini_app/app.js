@@ -44,6 +44,11 @@ const typeNames = {
 let devices = [];
 let currentPairLinks = null;
 const screenPollers = new Map();
+const pendingScreenRequests = new Set();
+
+function isAdbBridge(device) {
+  return /adb-bridge/i.test(`${device.agent || ""} ${device.platform || ""}`);
+}
 
 function getLocalDeviceId() {
   const existingId = localStorage.getItem(localDeviceIdKey);
@@ -234,9 +239,10 @@ async function waitForCommandResult(device, commandPayload, timeoutMs = 9000) {
     if (status && status !== "pending" && status !== "delivered") {
       return payload;
     }
-    await new Promise((resolve) => setTimeout(resolve, 550));
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  return { command: { ...commandPayload.command, status: "timeout", result: "Агент не подтвердил команду за 9 секунд." } };
+  const seconds = Math.max(1, Math.round(timeoutMs / 1000));
+  return { command: { ...commandPayload.command, status: "timeout", result: `Агент не подтвердил команду за ${seconds} сек.` } };
 }
 
 async function sendCommandAndWait(device, type, payload = {}) {
@@ -292,10 +298,24 @@ async function loadScreenFrame(device) {
   return response.json();
 }
 
-function startScreenPolling(device, screenPreview, screenImage, controlNote) {
-  if (screenPollers.has(device.device_id)) {
-    clearInterval(screenPollers.get(device.device_id));
+async function requestFreshScreenFrame(device) {
+  if (!device.online || pendingScreenRequests.has(device.device_id)) {
+    return;
   }
+
+  pendingScreenRequests.add(device.device_id);
+  try {
+    const commandPayload = await sendCommand(device, "request_screen", { stream: true });
+    await waitForCommandResult(device, commandPayload, 1800);
+  } catch (error) {
+    // The frame loader displays stale/no-frame state; avoid noisy notes during live polling.
+  } finally {
+    pendingScreenRequests.delete(device.device_id);
+  }
+}
+
+function startScreenPolling(device, screenPreview, screenImage, controlNote) {
+  stopScreenPolling(device.device_id);
 
   const loadFrame = async () => {
     try {
@@ -303,27 +323,41 @@ function startScreenPolling(device, screenPreview, screenImage, controlNote) {
       screenImage.src = payload.frame.image_data;
       screenPreview.hidden = false;
       const frameAge = Math.max(0, Math.round(Date.now() / 1000 - payload.frame.updated_at));
-      if (frameAge > 6) {
+      if (frameAge > 4) {
         controlNote.textContent = `Кадр устарел ${frameAge} сек назад. Проверь разрешение экрана на телефоне и что экран не заблокирован.`;
         return;
       }
-      controlNote.textContent = `Кадр обновлён: ${formatLastSeen(payload.frame.updated_at)}`;
+      controlNote.textContent = isAdbBridge(device)
+        ? `Live ADB: кадр ${frameAge} сек назад`
+        : `Кадр обновлён: ${formatLastSeen(payload.frame.updated_at)}`;
     } catch (error) {
       controlNote.textContent = `Жду первый кадр. ${error.message}.`;
     }
   };
 
+  if (isAdbBridge(device)) {
+    requestFreshScreenFrame(device);
+  }
   loadFrame();
-  screenPollers.set(device.device_id, setInterval(loadFrame, 1200));
+  const frameTimer = setInterval(loadFrame, isAdbBridge(device) ? 700 : 1200);
+  const requestTimer = isAdbBridge(device)
+    ? setInterval(() => requestFreshScreenFrame(device), 850)
+    : null;
+  screenPollers.set(device.device_id, { frameTimer, requestTimer });
 }
 
 function stopScreenPolling(deviceId) {
-  if (!screenPollers.has(deviceId)) {
+  const poller = screenPollers.get(deviceId);
+  if (!poller) {
     return;
   }
 
-  clearInterval(screenPollers.get(deviceId));
+  clearInterval(poller.frameTimer);
+  if (poller.requestTimer) {
+    clearInterval(poller.requestTimer);
+  }
   screenPollers.delete(deviceId);
+  pendingScreenRequests.delete(deviceId);
 }
 
 async function sendSimpleDeviceCommand(device, type, controlNote, successText) {
@@ -392,18 +426,14 @@ function render() {
 
       try {
         controlNote.textContent = "Запрашиваю экран, жду ответ агента...";
-        const result = await sendCommandAndWait(device, "request_screen");
-        const end = { x: 0, y: 0 };
-        setTimeout(() => {
-          controlNote.textContent = commandResultText(result, "Запрос экрана обработан.");
-        }, 0);
-        controlNote.textContent = "Запрос экрана отправлен. Подтверди запись экрана на телефоне, если Android спросит разрешение.";
-        controlNote.textContent = commandResultText(result, "Запрос экрана обработан.");
-        setTimeout(() => startScreenPolling(device, screenPreview, screenImage, controlNote), 1200);
-        setTimeout(() => {
-          controlNote.textContent = commandResultText(result, "Запрос экрана обработан.");
-        }, 0);
-        controlNote.textContent = commandResultText(result, `Тап выполнен: ${Math.round(end.x * 100)}%, ${Math.round(end.y * 100)}%.`);
+        const result = await sendCommandAndWait(device, "request_screen", { stream: true });
+        controlNote.textContent = commandResultText(
+          result,
+          isAdbBridge(device)
+            ? "Live ADB экран запущен."
+            : "Запрос экрана обработан. Подтверди запись экрана на телефоне, если Android спросит разрешение."
+        );
+        startScreenPolling(device, screenPreview, screenImage, controlNote);
       } catch (error) {
         controlNote.textContent = error.message;
       }

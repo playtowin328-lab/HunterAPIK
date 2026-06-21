@@ -670,7 +670,7 @@ def pc_agent_text() -> str:
         "Когда ты будешь в другой стране, открываешь мини-ап и управляешь устройством `adb-...`, пока домашний ПК включен и телефон подключен/доступен по ADB.\n\n"
         "Ручной режим, если автозапуск не нужен:\n"
         f"`{PC_AGENT_EXE_NAME} pair --server {public_server_url()} --code 123456 --name \"Home PC\"`\n"
-        f"`{PC_AGENT_EXE_NAME} run --adb --interval 3`\n"
+        f"`{PC_AGENT_EXE_NAME} run --adb --interval 1`\n"
         f"`{PC_AGENT_EXE_NAME} doctor --adb`\n\n"
         "Экран ПК лучше подключать легально через WireGuard + RDP/SSH или RustDesk. "
         "Наш PC Agent не скрывается и не выполняет произвольные команды."
@@ -1088,6 +1088,14 @@ def create_device_command(owner_id: str, device_id: str, command_type: str, payl
         "updated_at": now,
     }
     with db_connect() as connection:
+        if command_type == "request_screen" and command["payload"].get("stream"):
+            connection.execute(
+                """
+                DELETE FROM commands
+                WHERE owner_id = ? AND device_id = ? AND type = 'request_screen' AND status = 'pending'
+                """,
+                (command["owner_id"], command["device_id"]),
+            )
         connection.execute(
             """
             INSERT INTO commands(command_id, owner_id, device_id, type, payload_json, status, created_at, updated_at)
@@ -1114,7 +1122,7 @@ def next_device_command(owner_id: str, device_id: str) -> dict | None:
             """
             SELECT * FROM commands
             WHERE owner_id = ? AND device_id = ? AND status = 'pending'
-            ORDER BY created_at ASC
+            ORDER BY CASE WHEN type = 'request_screen' THEN 1 ELSE 0 END, created_at ASC
             LIMIT 1
             """,
             (str(owner_id), str(device_id)),

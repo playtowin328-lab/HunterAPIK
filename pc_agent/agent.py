@@ -17,6 +17,8 @@ from urllib import error, parse, request
 APP_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "HunterPCAgent"
 CONFIG_PATH = APP_DIR / "config.json"
 STARTUP_SCRIPT_NAME = "Hunter ADB Bridge.cmd"
+ADB_INFO_CACHE: dict[str, dict] = {}
+ADB_PREPARED: set[str] = set()
 
 
 def load_config() -> dict:
@@ -164,6 +166,24 @@ def adb_device_name(serial: str) -> str:
     return name[:60] or f"Android ADB {serial}"
 
 
+def adb_prepare_device(serial: str) -> None:
+    if serial in ADB_PREPARED:
+        return
+    try:
+        adb_shell(serial, "input keyevent KEYCODE_WAKEUP", timeout=4)
+    except Exception:
+        pass
+    try:
+        adb_shell(serial, "svc power stayon true", timeout=4)
+    except Exception:
+        pass
+    try:
+        adb_shell(serial, "settings put global stay_on_while_plugged_in 3", timeout=4)
+    except Exception:
+        pass
+    ADB_PREPARED.add(serial)
+
+
 def adb_screen_size(serial: str) -> tuple[int, int]:
     output = adb_shell(serial, "wm size", timeout=6)
     match = re.search(r"(\d+)x(\d+)", output)
@@ -185,16 +205,25 @@ def adb_input_text(value: str) -> str:
 
 def adb_register_device(config: dict, serial: str) -> dict:
     server = config["server_url"].rstrip("/")
-    android_version = adb_prop(serial, "ro.build.version.release")
-    sdk = adb_prop(serial, "ro.build.version.sdk")
     device_id = adb_device_id(serial)
+    adb_prepare_device(serial)
+    cached = ADB_INFO_CACHE.get(serial)
+    now = time.time()
+    if not cached or now - cached.get("updated_at", 0) > 300:
+        cached = {
+            "updated_at": now,
+            "android_version": adb_prop(serial, "ro.build.version.release"),
+            "sdk": adb_prop(serial, "ro.build.version.sdk"),
+            "name": adb_device_name(serial),
+        }
+        ADB_INFO_CACHE[serial] = cached
     payload = {
         "owner_id": config["owner_id"],
         "device_id": device_id,
         "bridge_device_id": config["device_id"],
-        "name": adb_device_name(serial),
+        "name": cached["name"],
         "type": "phone",
-        "platform": f"Android {android_version or '?'} / SDK {sdk or '?'} via ADB",
+        "platform": f"Android {cached['android_version'] or '?'} / SDK {cached['sdk'] or '?'} via ADB",
         "agent": "adb-bridge",
         "telemetry": {
             "adb_serial": serial,
@@ -203,6 +232,7 @@ def adb_register_device(config: dict, serial: str) -> dict:
             "transport": "adb",
             "screen": "adb screencap",
             "control": "adb shell input",
+            "low_latency": True,
         },
     }
     return api_request("POST", f"{server}/api/devices/heartbeat", payload, config["device_secret"])
@@ -240,6 +270,10 @@ def adb_complete_command(config: dict, device_id: str, command: dict, status: st
 
 def adb_upload_screen(config: dict, device_id: str, serial: str) -> str:
     server = config["server_url"].rstrip("/")
+    try:
+        adb_shell(serial, "input keyevent KEYCODE_WAKEUP", timeout=4)
+    except Exception:
+        pass
     image = adb_run(serial, ["exec-out", "screencap", "-p"], timeout=15, binary=True)
     if not isinstance(image, bytes) or not image.startswith(b"\x89PNG"):
         raise RuntimeError("ADB returned an invalid screen frame")
@@ -336,14 +370,15 @@ def adb_bridge_tick(config: dict) -> None:
     for serial in adb_devices():
         device_id = adb_device_id(serial)
         adb_register_device(config, serial)
-        command = adb_next_command(config, device_id)
-        if not command:
-            continue
-        try:
-            result = adb_handle_command(config, serial, device_id, command)
-            adb_complete_command(config, device_id, command, "acknowledged", result)
-        except Exception as exc:
-            adb_complete_command(config, device_id, command, "failed", str(exc))
+        for _ in range(5):
+            command = adb_next_command(config, device_id)
+            if not command:
+                break
+            try:
+                result = adb_handle_command(config, serial, device_id, command)
+                adb_complete_command(config, device_id, command, "acknowledged", result)
+            except Exception as exc:
+                adb_complete_command(config, device_id, command, "failed", str(exc))
 
 
 def executable_command(adb_enabled: bool = True, interval: int = 3) -> str:
@@ -351,7 +386,7 @@ def executable_command(adb_enabled: bool = True, interval: int = 3) -> str:
         executable = f'"{sys.executable}"'
     else:
         executable = f'"{sys.executable}" "{Path(__file__).resolve()}"'
-    args = ["run", f"--interval {max(3, interval)}"]
+    args = ["run", f"--interval {max(1, interval)}"]
     if adb_enabled:
         args.append("--adb")
     return f"{executable} {' '.join(args)}"
@@ -364,7 +399,7 @@ def windows_startup_dir() -> Path:
     return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
 
 
-def install_startup(adb_enabled: bool = True, interval: int = 3) -> Path:
+def install_startup(adb_enabled: bool = True, interval: int = 1) -> Path:
     startup_dir = windows_startup_dir()
     startup_dir.mkdir(parents=True, exist_ok=True)
     script_path = startup_dir / STARTUP_SCRIPT_NAME
@@ -476,7 +511,7 @@ def main() -> int:
     setup_parser.add_argument("--server", required=True, help="Public bot server URL")
     setup_parser.add_argument("--code", required=True, help="Pairing code from /pair")
     setup_parser.add_argument("--name", default="", help="Device name")
-    setup_parser.add_argument("--interval", type=int, default=3, help="Heartbeat interval seconds")
+    setup_parser.add_argument("--interval", type=int, default=1, help="Heartbeat interval seconds")
     setup_parser.add_argument("--no-adb", action="store_true", help="Do not enable ADB bridge")
     setup_parser.add_argument("--startup", action="store_true", help="Add Windows startup shortcut")
 
@@ -486,7 +521,7 @@ def main() -> int:
     startup_parser = subparsers.add_parser("startup", help="Install or remove Windows startup")
     startup_subparsers = startup_parser.add_subparsers(dest="startup_command")
     startup_install = startup_subparsers.add_parser("install", help="Start bridge automatically after Windows login")
-    startup_install.add_argument("--interval", type=int, default=3, help="Heartbeat interval seconds")
+    startup_install.add_argument("--interval", type=int, default=1, help="Heartbeat interval seconds")
     startup_install.add_argument("--no-adb", action="store_true", help="Do not enable ADB bridge")
     startup_subparsers.add_parser("remove", help="Remove Windows startup shortcut")
 
@@ -501,7 +536,7 @@ def main() -> int:
         return 0
 
     if args.command == "run":
-        run_loop(config, max(3, args.interval), args.adb)
+        run_loop(config, max(1, args.interval), args.adb)
         return 0
 
     if args.command == "setup":
@@ -517,9 +552,9 @@ def main() -> int:
             if not ok:
                 print("ADB bridge will keep running, but the phone will appear only after ADB is ready.")
         if args.startup:
-            script_path = install_startup(adb_enabled=adb_enabled, interval=max(3, args.interval))
+            script_path = install_startup(adb_enabled=adb_enabled, interval=max(1, args.interval))
             print(f"Startup installed: {script_path}")
-        run_loop(config, max(3, args.interval), adb_enabled)
+        run_loop(config, max(1, args.interval), adb_enabled)
         return 0
 
     if args.command == "doctor":
@@ -527,7 +562,7 @@ def main() -> int:
 
     if args.command == "startup":
         if args.startup_command == "install":
-            script_path = install_startup(adb_enabled=not args.no_adb, interval=max(3, args.interval))
+            script_path = install_startup(adb_enabled=not args.no_adb, interval=max(1, args.interval))
             print(f"Startup installed: {script_path}")
             return 0
         if args.startup_command == "remove":
