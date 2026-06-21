@@ -26,6 +26,8 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class ScreenCaptureService extends Service {
     static final String ACTION_START = "com.apkconverter.agent.SCREEN_START";
@@ -36,6 +38,10 @@ public class ScreenCaptureService extends Service {
     private static final String CHANNEL_ID = "apk_agent_screen";
     private static final int NOTIFICATION_ID = 42;
     private static volatile boolean running;
+    private static final AtomicLong uploadedFrames = new AtomicLong();
+    private static final AtomicLong droppedFrames = new AtomicLong();
+    private static volatile long lastUploadMs;
+    private static volatile String lastError = "";
 
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
@@ -43,6 +49,7 @@ public class ScreenCaptureService extends Service {
     private HandlerThread handlerThread;
     private PowerManager.WakeLock wakeLock;
     private final ExecutorService uploadExecutor = Executors.newSingleThreadExecutor();
+    private final AtomicBoolean uploadInProgress = new AtomicBoolean(false);
     private long lastUploadAt;
 
     @Override
@@ -58,7 +65,7 @@ public class ScreenCaptureService extends Service {
             return START_NOT_STICKY;
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification("Экран передаётся"));
+        startForeground(NOTIFICATION_ID, buildNotification("Screen is streaming"));
         if (intent == null || !ACTION_START.equals(intent.getAction())) {
             return START_STICKY;
         }
@@ -93,10 +100,25 @@ public class ScreenCaptureService extends Service {
         acquireWakeLock();
 
         MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        if (manager == null) {
+            lastError = "MediaProjection service is unavailable";
+            stopSelf();
+            return;
+        }
         mediaProjection = manager.getMediaProjection(resultCode, resultData);
+        if (mediaProjection == null) {
+            lastError = "MediaProjection permission is unavailable";
+            stopSelf();
+            return;
+        }
 
         DisplayMetrics metrics = new DisplayMetrics();
         WindowManager windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+        if (windowManager == null) {
+            lastError = "Window service is unavailable";
+            stopCapture();
+            return;
+        }
         windowManager.getDefaultDisplay().getRealMetrics(metrics);
 
         int width = metrics.widthPixels;
@@ -128,6 +150,11 @@ public class ScreenCaptureService extends Service {
             if (image == null) {
                 return;
             }
+            if (!uploadInProgress.compareAndSet(false, true)) {
+                droppedFrames.incrementAndGet();
+                image.close();
+                return;
+            }
             uploadExecutor.execute(() -> captureAndUpload(image));
         }, handler);
 
@@ -145,6 +172,7 @@ public class ScreenCaptureService extends Service {
     }
 
     private void captureAndUpload(Image image) {
+        long started = System.currentTimeMillis();
         try {
             Image.Plane[] planes = image.getPlanes();
             ByteBuffer buffer = planes[0].getBuffer();
@@ -167,14 +195,20 @@ public class ScreenCaptureService extends Service {
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
             scaled.compress(Bitmap.CompressFormat.JPEG, 65, outputStream);
             DeviceApiClient.uploadScreenFrame(this, outputStream.toByteArray());
+            uploadedFrames.incrementAndGet();
+            lastUploadMs = System.currentTimeMillis() - started;
+            lastError = "";
 
             bitmap.recycle();
             cropped.recycle();
             scaled.recycle();
-        } catch (Exception ignored) {
+        } catch (Exception exc) {
+            droppedFrames.incrementAndGet();
+            lastError = String.valueOf(exc.getMessage());
             // The heartbeat service surfaces command state; capture upload failures are retried by next frame.
         } finally {
             image.close();
+            uploadInProgress.set(false);
         }
     }
 
@@ -198,6 +232,7 @@ public class ScreenCaptureService extends Service {
         }
         releaseWakeLock();
         running = false;
+        uploadInProgress.set(false);
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
@@ -206,17 +241,36 @@ public class ScreenCaptureService extends Service {
         return running;
     }
 
+    static long getLastUploadMs() {
+        return lastUploadMs;
+    }
+
+    static long getUploadedFrames() {
+        return uploadedFrames.get();
+    }
+
+    static long getDroppedFrames() {
+        return droppedFrames.get();
+    }
+
+    static String getLastError() {
+        return lastError == null ? "" : lastError;
+    }
+
     private void acquireWakeLock() {
         if (wakeLock != null && wakeLock.isHeld()) {
             return;
         }
         PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (powerManager == null) {
+            return;
+        }
         wakeLock = powerManager.newWakeLock(
                 PowerManager.SCREEN_DIM_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
                 "apkconverter:screen-capture"
         );
         wakeLock.setReferenceCounted(false);
-        wakeLock.acquire(30 * 60 * 1000L);
+        wakeLock.acquire(6 * 60 * 60 * 1000L);
     }
 
     private void releaseWakeLock() {
@@ -232,7 +286,7 @@ public class ScreenCaptureService extends Service {
                 : new Notification.Builder(this);
 
         return builder
-                .setContentTitle("APK Agent экран")
+                .setContentTitle("APK Agent screen")
                 .setContentText(status)
                 .setSmallIcon(android.R.drawable.presence_video_online)
                 .setOngoing(true)
@@ -250,6 +304,8 @@ public class ScreenCaptureService extends Service {
                 NotificationManager.IMPORTANCE_LOW
         );
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        manager.createNotificationChannel(channel);
+        if (manager != null) {
+            manager.createNotificationChannel(channel);
+        }
     }
 }

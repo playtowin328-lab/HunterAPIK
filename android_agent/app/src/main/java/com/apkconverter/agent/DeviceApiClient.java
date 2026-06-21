@@ -4,10 +4,12 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 import java.io.BufferedReader;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import android.util.Base64;
 
@@ -60,24 +62,13 @@ final class DeviceApiClient {
         }
 
         int code = connection.getResponseCode();
-        BufferedReader reader = new BufferedReader(
-                new InputStreamReader(
-                        code >= 200 && code < 300 ? connection.getInputStream() : connection.getErrorStream(),
-                        StandardCharsets.UTF_8
-                )
-        );
-
-        StringBuilder response = new StringBuilder();
-        String line;
-        while ((line = reader.readLine()) != null) {
-            response.append(line);
-        }
+        String responseText = readResponse(connection);
 
         if (code < 200 || code >= 300) {
-            throw new IllegalStateException("HTTP " + code + ": " + response);
+            throw new IllegalStateException("HTTP " + code + ": " + responseText);
         }
 
-        return response.toString();
+        return responseText;
     }
 
     static RemoteCommand nextCommand(Context context) throws Exception {
@@ -247,12 +238,11 @@ final class DeviceApiClient {
 
     private static String readResponse(HttpURLConnection connection) throws Exception {
         int code = connection.getResponseCode();
-        BufferedReader reader = new BufferedReader(
-                new InputStreamReader(
-                        code >= 200 && code < 300 ? connection.getInputStream() : connection.getErrorStream(),
-                        StandardCharsets.UTF_8
-                )
-        );
+        InputStream stream = code >= 200 && code < 300 ? connection.getInputStream() : connection.getErrorStream();
+        if (stream == null) {
+            return "";
+        }
+        BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8));
 
         StringBuilder response = new StringBuilder();
         String line;
@@ -262,8 +252,8 @@ final class DeviceApiClient {
         return response.toString();
     }
 
-    private static String urlEncode(String value) {
-        return value.replace(" ", "%20");
+    private static String urlEncode(String value) throws Exception {
+        return URLEncoder.encode(value, "UTF-8");
     }
 
     private static String extractJsonString(String json, String key) {

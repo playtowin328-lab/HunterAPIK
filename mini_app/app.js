@@ -203,6 +203,12 @@ function formatTelemetry(device) {
   if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) {
     items.push(`screen: ${telemetry.screen_ms} ms`);
   }
+  if (typeof telemetry.screen_frames === "number" && telemetry.screen_frames > 0) {
+    items.push(`frames: ${telemetry.screen_frames}`);
+  }
+  if (typeof telemetry.screen_dropped === "number" && telemetry.screen_dropped > 0) {
+    items.push(`drop: ${telemetry.screen_dropped}`);
+  }
   if (telemetry.screen_quality) {
     items.push(`режим: ${telemetry.screen_quality}`);
   }
@@ -214,6 +220,9 @@ function formatTelemetry(device) {
   }
   if (telemetry.last_error) {
     items.push(`ошибка: ${telemetry.last_error}`);
+  }
+  if (telemetry.screen_error) {
+    items.push(`screen error: ${telemetry.screen_error}`);
   }
 
   return items;

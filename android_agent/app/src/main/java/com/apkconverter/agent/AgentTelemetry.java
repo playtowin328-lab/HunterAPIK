@@ -15,6 +15,7 @@ final class AgentTelemetry {
 
     static String toJson(Context context) {
         BatteryStatus battery = batteryStatus(context);
+        android.content.SharedPreferences prefs = AgentConfig.prefs(context);
         return "{"
                 + "\"battery_percent\":" + battery.percent + ","
                 + "\"charging\":" + battery.charging + ","
@@ -24,7 +25,15 @@ final class AgentTelemetry {
                 + "\"model\":\"" + escape(Build.MODEL) + "\","
                 + "\"full_control\":" + BuildConfig.FULL_CONTROL + ","
                 + "\"accessibility\":" + (BuildConfig.FULL_CONTROL && TouchControlService.isReady()) + ","
-                + "\"screen_streaming\":" + (BuildConfig.FULL_CONTROL && ScreenCaptureService.isRunning())
+                + "\"screen_streaming\":" + (BuildConfig.FULL_CONTROL && ScreenCaptureService.isRunning()) + ","
+                + "\"loop_ms\":" + prefs.getLong(AgentConfig.KEY_LAST_LOOP_MS, 0) + ","
+                + "\"command_ms\":" + prefs.getLong(AgentConfig.KEY_LAST_COMMAND_MS, 0) + ","
+                + "\"error_count\":" + prefs.getInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0) + ","
+                + "\"last_error\":\"" + escape(prefs.getString(AgentConfig.KEY_LAST_ERROR, "")) + "\","
+                + "\"screen_ms\":" + ScreenCaptureService.getLastUploadMs() + ","
+                + "\"screen_frames\":" + ScreenCaptureService.getUploadedFrames() + ","
+                + "\"screen_dropped\":" + ScreenCaptureService.getDroppedFrames() + ","
+                + "\"screen_error\":\"" + escape(ScreenCaptureService.getLastError()) + "\""
                 + "}";
     }
 

@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.provider.Settings;
 
 import java.text.DateFormat;
@@ -30,6 +31,7 @@ public class HeartbeatService extends Service {
     private static final long HEARTBEAT_INTERVAL_MS = 15_000L;
 
     private ScheduledExecutorService executor;
+    private PowerManager.WakeLock wakeLock;
     private long lastHeartbeatAt;
 
     @Override
@@ -46,7 +48,8 @@ public class HeartbeatService extends Service {
         }
 
         AgentConfig.prefs(this).edit().putBoolean(AgentConfig.KEY_ENABLED, true).apply();
-        startForeground(NOTIFICATION_ID, buildNotification("Запускаю подключение"));
+        acquireWakeLock();
+        startForeground(NOTIFICATION_ID, buildNotification("Agent online"));
         startHeartbeatLoop();
         return START_STICKY;
     }
@@ -61,6 +64,7 @@ public class HeartbeatService extends Service {
         if (executor != null) {
             executor.shutdownNow();
         }
+        releaseWakeLock();
         super.onDestroy();
     }
 
@@ -74,23 +78,32 @@ public class HeartbeatService extends Service {
     }
 
     private void agentTick() {
-        SharedPreferences.Editor editor = AgentConfig.prefs(this).edit();
+        long tickStarted = System.currentTimeMillis();
+        SharedPreferences prefs = AgentConfig.prefs(this);
+        SharedPreferences.Editor editor = prefs.edit();
         String timestamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date());
         long now = System.currentTimeMillis();
         boolean shouldHeartbeat = lastHeartbeatAt == 0 || now - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS;
 
         try {
+            editor.putString(AgentConfig.KEY_LAST_ERROR, "");
             String commandStatus = handlePendingCommands();
             if (shouldHeartbeat) {
                 DeviceApiClient.heartbeat(this);
                 lastHeartbeatAt = now;
             }
-            editor.putString(KEY_LAST_STATUS, "Online · " + timestamp + commandStatus);
+            editor.putString(KEY_LAST_STATUS, "Online - " + timestamp + commandStatus);
             editor.putLong(KEY_LAST_SUCCESS, now);
-            updateNotification("Online · " + timestamp);
+            editor.putLong(AgentConfig.KEY_LAST_LOOP_MS, System.currentTimeMillis() - tickStarted);
+            editor.putInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0);
+            updateNotification("Online - " + timestamp);
         } catch (Exception exc) {
-            editor.putString(KEY_LAST_STATUS, "Ошибка: " + exc.getMessage());
-            updateNotification("Ошибка подключения");
+            int errorCount = prefs.getInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0) + 1;
+            editor.putString(KEY_LAST_STATUS, "Error: " + exc.getMessage());
+            editor.putLong(AgentConfig.KEY_LAST_LOOP_MS, System.currentTimeMillis() - tickStarted);
+            editor.putInt(AgentConfig.KEY_LAST_ERROR_COUNT, errorCount);
+            editor.putString(AgentConfig.KEY_LAST_ERROR, String.valueOf(exc.getMessage()));
+            updateNotification("Connection error");
         }
 
         editor.apply();
@@ -109,27 +122,32 @@ public class HeartbeatService extends Service {
     }
 
     private String handleCommand(DeviceApiClient.RemoteCommand command) throws Exception {
+        long started = System.currentTimeMillis();
         String result;
+        String status = "acknowledged";
+
         if ("request_screen".equals(command.type)) {
             if (!BuildConfig.FULL_CONTROL) {
                 result = "Screen preview is disabled in Lite build.";
-                DeviceApiClient.completeCommand(this, command, "rejected", result);
-                return "\nКоманда: " + command.type + "\n" + result;
+                status = "rejected";
+            } else if (ScreenCaptureService.isRunning()) {
+                result = "Screen capture already running.";
+            } else {
+                Intent intent = new Intent(this, MainActivity.class)
+                        .setAction(MainActivity.ACTION_REQUEST_SCREEN_CAPTURE)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+                result = "Screen permission requested on device.";
             }
-            Intent intent = new Intent(this, MainActivity.class)
-                    .setAction(MainActivity.ACTION_REQUEST_SCREEN_CAPTURE)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
-            result = "Screen permission requested on device.";
         } else if ("stop_screen".equals(command.type)) {
             if (!BuildConfig.FULL_CONTROL) {
                 result = "Screen preview is disabled in Lite build.";
-                DeviceApiClient.completeCommand(this, command, "rejected", result);
-                return "\nКоманда: " + command.type + "\n" + result;
+                status = "rejected";
+            } else {
+                Intent intent = new Intent(this, ScreenCaptureService.class).setAction(ScreenCaptureService.ACTION_STOP);
+                startService(intent);
+                result = "Screen capture stop requested.";
             }
-            Intent intent = new Intent(this, ScreenCaptureService.class).setAction(ScreenCaptureService.ACTION_STOP);
-            startService(intent);
-            result = "Screen capture stop requested.";
         } else if ("request_files".equals(command.type)) {
             result = "Files request received. Storage picker module is not enabled yet.";
         } else if ("request_actions".equals(command.type)) {
@@ -137,38 +155,11 @@ public class HeartbeatService extends Service {
                     ? "Actions module is ready for taps and navigation."
                     : "Actions are disabled in Lite build.";
         } else if ("tap".equals(command.type)) {
-            if (!BuildConfig.FULL_CONTROL) {
-                result = "Tap rejected. Lite build has no Accessibility control.";
-            } else if (!TouchControlService.isReady()) {
-                result = "Tap rejected. Enable APK Agent Accessibility Service in Android settings.";
-            } else if (command.x < 0 || command.y < 0) {
-                result = "Tap rejected. Coordinates are missing.";
-            } else {
-                boolean dispatched = TouchControlService.tapNormalized(command.x, command.y);
-                result = dispatched ? "Tap dispatched." : "Tap dispatch failed.";
-            }
+            result = dispatchTap(command);
         } else if ("long_tap".equals(command.type)) {
-            if (!BuildConfig.FULL_CONTROL) {
-                result = "Long tap rejected. Lite build has no Accessibility control.";
-            } else if (!TouchControlService.isReady()) {
-                result = "Long tap rejected. Enable APK Agent Accessibility Service in Android settings.";
-            } else if (command.x < 0 || command.y < 0) {
-                result = "Long tap rejected. Coordinates are missing.";
-            } else {
-                boolean dispatched = TouchControlService.longTapNormalized(command.x, command.y);
-                result = dispatched ? "Long tap dispatched." : "Long tap dispatch failed.";
-            }
+            result = dispatchLongTap(command);
         } else if ("swipe".equals(command.type)) {
-            if (!BuildConfig.FULL_CONTROL) {
-                result = "Swipe rejected. Lite build has no Accessibility control.";
-            } else if (!TouchControlService.isReady()) {
-                result = "Swipe rejected. Enable APK Agent Accessibility Service in Android settings.";
-            } else if (command.x < 0 || command.y < 0 || command.endX < 0 || command.endY < 0) {
-                result = "Swipe rejected. Coordinates are missing.";
-            } else {
-                boolean dispatched = TouchControlService.swipeNormalized(command.x, command.y, command.endX, command.endY);
-                result = dispatched ? "Swipe dispatched." : "Swipe dispatch failed.";
-            }
+            result = dispatchSwipe(command);
         } else if ("back".equals(command.type)) {
             result = BuildConfig.FULL_CONTROL && TouchControlService.back() ? "Back dispatched." : "Back failed or disabled in Lite build.";
         } else if ("home".equals(command.type)) {
@@ -204,17 +195,7 @@ public class HeartbeatService extends Service {
                     ? "Swipe right dispatched."
                     : "Swipe right failed or disabled in Lite build.";
         } else if ("input_text".equals(command.type)) {
-            if (!BuildConfig.FULL_CONTROL) {
-                result = "Text input failed. Lite build has no Accessibility control.";
-            } else if (!TouchControlService.isReady()) {
-                result = "Text input failed. Enable Accessibility Service.";
-            } else if (command.text == null || command.text.isEmpty()) {
-                result = "Text input failed. Text is empty.";
-            } else {
-                result = TouchControlService.inputText(command.text)
-                        ? "Text inserted."
-                        : "Text input failed. Focus an editable field on the phone.";
-            }
+            result = dispatchText(command);
         } else if ("key_enter".equals(command.type)) {
             result = BuildConfig.FULL_CONTROL && TouchControlService.enter()
                     ? "Enter inserted."
@@ -227,10 +208,71 @@ public class HeartbeatService extends Service {
             result = "Ping received.";
         } else {
             result = "Unknown command: " + command.type;
+            status = "rejected";
         }
 
-        DeviceApiClient.completeCommand(this, command, "acknowledged", result);
-        return "\nКоманда: " + command.type + "\n" + result;
+        AgentConfig.prefs(this)
+                .edit()
+                .putLong(AgentConfig.KEY_LAST_COMMAND_MS, System.currentTimeMillis() - started)
+                .apply();
+        DeviceApiClient.completeCommand(this, command, status, result);
+        return "\nCommand: " + command.type + "\n" + result;
+    }
+
+    private String dispatchTap(DeviceApiClient.RemoteCommand command) {
+        if (!BuildConfig.FULL_CONTROL) {
+            return "Tap rejected. Lite build has no Accessibility control.";
+        }
+        if (!TouchControlService.isReady()) {
+            return "Tap rejected. Enable APK Agent Accessibility Service in Android settings.";
+        }
+        if (command.x < 0 || command.y < 0) {
+            return "Tap rejected. Coordinates are missing.";
+        }
+        return TouchControlService.tapNormalized(command.x, command.y) ? "Tap dispatched." : "Tap dispatch failed.";
+    }
+
+    private String dispatchLongTap(DeviceApiClient.RemoteCommand command) {
+        if (!BuildConfig.FULL_CONTROL) {
+            return "Long tap rejected. Lite build has no Accessibility control.";
+        }
+        if (!TouchControlService.isReady()) {
+            return "Long tap rejected. Enable APK Agent Accessibility Service in Android settings.";
+        }
+        if (command.x < 0 || command.y < 0) {
+            return "Long tap rejected. Coordinates are missing.";
+        }
+        return TouchControlService.longTapNormalized(command.x, command.y) ? "Long tap dispatched." : "Long tap dispatch failed.";
+    }
+
+    private String dispatchSwipe(DeviceApiClient.RemoteCommand command) {
+        if (!BuildConfig.FULL_CONTROL) {
+            return "Swipe rejected. Lite build has no Accessibility control.";
+        }
+        if (!TouchControlService.isReady()) {
+            return "Swipe rejected. Enable APK Agent Accessibility Service in Android settings.";
+        }
+        if (command.x < 0 || command.y < 0 || command.endX < 0 || command.endY < 0) {
+            return "Swipe rejected. Coordinates are missing.";
+        }
+        return TouchControlService.swipeNormalized(command.x, command.y, command.endX, command.endY)
+                ? "Swipe dispatched."
+                : "Swipe dispatch failed.";
+    }
+
+    private String dispatchText(DeviceApiClient.RemoteCommand command) {
+        if (!BuildConfig.FULL_CONTROL) {
+            return "Text input failed. Lite build has no Accessibility control.";
+        }
+        if (!TouchControlService.isReady()) {
+            return "Text input failed. Enable Accessibility Service.";
+        }
+        if (command.text == null || command.text.isEmpty()) {
+            return "Text input failed. Text is empty.";
+        }
+        return TouchControlService.inputText(command.text)
+                ? "Text inserted."
+                : "Text input failed. Focus an editable field on the phone.";
     }
 
     private boolean openSystemActivity(String action) {
@@ -248,13 +290,36 @@ public class HeartbeatService extends Service {
         if (executor != null) {
             executor.shutdownNow();
         }
+        releaseWakeLock();
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
 
+    private void acquireWakeLock() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            return;
+        }
+        PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (powerManager == null) {
+            return;
+        }
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "apkconverter:heartbeat");
+        wakeLock.setReferenceCounted(false);
+        wakeLock.acquire(6 * 60 * 60 * 1000L);
+    }
+
+    private void releaseWakeLock() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
+        wakeLock = null;
+    }
+
     private void updateNotification(String status) {
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        manager.notify(NOTIFICATION_ID, buildNotification(status));
+        if (manager != null) {
+            manager.notify(NOTIFICATION_ID, buildNotification(status));
+        }
     }
 
     private Notification buildNotification(String status) {
@@ -281,6 +346,8 @@ public class HeartbeatService extends Service {
                 NotificationManager.IMPORTANCE_LOW
         );
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        manager.createNotificationChannel(channel);
+        if (manager != null) {
+            manager.createNotificationChannel(channel);
+        }
     }
 }
