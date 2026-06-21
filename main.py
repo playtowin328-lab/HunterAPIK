@@ -277,38 +277,32 @@ def access_keyboard() -> InlineKeyboardMarkup:
 
 HELP_TEXT = (
     "*Hunter Agent — личный пульт устройств*\n\n"
-    "Бот помогает собрать Android APK, привязать твой телефон по QR и открыть управление в мини-апе. "
-    "Все действия рассчитаны только на твои устройства и требуют явного подтверждения разрешений на телефоне.\n\n"
-    "*Главные действия:*\n"
-    "• `Подключить телефон` — мастер установки APK и QR.\n"
-    "• `Мини-апп` — список устройств, экран, жесты и команды.\n"
-    "• `Собрать APK` — новая сборка Android Agent через GitHub Actions.\n"
-    "• `Полная проверка` — проверка Railway, мини-апа, APK и GitHub workflow.\n\n"
+    "Бот помогает собрать Android APK, привязать телефон по QR и открыть управление в мини‑аппе. "
+    "Экран и жесты работают только после явного разрешения на твоём телефоне.\n\n"
+    "*Главное:*\n"
+    "• `Подключить телефон` — мастер APK, QR и проверки.\n"
+    "• `Мини‑апп` — список устройств, live‑экран, команды и диагностика.\n"
+    "• `Собрать APK` — сборка Android Agent через GitHub Actions.\n"
+    "• `Полная проверка` — Railway, мини‑апп, APK и workflow.\n\n"
     "*Команды:*\n"
     "/start — главное меню\n"
-    "/connect — мастер подключения телефона\n"
+    "/connect — мастер подключения\n"
     "/pair — QR и код привязки\n"
     "/devices — список устройств\n"
-    "/apk — список Lite/Full APK и ссылки скачивания\n"
-    "/build_apk — собрать Lite APK со стандартным названием\n"
-    "/build_apk Название — собрать Lite APK со своим названием\n"
-    "/build_apk_full Название — собрать полный APK с экраном и жестами\n"
-    "/build_pc_agent — собрать Windows EXE для ПК/VDS\n"
-    "/guide — подробная инструкция\n"
-    "/settings — текущие настройки\n"
+    "/apk — Lite/Full APK и ссылки\n"
+    "/build_apk Название — собрать Lite APK\n"
+    "/build_apk_full Название — собрать Full APK\n"
+    "/build_pc_agent — собрать Windows EXE\n"
     "/check — диагностика деплоя\n"
-    "/admins — управление доступом\n"
-    "/grant 123456789 — выдать доступ по Telegram ID\n"
-    "/revoke 123456789 — забрать доступ"
+    "/admins — управление доступом"
 )
 
 SETTINGS_TEXT = (
     "Настройки бота\n\n"
     f"• Максимальный размер изображения: {MAX_IMAGE_SIZE_MB} МБ\n"
     "• OCR: русский + английский\n"
-    "• PDF: один лист\n"
-    "• PNG: отправляется файлом без сжатия Telegram\n"
-    f"• Мини-апп: {'подключен' if MINI_APP_URL else 'нужно указать MINI_APP_URL'}\n"
+    "• PNG: файл без сжатия Telegram\n"
+    f"• Мини‑апп: {'подключён' if MINI_APP_URL else 'нужно указать MINI_APP_URL'}\n"
     f"• Публичный адрес: {PUBLIC_BASE_URL or 'не указан'}\n"
     f"• APK workflow: {GITHUB_WORKFLOW or 'не указан'}\n"
     f"• Репозиторий: {GITHUB_REPO or 'не указан'}\n"
@@ -317,33 +311,26 @@ SETTINGS_TEXT = (
 
 GUIDE_TEXT = (
     "*Подробная инструкция*\n\n"
-    "*1. Собрать APK*\n"
-    "Нажми `Собрать APK` или отправь `/build_apk`. По умолчанию собирается Lite APK: подключение, QR и статус без доступа к экрану и жестам. "
-    "Это снижает шанс блокировки Play Protect. Полный режим запускается отдельно: `/build_apk_full Название`.\n\n"
-    "*2. Установить на Android*\n"
-    "Открой `/agent` на телефоне и скачай APK. Если Android предупреждает про установку из браузера, "
-    "разреши установку из этого источника. Это обычное ограничение Android для APK вне Play Market; "
-    "обойти его незаметно нельзя, пользователь подтверждает установку сам.\n\n"
-    "*3. Привязать телефон*\n"
-    "Нажми `Получить QR` или отправь `/pair`. Открой QR-ссылку на телефоне. Android Agent сам заполнит сервер и код, "
-    "после чего запустит агент.\n\n"
-    "*4. Разрешения на телефоне*\n"
-    "Lite APK просит минимум разрешений. Полный APK дополнительно просит батарею, Accessibility для жестов "
-    "и системное разрешение записи экрана. Экран и жесты работают только после твоего подтверждения на телефоне.\n\n"
+    "*1. Собери APK*\n"
+    "Для обычного подключения используй Lite APK. Для экрана и жестов нужен Full APK: `/build_apk_full Название`.\n\n"
+    "*2. Установи на Android*\n"
+    "Открой страницу `/agent` на телефоне, скачай APK и разреши установку из выбранного источника, если Android спросит.\n\n"
+    "*3. Привяжи телефон*\n"
+    "Нажми `Получить QR` или отправь `/pair`. Открой QR‑ссылку на телефоне, где установлен Android Agent.\n\n"
+    "*4. Разрешения*\n"
+    "Для стабильной работы включи уведомления и работу в фоне. Для Full APK дополнительно включи Accessibility и подтверди запись экрана.\n\n"
     "*5. Проверка*\n"
-    "В боте нажми `Мои устройства` или открой мини-ап. Телефон должен стать `Online`. "
-    "Если не стал — нажми `Полная проверка` и проверь, что в Android Agent указан правильный сервер."
+    "Открой `Мои устройства` или мини‑апп. Телефон должен стать `Online`. Если нет — нажми `Полная проверка`."
 )
-
 
 def main_menu() -> InlineKeyboardMarkup:
     mini_app_button = (
         InlineKeyboardButton(
-            text="📱 Мини-апп",
+            text="📱 Мини‑апп",
             web_app=WebAppInfo(url=MINI_APP_URL),
         )
         if MINI_APP_URL
-        else InlineKeyboardButton(text="📱 Мини-апп", callback_data="mini_app_info")
+        else InlineKeyboardButton(text="📱 Мини‑апп", callback_data="mini_app_info")
     )
 
     return InlineKeyboardMarkup(
@@ -357,9 +344,7 @@ def main_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🕹 Управление", callback_data="control_info"),
                 InlineKeyboardButton(text="📘 Инструкция", callback_data="guide"),
             ],
-            [
-                InlineKeyboardButton(text="💻 PC Agent", callback_data="pc_agent_info"),
-            ],
+            [InlineKeyboardButton(text="💻 PC Agent", callback_data="pc_agent_info")],
             [
                 InlineKeyboardButton(text="🛠 Собрать APK", callback_data="connect_build_now"),
                 InlineKeyboardButton(text="✅ Полная проверка", callback_data="connect_check"),
@@ -386,7 +371,6 @@ def nav_row(back: str | None = None) -> list[InlineKeyboardButton]:
         row.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=back))
     row.append(InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu"))
     return row
-
 
 def nav_keyboard(back: str | None = "main_menu") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[nav_row(back)])
@@ -505,20 +489,18 @@ async def send_status(message: Message) -> None:
 def connect_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Скачать / установить APK", url=f"{public_server_url()}/agent")],
-            [InlineKeyboardButton(text="Получить новый QR", callback_data="pair_device")],
-            [InlineKeyboardButton(text="Список APK: Lite / Full", callback_data="apk_list")],
-            [InlineKeyboardButton(text="Обновить мастер", callback_data="connect_wizard")],
+            [InlineKeyboardButton(text="📥 Скачать / установить APK", url=f"{public_server_url()}/agent")],
+            [InlineKeyboardButton(text="🔑 Получить QR и код", callback_data="pair_device")],
+            [InlineKeyboardButton(text="📦 Lite / Full APK", callback_data="apk_list")],
             [
-                InlineKeyboardButton(text="Собрать APK", callback_data="connect_build_now"),
-                InlineKeyboardButton(text="Как собрать", callback_data="connect_build_help"),
+                InlineKeyboardButton(text="🛠 Собрать Lite", callback_data="connect_build_now"),
+                InlineKeyboardButton(text="🎛 Собрать Full", callback_data="connect_build_full"),
             ],
-            [InlineKeyboardButton(text="Собрать Full APK для экрана и управления", callback_data="connect_build_full")],
-            [InlineKeyboardButton(text="Lite или Full: что выбрать?", callback_data="apk_mode_compare")],
-            [InlineKeyboardButton(text="Полная проверка", callback_data="connect_check")],
+            [InlineKeyboardButton(text="🤔 Что выбрать: Lite или Full", callback_data="apk_mode_compare")],
+            [InlineKeyboardButton(text="✅ Полная проверка", callback_data="connect_check")],
             [
-                InlineKeyboardButton(text="Мои устройства", callback_data="my_devices"),
-                InlineKeyboardButton(text="Статус", callback_data="connect_status"),
+                InlineKeyboardButton(text="📡 Мои устройства", callback_data="my_devices"),
+                InlineKeyboardButton(text="📊 Статус", callback_data="connect_status"),
             ],
             nav_row(None),
         ]
@@ -527,21 +509,20 @@ def connect_keyboard() -> InlineKeyboardMarkup:
 
 def connect_text(owner_id: int) -> str:
     apk_ready, _, apk_detail = apk_download_status()
-    apk_source = "ready" if apk_ready else f"not ready ({apk_detail})"
+    apk_source = "готов" if apk_ready else f"не готов ({apk_detail})"
     devices = list_devices_for_user(str(owner_id))
     online_count = sum(1 for device in devices if device.get("online"))
     return (
         "Мастер подключения телефона\n\n"
-        "1. Если APK еще не готов, нажми «Собрать APK».\n"
+        "1. Если APK ещё не готов, собери Lite или Full.\n"
         "2. Скачай APK на Android и установи приложение.\n"
-        "3. Нажми «Получить новый QR».\n"
-        "4. Открой QR-ссылку на телефоне, где установлен Android Agent.\n"
-        "5. Подтверди разрешения: уведомления, батарея, экран и Accessibility для жестов.\n"
-        "6. Вернись сюда и нажми «Мои устройства».\n\n"
+        "3. Нажми «Получить QR и код».\n"
+        "4. Открой QR‑ссылку на телефоне или введи код в Android Agent.\n"
+        "5. Включи уведомления и работу в фоне. Для Full ещё включи Accessibility и запись экрана.\n"
+        "6. Вернись в мини‑апп: телефон должен стать Online.\n\n"
         f"APK: {apk_source}\n"
         f"Устройства: {len(devices)} всего, {online_count} online"
     )
-
 
 async def send_connect(message: Message) -> None:
     if not await ensure_message_admin(message):

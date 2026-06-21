@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Hunter Agent Devices</title>
+    <title>Hunter Agent</title>
     <link rel="stylesheet" href="./styles.css">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
@@ -13,48 +13,18 @@
         <div>
           <p class="eyebrow">Hunter Agent</p>
           <h1>Пульт устройств</h1>
+          <p class="topbar-subtitle" id="setupText">Загружаю устройства и проверяю подключение...</p>
         </div>
         <button class="icon-button" id="themeButton" type="button" aria-label="Сменить тему">◐</button>
       </header>
 
-      <section class="setup-panel" aria-label="Подключение телефона">
-        <div>
-          <p class="eyebrow">Подключение</p>
-          <h2>Lite APK, QR и Online</h2>
-          <p id="setupText">Установи Lite APK, получи QR и подключи телефон без чувствительных разрешений.</p>
-        </div>
-        <div class="setup-actions">
-          <button class="primary-button" id="installAgentButton" type="button">Скачать APK</button>
-          <button class="secondary-button" id="requestPairButton" type="button">Получить QR</button>
-          <button class="ghost-button neutral" id="refreshButton" type="button">Обновить</button>
-        </div>
-        <div class="setup-steps" aria-label="Шаги подключения">
-          <span><strong>1</strong> APK</span>
-          <span><strong>2</strong> QR</span>
-          <span><strong>3</strong> Старт</span>
-          <span><strong>4</strong> Online</span>
-        </div>
-        <div class="pair-result hidden" id="pairResult">
-          <img id="pairQrImage" alt="QR код подключения">
-          <div>
-            <p class="eyebrow">Код подключения</p>
-            <strong id="pairCode">000000</strong>
-            <p id="pairHint">Открой QR на телефоне или введи код вручную в Android Agent.</p>
-            <div class="pair-links">
-              <button class="secondary-button" id="openPairPageButton" type="button">Открыть QR-ссылку</button>
-              <button class="ghost-button neutral" id="openAgentDeepLinkButton" type="button">Открыть Agent</button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="summary" aria-label="Статистика устройств">
+      <section class="summary" aria-label="Сводка">
         <div>
           <span class="metric" id="totalDevices">0</span>
-          <span class="label">Всего</span>
+          <span class="label">Устройств</span>
         </div>
         <div>
-          <span class="metric" id="onlineDevices">0</span>
+          <span class="metric online" id="onlineDevices">0</span>
           <span class="label">Online</span>
         </div>
         <div>
@@ -62,6 +32,91 @@
           <span class="label">Профиль</span>
         </div>
       </section>
+
+      <section class="setup-panel" aria-label="Подключение телефона">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Подключение</p>
+            <h2>APK, QR и первый запуск</h2>
+          </div>
+          <button class="ghost-button neutral" id="refreshButton" type="button">Обновить</button>
+        </div>
+
+        <div class="setup-steps" aria-label="Шаги подключения">
+          <span><strong>1</strong> Скачать APK</span>
+          <span><strong>2</strong> Получить QR</span>
+          <span><strong>3</strong> Разрешения</span>
+          <span><strong>4</strong> Online</span>
+        </div>
+
+        <div class="setup-actions">
+          <button class="primary-button" id="installAgentButton" type="button">Скачать APK</button>
+          <button class="secondary-button" id="requestPairButton" type="button">Получить QR</button>
+          <button class="secondary-button" id="connectCurrentDevice" type="button">Страница установки</button>
+        </div>
+
+        <p class="hint" id="currentDeviceText">Определяю текущее устройство...</p>
+
+        <div class="pair-result hidden" id="pairResult">
+          <img id="pairQrImage" alt="QR код подключения">
+          <div>
+            <p class="eyebrow">Код подключения</p>
+            <strong id="pairCode">000000</strong>
+            <p>Открой ссылку на телефоне с установленным Android Agent или введи код вручную.</p>
+            <div class="pair-links">
+              <button class="secondary-button" id="openPairPageButton" type="button">Открыть ссылку</button>
+              <button class="ghost-button neutral" id="openAgentDeepLinkButton" type="button">Открыть Agent</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="remote-panel hidden" id="remotePanel" aria-label="Пульт выбранного устройства">
+        <div class="remote-head">
+          <div>
+            <p class="eyebrow">Live-пульт</p>
+            <h2 id="remoteDeviceTitle">Устройство</h2>
+            <p id="remoteDeviceMeta">Выбери устройство из списка</p>
+          </div>
+          <button class="ghost-button neutral" id="closeRemotePanel" type="button">Скрыть</button>
+        </div>
+
+        <div class="remote-screen" id="remoteScreenPreview" hidden>
+          <img id="remoteScreenImage" alt="Экран выбранного устройства">
+        </div>
+
+        <div class="segmented" role="group" aria-label="Качество экрана">
+          <button class="remote-quality-button" data-quality="fast" type="button">Быстро</button>
+          <button class="remote-quality-button" data-quality="balanced" type="button">Баланс</button>
+          <button class="remote-quality-button" data-quality="quality" type="button">Качество</button>
+        </div>
+
+        <div class="remote-grid primary-controls">
+          <button class="secondary-button remote-screen-button" type="button">Экран</button>
+          <button class="secondary-button danger-soft remote-stop-screen-button" type="button">Стоп</button>
+          <button class="ghost-button neutral remote-command-button" data-command="back" type="button">Back</button>
+          <button class="ghost-button neutral remote-command-button" data-command="home" type="button">Home</button>
+          <button class="ghost-button neutral remote-command-button" data-command="recents" type="button">Recent</button>
+        </div>
+
+        <div class="remote-grid secondary-controls">
+          <button class="ghost-button neutral remote-command-button" data-command="notifications" type="button">Шторка</button>
+          <button class="ghost-button neutral remote-command-button" data-command="quick_settings" type="button">Quick</button>
+          <button class="ghost-button neutral remote-command-button" data-command="lock_screen" type="button">Lock</button>
+          <button class="ghost-button neutral remote-command-button" data-command="open_settings" type="button">Settings</button>
+        </div>
+
+        <div class="text-actions">
+          <input id="remotePanelTextInput" type="text" placeholder="Текст на телефон" maxlength="240">
+          <button class="secondary-button" id="remotePanelSendText" type="button">Send</button>
+          <button class="ghost-button neutral remote-command-button" data-command="key_enter" type="button">Enter</button>
+          <button class="ghost-button neutral remote-command-button" data-command="key_delete" type="button">Del</button>
+        </div>
+
+        <p class="control-note" id="remoteControlNote">Выбери устройство из списка.</p>
+      </section>
+
+      <section class="device-list" id="deviceList" aria-label="Список устройств"></section>
 
       <form class="device-form hidden" id="deviceForm">
         <label>
@@ -78,114 +133,71 @@
         </label>
         <button class="primary-button" type="submit">Добавить</button>
       </form>
-
-      <section class="connect-panel" aria-label="Подключение текущего устройства">
-        <div>
-          <h2>Этот браузер</h2>
-          <p id="currentDeviceText">Определяю платформу...</p>
-        </div>
-        <button class="secondary-button" id="connectCurrentDevice" type="button">Открыть установку</button>
-      </section>
-
-      <section class="remote-panel hidden" id="remotePanel" aria-label="Пульт выбранного устройства">
-        <div class="remote-head">
-          <div>
-            <p class="eyebrow">Пульт</p>
-            <h2 id="remoteDeviceTitle">Устройство</h2>
-            <p id="remoteDeviceMeta">Выбери устройство из списка</p>
-          </div>
-          <button class="ghost-button neutral" id="closeRemotePanel" type="button">Скрыть</button>
-        </div>
-        <div class="remote-screen" id="remoteScreenPreview" hidden>
-          <img id="remoteScreenImage" alt="Live screen выбранного устройства">
-        </div>
-        <div class="remote-quality" role="group" aria-label="Качество live screen">
-          <button class="ghost-button neutral remote-quality-button" data-quality="fast" type="button">Быстро</button>
-          <button class="ghost-button neutral remote-quality-button" data-quality="balanced" type="button">Баланс</button>
-          <button class="ghost-button neutral remote-quality-button" data-quality="quality" type="button">Качество</button>
-        </div>
-        <div class="remote-primary-actions">
-          <button class="secondary-button remote-screen-button" type="button">Экран</button>
-          <button class="secondary-button remote-stop-screen-button" type="button">Стоп</button>
-          <button class="ghost-button neutral remote-command-button" data-command="back" type="button">Back</button>
-          <button class="ghost-button neutral remote-command-button" data-command="home" type="button">Home</button>
-          <button class="ghost-button neutral remote-command-button" data-command="recents" type="button">Recent</button>
-        </div>
-        <div class="remote-secondary-actions">
-          <button class="ghost-button neutral remote-command-button" data-command="notifications" type="button">Notify</button>
-          <button class="ghost-button neutral remote-command-button" data-command="quick_settings" type="button">Quick</button>
-          <button class="ghost-button neutral remote-command-button" data-command="lock_screen" type="button">Lock</button>
-          <button class="ghost-button neutral remote-command-button" data-command="open_settings" type="button">Settings</button>
-        </div>
-        <div class="remote-text-actions">
-          <input id="remotePanelTextInput" type="text" placeholder="Текст на телефон" maxlength="240">
-          <button class="secondary-button" id="remotePanelSendText" type="button">Send</button>
-          <button class="ghost-button neutral remote-command-button" data-command="key_enter" type="button">Enter</button>
-          <button class="ghost-button neutral remote-command-button" data-command="key_delete" type="button">Del</button>
-        </div>
-        <p class="control-note" id="remoteControlNote">Выбери устройство из списка.</p>
-      </section>
-
-      <section class="device-list" id="deviceList" aria-label="Список устройств"></section>
     </main>
 
     <template id="deviceCardTemplate">
       <article class="device-card">
-        <div class="device-visual" aria-hidden="true">
-          <div class="device-screen">
-            <span></span>
-          </div>
-        </div>
         <div class="device-info">
           <div class="device-heading">
-            <h2></h2>
+            <div>
+              <h2></h2>
+              <p class="meta"></p>
+            </div>
             <span class="status-pill"></span>
           </div>
-          <p class="meta"></p>
+
           <div class="telemetry"></div>
+
           <div class="actions">
             <button class="primary-button open-remote-button" type="button">Пульт</button>
             <button class="secondary-button screen-button" type="button">Экран</button>
-            <button class="secondary-button stop-screen-button" type="button">Стоп экран</button>
+            <button class="secondary-button danger-soft stop-screen-button" type="button">Стоп</button>
             <button class="secondary-button files-button" type="button">Файлы</button>
-            <button class="secondary-button commands-button" type="button">Команды</button>
+            <button class="secondary-button commands-button" type="button">Проверка</button>
             <button class="ghost-button id-button neutral" type="button">ID</button>
           </div>
-          <div class="quality-actions" role="group" aria-label="Качество live screen">
-            <button class="ghost-button neutral quality-button" data-quality="fast" type="button">Быстро</button>
-            <button class="ghost-button neutral quality-button" data-quality="balanced" type="button">Баланс</button>
-            <button class="ghost-button neutral quality-button" data-quality="quality" type="button">Качество</button>
+
+          <div class="segmented quality-actions" role="group" aria-label="Качество экрана">
+            <button class="quality-button" data-quality="fast" type="button">Быстро</button>
+            <button class="quality-button" data-quality="balanced" type="button">Баланс</button>
+            <button class="quality-button" data-quality="quality" type="button">Качество</button>
           </div>
-          <div class="nav-actions">
+
+          <div class="button-grid nav-actions">
             <button class="ghost-button neutral back-button" type="button">Back</button>
             <button class="ghost-button neutral home-button" type="button">Home</button>
             <button class="ghost-button neutral recents-button" type="button">Recent</button>
-            <button class="ghost-button neutral notifications-button" type="button">Notify</button>
+            <button class="ghost-button neutral notifications-button" type="button">Шторка</button>
             <button class="ghost-button neutral quick-settings-button" type="button">Quick</button>
             <button class="ghost-button neutral lock-screen-button" type="button">Lock</button>
           </div>
-          <div class="swipe-actions">
-            <button class="ghost-button neutral swipe-up-button" type="button">Swipe ↑</button>
-            <button class="ghost-button neutral swipe-down-button" type="button">Swipe ↓</button>
-            <button class="ghost-button neutral swipe-left-button" type="button">Swipe ←</button>
-            <button class="ghost-button neutral swipe-right-button" type="button">Swipe →</button>
+
+          <div class="button-grid swipe-actions">
+            <button class="ghost-button neutral swipe-up-button" type="button">Вверх</button>
+            <button class="ghost-button neutral swipe-down-button" type="button">Вниз</button>
+            <button class="ghost-button neutral swipe-left-button" type="button">Влево</button>
+            <button class="ghost-button neutral swipe-right-button" type="button">Вправо</button>
           </div>
-          <div class="system-actions">
+
+          <div class="button-grid system-actions">
             <button class="ghost-button neutral settings-button" type="button">Settings</button>
-            <button class="ghost-button neutral wifi-settings-button" type="button">Wi-Fi</button>
+            <button class="ghost-button neutral wifi-settings-button" type="button">Wi‑Fi</button>
             <button class="ghost-button neutral battery-settings-button" type="button">Battery</button>
           </div>
+
           <div class="text-actions">
             <input class="remote-text-input" type="text" placeholder="Текст на телефон" maxlength="240">
             <button class="secondary-button send-text-button" type="button">Send</button>
             <button class="ghost-button neutral enter-button" type="button">Enter</button>
             <button class="ghost-button neutral delete-key-button" type="button">Del</button>
           </div>
+
           <div class="manage-actions">
             <button class="ghost-button neutral rename-device-button" type="button">Rename</button>
             <button class="ghost-button revoke-device-button" type="button">Revoke</button>
             <button class="ghost-button delete-device-button" type="button">Delete</button>
           </div>
+
           <div class="screen-preview" hidden>
             <img alt="Последний кадр экрана устройства">
           </div>
