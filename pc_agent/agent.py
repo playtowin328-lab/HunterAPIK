@@ -26,6 +26,7 @@ AGENT_METRICS = {
     "last_screen_ms": 0,
     "commands_handled": 0,
     "last_error": "",
+    "screen_quality": "balanced",
 }
 
 
@@ -247,6 +248,7 @@ def adb_register_device(config: dict, serial: str) -> dict:
             "commands_handled": AGENT_METRICS["commands_handled"],
             "adb_devices": AGENT_METRICS["last_adb_devices"],
             "last_error": AGENT_METRICS["last_error"],
+            "screen_quality": AGENT_METRICS["screen_quality"],
         },
     }
     return api_request("POST", f"{server}/api/devices/heartbeat", payload, config["device_secret"])
@@ -282,9 +284,12 @@ def adb_complete_command(config: dict, device_id: str, command: dict, status: st
     api_request("POST", f"{server}/api/devices/commands/complete", payload, config["device_secret"])
 
 
-def adb_upload_screen(config: dict, device_id: str, serial: str) -> str:
+def adb_upload_screen(config: dict, device_id: str, serial: str, payload: dict | None = None) -> str:
     server = config["server_url"].rstrip("/")
     started = time.perf_counter()
+    payload = payload or {}
+    quality = str(payload.get("quality", "balanced")).strip()[:24] or "balanced"
+    AGENT_METRICS["screen_quality"] = quality
     try:
         adb_shell(serial, "input keyevent KEYCODE_WAKEUP", timeout=4)
     except Exception:
@@ -300,7 +305,7 @@ def adb_upload_screen(config: dict, device_id: str, serial: str) -> str:
     }
     api_request("POST", f"{server}/api/devices/screen", payload, config["device_secret"])
     AGENT_METRICS["last_screen_ms"] = round((time.perf_counter() - started) * 1000)
-    return f"Screen uploaded: {len(image) // 1024} KB"
+    return f"Screen uploaded: {len(image) // 1024} KB, quality={quality}"
 
 
 def adb_handle_command(config: dict, serial: str, device_id: str, command: dict) -> str:
@@ -308,7 +313,7 @@ def adb_handle_command(config: dict, serial: str, device_id: str, command: dict)
     payload = command.get("payload") or {}
 
     if command_type in {"request_screen", "ping"}:
-        return adb_upload_screen(config, device_id, serial)
+        return adb_upload_screen(config, device_id, serial, payload)
     if command_type == "stop_screen":
         return "ADB screen is on-demand; nothing to stop."
     if command_type == "tap":

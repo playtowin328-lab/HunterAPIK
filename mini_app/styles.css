@@ -436,6 +436,19 @@ h2 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.quality-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.quality-button.active {
+  background: var(--surface-strong);
+  color: var(--hot);
+  box-shadow: inset 0 0 0 1px rgba(14, 124, 134, 0.28);
+}
+
 .swipe-actions {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }

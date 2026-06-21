@@ -45,9 +45,35 @@ let devices = [];
 let currentPairLinks = null;
 const screenPollers = new Map();
 const pendingScreenRequests = new Set();
+const qualityProfiles = {
+  fast: { label: "Быстро", requestMs: 650, frameMs: 500, waitMs: 1200, max_size: 720 },
+  balanced: { label: "Баланс", requestMs: 900, frameMs: 700, waitMs: 1800, max_size: 960 },
+  quality: { label: "Качество", requestMs: 1400, frameMs: 1000, waitMs: 2600, max_size: 1440 },
+};
 
 function isAdbBridge(device) {
   return /adb-bridge/i.test(`${device.agent || ""} ${device.platform || ""}`);
+}
+
+function qualityStorageKey(device) {
+  return `hunter_quality_${device.device_id}`;
+}
+
+function getDeviceQuality(device) {
+  const saved = localStorage.getItem(qualityStorageKey(device)) || "balanced";
+  return qualityProfiles[saved] ? saved : "balanced";
+}
+
+function setDeviceQuality(device, value) {
+  const quality = qualityProfiles[value] ? value : "balanced";
+  localStorage.setItem(qualityStorageKey(device), quality);
+  return quality;
+}
+
+function qualityPayload(device) {
+  const quality = getDeviceQuality(device);
+  const profile = qualityProfiles[quality];
+  return { stream: true, quality, max_size: profile.max_size };
 }
 
 function getLocalDeviceId() {
@@ -154,6 +180,9 @@ function formatTelemetry(device) {
   }
   if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) {
     items.push(`screen: ${telemetry.screen_ms} ms`);
+  }
+  if (telemetry.screen_quality) {
+    items.push(`режим: ${telemetry.screen_quality}`);
   }
   if (diagnostics.pending_commands) {
     items.push(`очередь: ${diagnostics.pending_commands}`);
@@ -359,8 +388,9 @@ async function requestFreshScreenFrame(device) {
 
   pendingScreenRequests.add(device.device_id);
   try {
-    const commandPayload = await sendCommand(device, "request_screen", { stream: true });
-    await waitForCommandResult(device, commandPayload, 1800);
+    const profile = qualityProfiles[getDeviceQuality(device)];
+    const commandPayload = await sendCommand(device, "request_screen", qualityPayload(device));
+    await waitForCommandResult(device, commandPayload, profile.waitMs);
   } catch (error) {
     // The frame loader displays stale/no-frame state; avoid noisy notes during live polling.
   } finally {
@@ -393,9 +423,10 @@ function startScreenPolling(device, screenPreview, screenImage, controlNote) {
     requestFreshScreenFrame(device);
   }
   loadFrame();
-  const frameTimer = setInterval(loadFrame, isAdbBridge(device) ? 700 : 1200);
+  const profile = qualityProfiles[getDeviceQuality(device)];
+  const frameTimer = setInterval(loadFrame, isAdbBridge(device) ? profile.frameMs : 1200);
   const requestTimer = isAdbBridge(device)
-    ? setInterval(() => requestFreshScreenFrame(device), 850)
+    ? setInterval(() => requestFreshScreenFrame(device), profile.requestMs)
     : null;
   screenPollers.set(device.device_id, { frameTimer, requestTimer });
 }
@@ -430,6 +461,8 @@ async function sendSimpleDeviceCommand(device, type, controlNote, successText) {
 }
 
 function render() {
+  const activeScreenIds = new Set(screenPollers.keys());
+  activeScreenIds.forEach((deviceId) => stopScreenPolling(deviceId));
   deviceList.innerHTML = "";
   totalDevices.textContent = devices.length;
   const onlineCount = devices.filter((device) => device.online).length;
@@ -460,6 +493,25 @@ function render() {
     const telemetryItems = formatTelemetry(device);
     telemetry.innerHTML = telemetryItems.map((item) => `<span>${item}</span>`).join("");
 
+    const qualityButtons = [...card.querySelectorAll(".quality-button")];
+    const updateQualityButtons = () => {
+      const currentQuality = getDeviceQuality(device);
+      qualityButtons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.quality === currentQuality);
+      });
+    };
+    updateQualityButtons();
+    qualityButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const quality = setDeviceQuality(device, button.dataset.quality);
+        updateQualityButtons();
+        controlNote.textContent = `Режим экрана: ${qualityProfiles[quality].label}.`;
+        if (screenPollers.has(device.device_id)) {
+          startScreenPolling(device, screenPreview, screenImage, controlNote);
+        }
+      });
+    });
+
     const controlNote = card.querySelector(".control-note");
     const screenPreview = card.querySelector(".screen-preview");
     const screenImage = screenPreview.querySelector("img");
@@ -481,11 +533,11 @@ function render() {
 
       try {
         controlNote.textContent = "Запрашиваю экран, жду ответ агента...";
-        const result = await sendCommandAndWait(device, "request_screen", { stream: true });
+        const result = await sendCommandAndWait(device, "request_screen", qualityPayload(device));
         controlNote.textContent = commandResultText(
           result,
           isAdbBridge(device)
-            ? "Live ADB экран запущен."
+            ? `Live ADB экран запущен: ${qualityProfiles[getDeviceQuality(device)].label}.`
             : "Запрос экрана обработан. Подтверди запись экрана на телефоне, если Android спросит разрешение."
         );
         startScreenPolling(device, screenPreview, screenImage, controlNote);
@@ -723,6 +775,9 @@ function render() {
     });
 
     deviceList.append(card);
+    if (activeScreenIds.has(device.device_id) && device.online) {
+      startScreenPolling(device, screenPreview, screenImage, controlNote);
+    }
   });
 }
 
