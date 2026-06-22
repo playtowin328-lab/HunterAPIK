@@ -1539,6 +1539,8 @@ def create_device_command(owner_id: str, device_id: str, command_type: str, payl
         "dismiss_keyguard",
         "blackout_on",
         "blackout_off",
+        "play_alarm",
+        "stop_alarm",
         "lock_screen",
         "open_settings",
         "open_wifi_settings",

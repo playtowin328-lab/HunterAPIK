@@ -630,6 +630,8 @@ function render() {
       [".unlock-screen-button", "dismiss_keyguard", "Запрос разблокировки отправлен. Если стоит PIN/биометрия, подтвердить нужно на телефоне."],
       [".blackout-on-button", "blackout_on", "Blackout mode включается. На телефоне откроется черный защитный экран."],
       [".blackout-off-button", "blackout_off", "Blackout mode выключается."],
+      [".alarm-on-button", "play_alarm", "Громкий сигнал включается на телефоне."],
+      [".alarm-off-button", "stop_alarm", "Громкий сигнал выключается."],
       [".lock-screen-button", "lock_screen", "Блокировка отправлена."],
       [".settings-button", "open_settings", "Settings открываются."],
       [".wifi-settings-button", "open_wifi_settings", "Wi‑Fi настройки открываются."],

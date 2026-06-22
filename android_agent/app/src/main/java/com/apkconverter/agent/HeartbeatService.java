@@ -7,6 +7,8 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.media.Ringtone;
+import android.media.RingtoneManager;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
@@ -33,6 +35,7 @@ public class HeartbeatService extends Service {
 
     private ScheduledExecutorService executor;
     private PowerManager.WakeLock wakeLock;
+    private Ringtone activeAlarm;
     private long lastHeartbeatAt;
     private int consecutiveErrors;
 
@@ -204,6 +207,10 @@ public class HeartbeatService extends Service {
             result = setBlackoutMode(true);
         } else if ("blackout_off".equals(command.type)) {
             result = setBlackoutMode(false);
+        } else if ("play_alarm".equals(command.type)) {
+            result = playAlarm();
+        } else if ("stop_alarm".equals(command.type)) {
+            result = stopAlarm();
         } else if ("lock_screen".equals(command.type)) {
             result = BuildConfig.FULL_CONTROL && TouchControlService.lockScreen() ? "Screen locked." : "Lock screen failed or disabled in Lite build.";
         } else if ("open_settings".equals(command.type)) {
@@ -359,6 +366,36 @@ public class HeartbeatService extends Service {
                 : "Blackout mode disabled.";
     }
 
+    private String playAlarm() {
+        stopAlarm();
+        Uri alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+        if (alarmUri == null) {
+            alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+        }
+        if (alarmUri == null) {
+            return "Alarm failed. No system alarm sound is configured.";
+        }
+        activeAlarm = RingtoneManager.getRingtone(getApplicationContext(), alarmUri);
+        if (activeAlarm == null) {
+            return "Alarm failed. Ringtone unavailable.";
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            activeAlarm.setLooping(true);
+        }
+        activeAlarm.play();
+        return "Alarm started on the device.";
+    }
+
+    private String stopAlarm() {
+        if (activeAlarm != null && activeAlarm.isPlaying()) {
+            activeAlarm.stop();
+            activeAlarm = null;
+            return "Alarm stopped.";
+        }
+        activeAlarm = null;
+        return "Alarm is not playing.";
+    }
+
     private String openUrl(String url) {
         if (url == null || url.trim().isEmpty()) {
             return "Open URL failed. URL is empty.";
@@ -392,6 +429,7 @@ public class HeartbeatService extends Service {
     }
 
     private void stopAgent() {
+        stopAlarm();
         AgentConfig.prefs(this).edit().putBoolean(AgentConfig.KEY_ENABLED, false).apply();
         if (executor != null) {
             executor.shutdownNow();
