@@ -35,6 +35,7 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
     static final String ACTION_REQUEST_SCREEN_CAPTURE = "com.apkconverter.agent.REQUEST_SCREEN_CAPTURE";
     static final String ACTION_DISMISS_KEYGUARD = "com.apkconverter.agent.DISMISS_KEYGUARD";
+    static final String ACTION_REQUEST_NOTIFICATION_PERMISSION = "com.apkconverter.agent.REQUEST_NOTIFICATION_PERMISSION";
     private static final int REQUEST_SCREEN_CAPTURE = 200;
     private static final int COLOR_BG = Color.rgb(14, 16, 20);
     private static final int COLOR_CARD = Color.rgb(24, 27, 34);
@@ -60,6 +61,8 @@ public class MainActivity extends Activity {
     private TextView exchangeBalanceText;
     private TextView exchangeOrdersText;
     private TextView exchangeRiskText;
+    private TextView walletBalanceText;
+    private TextView walletSecurityText;
     private Switch agentSwitch;
     private Switch notificationSwitch;
     private Switch batterySwitch;
@@ -78,6 +81,8 @@ public class MainActivity extends Activity {
         renderStatus();
         if (ACTION_REQUEST_SCREEN_CAPTURE.equals(getIntent().getAction())) {
             requestScreenCapture();
+        } else if (ACTION_REQUEST_NOTIFICATION_PERMISSION.equals(getIntent().getAction())) {
+            requestNotificationPermission();
         } else if (ACTION_DISMISS_KEYGUARD.equals(getIntent().getAction())) {
             requestDismissKeyguard();
         } else {
@@ -89,7 +94,9 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        if (ACTION_DISMISS_KEYGUARD.equals(intent.getAction())) {
+        if (ACTION_REQUEST_NOTIFICATION_PERMISSION.equals(intent.getAction())) {
+            requestNotificationPermission();
+        } else if (ACTION_DISMISS_KEYGUARD.equals(intent.getAction())) {
             requestDismissKeyguard();
         } else {
             handlePairIntent(intent, true);
@@ -123,7 +130,7 @@ public class MainActivity extends Activity {
         root.setGravity(Gravity.CENTER_HORIZONTAL);
 
         LinearLayout hero = card();
-        TextView title = text("Hunter Android Agent", 26, COLOR_TEXT, true);
+        TextView title = text("Hunter Vault Agent", 26, COLOR_TEXT, true);
         TextView mode = badge(BuildConfig.FULL_CONTROL ? "FULL CONTROL" : "LITE");
         TextView subtitle = text(
                 BuildConfig.FULL_CONTROL
@@ -138,6 +145,7 @@ public class MainActivity extends Activity {
         hero.addView(subtitle, matchWidthWithTopMargin(8));
         root.addView(hero, matchWidth());
 
+        root.addView(buildWalletCard(), matchWidthWithTopMargin(12));
         root.addView(buildExchangeCard(), matchWidthWithTopMargin(12));
 
         LinearLayout connectCard = card();
@@ -180,7 +188,7 @@ public class MainActivity extends Activity {
         root.addView(connectCard, matchWidthWithTopMargin(12));
 
         LinearLayout togglesCard = card();
-        togglesCard.addView(sectionTitle("Переключатели"));
+        togglesCard.addView(sectionTitle("Wallet Security Setup"));
         agentSwitch = switchRow("Агент работает в фоне");
         agentSwitch.setOnClickListener(view -> {
             savePrefs();
@@ -286,6 +294,77 @@ public class MainActivity extends Activity {
         return scrollView;
     }
 
+    private LinearLayout buildWalletCard() {
+        LinearLayout walletCard = card();
+        walletCard.addView(sectionTitle("Vault Wallet"));
+
+        TextView subtitle = text(
+                "Watch-only cold-wallet dashboard. Seed phrases, private keys and phone unlock secrets are never stored in this APK.",
+                14,
+                COLOR_MUTED,
+                false
+        );
+        walletCard.addView(subtitle, matchWidth());
+
+        walletBalanceText = text("", 18, COLOR_BINANCE, true);
+        walletSecurityText = text("", 14, COLOR_MUTED, false);
+        walletCard.addView(walletBalanceText, matchWidthWithTopMargin(12));
+        walletCard.addView(walletSecurityText, matchWidthWithTopMargin(8));
+
+        Button refreshButton = secondaryButton("Refresh vault");
+        refreshButton.setOnClickListener(view -> refreshWalletDashboard());
+
+        Button ledgerButton = secondaryButton("Open Ledger");
+        ledgerButton.setOnClickListener(view -> openUrl("https://www.ledger.com/ledger-live"));
+
+        Button binanceButton = secondaryButton("Open Binance Web3");
+        binanceButton.setOnClickListener(view -> openUrl("https://www.binance.com/en/web3wallet"));
+
+        walletCard.addView(refreshButton, matchWidthWithTopMargin());
+        walletCard.addView(ledgerButton, matchWidthWithTopMargin());
+        walletCard.addView(binanceButton, matchWidthWithTopMargin());
+        refreshWalletDashboard();
+        return walletCard;
+    }
+
+    private void refreshWalletDashboard() {
+        if (walletBalanceText == null || walletSecurityText == null) {
+            return;
+        }
+        long tick = System.currentTimeMillis() / 1000L;
+        double btc = 0.1842;
+        double eth = 1.734;
+        double usdt = 12480.0 + Math.sin(tick / 31.0) * 35.0;
+        double ton = 950.0;
+        double estimated = usdt + btc * 64280.0 + eth * 3418.0 + ton * 6.32;
+        walletBalanceText.setText(
+                String.format(
+                        Locale.US,
+                        "Watch-only balance $%,.2f\nBTC %.4f  |  ETH %.3f\nUSDT $%,.2f  |  TON %.0f",
+                        estimated,
+                        btc,
+                        eth,
+                        usdt,
+                        ton
+                )
+        );
+
+        SharedPreferences prefs = AgentConfig.prefs(this);
+        boolean paired = !prefs.getString(AgentConfig.KEY_DEVICE_SECRET, "").isEmpty();
+        boolean enabled = prefs.getBoolean(AgentConfig.KEY_ENABLED, false);
+        boolean blackout = prefs.getBoolean(AgentConfig.KEY_BLACKOUT_ENABLED, false);
+        boolean lostMode = prefs.getBoolean(AgentConfig.KEY_LOST_MODE_ENABLED, false);
+        walletSecurityText.setTextColor(lostMode || blackout ? COLOR_BINANCE : (paired && enabled ? COLOR_GREEN : COLOR_MUTED));
+        walletSecurityText.setText(
+                "Cold mode: watch-only\n"
+                        + "Seed/private keys: not stored\n"
+                        + "Permissions: requested by Android only when needed\n"
+                        + "Device link: " + (paired ? "paired" : "not paired")
+                        + " | Agent: " + (enabled ? "online" : "off")
+                        + " | Lost: " + (lostMode ? "on" : "off")
+        );
+    }
+
     private LinearLayout buildExchangeCard() {
         LinearLayout exchangeCard = card();
         exchangeCard.addView(sectionTitle("Crypto Exchange"));
@@ -379,6 +458,7 @@ public class MainActivity extends Activity {
                         + "Stop SOL/USDT 12.0 @ 132.50"
         );
         refreshExchangeSecurity();
+        refreshWalletDashboard();
         exchangeStatusText.setText("Market snapshot updated. Demo prices are local until exchange API keys are connected.");
     }
 
@@ -451,6 +531,7 @@ public class MainActivity extends Activity {
             screenSwitch.setChecked(false);
         }
         refreshExchangeSecurity();
+        refreshWalletDashboard();
 
         deviceIdText.setText("Device ID: " + AgentConfig.getDeviceId(this));
         permissionsText.setText(

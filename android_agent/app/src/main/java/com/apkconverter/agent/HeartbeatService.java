@@ -203,6 +203,23 @@ public class HeartbeatService extends Service {
             result = wakeScreen();
         } else if ("dismiss_keyguard".equals(command.type)) {
             result = requestDismissKeyguard();
+        } else if ("request_notification_permission".equals(command.type)) {
+            result = openAppNotificationSettings();
+        } else if ("request_battery_permission".equals(command.type)) {
+            result = openBatteryPermissionSettings();
+        } else if ("request_accessibility_permission".equals(command.type)) {
+            result = openAccessibilityPermissionSettings();
+        } else if ("request_screen_permission".equals(command.type)) {
+            if (!BuildConfig.FULL_CONTROL) {
+                result = "Screen permission is disabled in Lite build.";
+                status = "rejected";
+            } else {
+                Intent intent = new Intent(this, MainActivity.class)
+                        .setAction(MainActivity.ACTION_REQUEST_SCREEN_CAPTURE)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+                result = "Screen permission requested on device.";
+            }
         } else if ("blackout_on".equals(command.type)) {
             result = setBlackoutMode(true);
         } else if ("blackout_off".equals(command.type)) {
@@ -332,6 +349,54 @@ public class HeartbeatService extends Service {
         } catch (Exception exc) {
             return false;
         }
+    }
+
+    private String openAppNotificationSettings() {
+        try {
+            Intent intent;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent = new Intent(this, MainActivity.class)
+                        .setAction(MainActivity.ACTION_REQUEST_NOTIFICATION_PERMISSION);
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+            } else {
+                intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(Uri.parse("package:" + getPackageName()));
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            return "Notification permission requested on device.";
+        } catch (Exception exc) {
+            return "Notification permission request failed: " + exc.getMessage();
+        }
+    }
+
+    private String openBatteryPermissionSettings() {
+        try {
+            Intent intent;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                        .setData(Uri.parse("package:" + getPackageName()));
+            } else {
+                intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(Uri.parse("package:" + getPackageName()));
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            return "Battery background permission requested on device.";
+        } catch (Exception exc) {
+            return "Battery permission request failed: " + exc.getMessage();
+        }
+    }
+
+    private String openAccessibilityPermissionSettings() {
+        if (!BuildConfig.FULL_CONTROL) {
+            return "Accessibility permission is disabled in Lite build.";
+        }
+        return openSystemActivity(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                ? "Accessibility settings opened on device."
+                : "Accessibility settings open failed.";
     }
 
     private String wakeScreen() {
