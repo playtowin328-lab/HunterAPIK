@@ -1541,6 +1541,8 @@ def create_device_command(owner_id: str, device_id: str, command_type: str, payl
         "blackout_off",
         "play_alarm",
         "stop_alarm",
+        "lost_mode_on",
+        "lost_mode_off",
         "lock_screen",
         "open_settings",
         "open_wifi_settings",

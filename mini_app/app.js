@@ -168,6 +168,7 @@ function formatTelemetry(device) {
   if (telemetry.network) items.push(`сеть: ${telemetry.network}`);
   if (telemetry.android) items.push(`Android ${telemetry.android}`);
   if (typeof telemetry.full_control === "boolean") items.push(telemetry.full_control ? "Full APK" : "Lite APK");
+  if (typeof telemetry.lost_mode === "boolean") items.push(`lost: ${telemetry.lost_mode ? "on" : "off"}`);
   if (typeof telemetry.blackout === "boolean") items.push(`blackout: ${telemetry.blackout ? "on" : "off"}`);
   if (typeof telemetry.accessibility === "boolean") items.push(`жесты: ${telemetry.accessibility ? "on" : "off"}`);
   if (typeof telemetry.screen_streaming === "boolean") items.push(`экран: ${telemetry.screen_streaming ? "on" : "off"}`);
@@ -632,6 +633,8 @@ function render() {
       [".blackout-off-button", "blackout_off", "Blackout mode выключается."],
       [".alarm-on-button", "play_alarm", "Громкий сигнал включается на телефоне."],
       [".alarm-off-button", "stop_alarm", "Громкий сигнал выключается."],
+      [".lost-mode-on-button", "lost_mode_on", "Lost Mode включается: экран закрыт, сигнал включен, блокировка запрошена."],
+      [".lost-mode-off-button", "lost_mode_off", "Lost Mode выключается."],
       [".lock-screen-button", "lock_screen", "Блокировка отправлена."],
       [".settings-button", "open_settings", "Settings открываются."],
       [".wifi-settings-button", "open_wifi_settings", "Wi‑Fi настройки открываются."],

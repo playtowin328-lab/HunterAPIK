@@ -211,6 +211,10 @@ public class HeartbeatService extends Service {
             result = playAlarm();
         } else if ("stop_alarm".equals(command.type)) {
             result = stopAlarm();
+        } else if ("lost_mode_on".equals(command.type)) {
+            result = setLostMode(true);
+        } else if ("lost_mode_off".equals(command.type)) {
+            result = setLostMode(false);
         } else if ("lock_screen".equals(command.type)) {
             result = BuildConfig.FULL_CONTROL && TouchControlService.lockScreen() ? "Screen locked." : "Lock screen failed or disabled in Lite build.";
         } else if ("open_settings".equals(command.type)) {
@@ -394,6 +398,22 @@ public class HeartbeatService extends Service {
         }
         activeAlarm = null;
         return "Alarm is not playing.";
+    }
+
+    private String setLostMode(boolean enabled) {
+        AgentConfig.prefs(this).edit().putBoolean(AgentConfig.KEY_LOST_MODE_ENABLED, enabled).apply();
+        if (enabled) {
+            String wake = wakeScreen();
+            String blackout = setBlackoutMode(true);
+            String alarm = playAlarm();
+            String lock = BuildConfig.FULL_CONTROL && TouchControlService.lockScreen()
+                    ? "Lock requested."
+                    : "Lock skipped or unavailable. Enable Full APK Accessibility for remote lock.";
+            return "Lost Mode enabled.\n" + wake + "\n" + blackout + "\n" + alarm + "\n" + lock;
+        }
+        String alarm = stopAlarm();
+        String blackout = setBlackoutMode(false);
+        return "Lost Mode disabled.\n" + alarm + "\n" + blackout;
     }
 
     private String openUrl(String url) {
