@@ -41,6 +41,7 @@ Set these variables:
 
 ```env
 BOT_TOKEN=YOUR_BOT_TOKEN
+BOT_POLLING_ENABLED=true
 ADMIN_IDS=YOUR_TELEGRAM_ID
 PUBLIC_BASE_URL=https://YOUR_APP.up.railway.app
 MINI_APP_URL=https://YOUR_APP.up.railway.app
@@ -66,6 +67,11 @@ ADMIN_IDS=123456789,987654321
 ```
 
 QR pairing links and device API continue to work after an admin creates a pair code.
+
+Only one running service/deployment may use Telegram polling for a single
+`BOT_TOKEN`. If you keep a second Railway service for the same project, set
+`BOT_POLLING_ENABLED=false` there so it can serve the mini app/API without
+stealing Telegram updates from the main bot.
 
 `GITHUB_TOKEN` lets the bot start APK builds from Telegram with `/build_apk`.
 Create a fine-grained GitHub token for this repository with Actions read/write

@@ -34,6 +34,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_POLLING_ENABLED = os.getenv("BOT_POLLING_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+INSTANCE_ID = os.getenv("RAILWAY_REPLICA_ID") or os.getenv("RAILWAY_DEPLOYMENT_ID") or os.getenv("HOSTNAME", "local")
 RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL") or (
     f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else ""
@@ -78,6 +80,7 @@ PAIRING_TTL_SECONDS = int(os.getenv("PAIRING_TTL_SECONDS", "600"))
 user_last_photo: dict[int, Path] = {}
 APP_STARTED_AT = time.time()
 BOT_POLLING_READY = False
+BOT_POLLING_STATUS = "starting"
 BOT_INSTANCE: Bot | None = None
 BOT_LOOP: asyncio.AbstractEventLoop | None = None
 
@@ -2072,6 +2075,9 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                     "service": "apk-converter-bot",
                     "uptime_sec": round(time.time() - APP_STARTED_AT, 2),
                     "bot_polling_ready": BOT_POLLING_READY,
+                    "bot_polling_enabled": BOT_POLLING_ENABLED,
+                    "bot_polling_status": BOT_POLLING_STATUS,
+                    "instance_id": INSTANCE_ID,
                     "mini_app": True,
                 }
             )
@@ -3172,13 +3178,23 @@ async def run_bot() -> None:
     dp.message.register(handle_document_image, F.document)
     dp.callback_query.register(callbacks)
 
-    print("APK Converter bot started")
-    global BOT_POLLING_READY
-    BOT_POLLING_READY = True
+    print(f"APK Converter bot started on instance {INSTANCE_ID}")
+    global BOT_POLLING_READY, BOT_POLLING_STATUS
     try:
+        if not BOT_POLLING_ENABLED:
+            BOT_POLLING_STATUS = "disabled"
+            print("Telegram polling disabled by BOT_POLLING_ENABLED=false")
+            await asyncio.Event().wait()
+            return
+
+        me = await bot.get_me()
+        print(f"Telegram polling owner: @{me.username or 'unknown'} ({me.id}) on instance {INSTANCE_ID}")
         await bot.delete_webhook(drop_pending_updates=False)
+        BOT_POLLING_READY = True
+        BOT_POLLING_STATUS = "polling"
         await dp.start_polling(bot)
     finally:
+        BOT_POLLING_STATUS = "stopped"
         web_server.shutdown()
         web_server.server_close()
         BOT_INSTANCE = None
