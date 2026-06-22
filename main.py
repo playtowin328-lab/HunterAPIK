@@ -324,13 +324,40 @@ def save_audit_event(
     return event
 
 
-def list_audit_events(limit: int = 20) -> list[sqlite3.Row]:
+AUDIT_FILTERS = {
+    "devices": [
+        "device_added",
+        "device_paired",
+        "device_repaired",
+        "device_manage",
+        "pairing_code_created",
+    ],
+    "commands": ["device_command"],
+    "access": ["grant_access", "revoke_access", "command_admins", "command_audit"],
+    "builds": ["build_apk_lite", "build_apk_full", "build_pc_agent"],
+    "bot": ["command_start", "command_settings", "command_guide", "callback", "mini_app_event"],
+}
+
+
+def list_audit_events(limit: int = 20, category: str = "", actor_id: str = "") -> list[sqlite3.Row]:
     safe_limit = max(1, min(int(limit or 20), 100))
+    where = []
+    params: list = []
+    actions = AUDIT_FILTERS.get(category)
+    if actions:
+        placeholders = ",".join("?" for _ in actions)
+        where.append(f"action IN ({placeholders})")
+        params.extend(actions)
+    if actor_id:
+        where.append("actor_id = ?")
+        params.append(str(actor_id))
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    params.append(safe_limit)
     with db_connect() as connection:
         return list(
             connection.execute(
-                "SELECT * FROM audit_events ORDER BY created_at DESC LIMIT ?",
-                (safe_limit,),
+                f"SELECT * FROM audit_events {where_sql} ORDER BY created_at DESC LIMIT ?",
+                params,
             )
         )
 
@@ -412,15 +439,39 @@ def audit_callback(callback: CallbackQuery, action: str, detail: str = "", metad
     )
 
 
-def audit_text(limit: int = 20) -> str:
-    rows = list_audit_events(limit)
+def audit_text(limit: int = 20, category: str = "", actor_id: str = "") -> str:
+    rows = list_audit_events(limit, category, actor_id)
     if not rows:
-        return "Audit log is empty."
-    lines = [f"Audit log: last {len(rows)} events"]
+        return "Audit log is empty for this filter."
+    suffix = []
+    if category:
+        suffix.append(f"category={category}")
+    if actor_id:
+        suffix.append(f"user={actor_id}")
+    filter_text = f" ({', '.join(suffix)})" if suffix else ""
+    lines = [f"Audit log: last {len(rows)} events{filter_text}"]
     for row in rows:
         lines.append("")
         lines.append(audit_event_text(row))
     return "\n".join(lines)
+
+
+def audit_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Devices", callback_data="audit:devices"),
+                InlineKeyboardButton(text="Commands", callback_data="audit:commands"),
+            ],
+            [
+                InlineKeyboardButton(text="Access", callback_data="audit:access"),
+                InlineKeyboardButton(text="Builds", callback_data="audit:builds"),
+            ],
+            [InlineKeyboardButton(text="All", callback_data="audit:all")],
+            [InlineKeyboardButton(text="Назад к доступам", callback_data="access_info")],
+            nav_row(None),
+        ]
+    )
 
 
 def access_text() -> str:
@@ -437,6 +488,8 @@ def access_text() -> str:
         "/revoke 123456789 — забрать доступ",
         "/admins — список доступа",
         "/audit 20 — журнал действий",
+        "/audit devices 50 — действия с устройствами",
+        "/audit user 123456789 — действия пользователя",
         "",
         "Пользователь без доступа увидит свой Telegram ID и сможет прислать его тебе.",
     ]
@@ -617,12 +670,34 @@ async def send_admins(message: Message) -> None:
 async def send_audit(message: Message, command: CommandObject) -> None:
     if not await ensure_root_message(message):
         return
-    try:
-        limit = int((command.args or "20").strip())
-    except ValueError:
-        limit = 20
-    audit_message(message, "command_audit", f"Opened audit log, limit={limit}", notify=False)
-    await message.answer(audit_text(limit))
+    args = (command.args or "").strip().split()
+    category = ""
+    actor_id = ""
+    limit = 20
+    if args:
+        if args[0].isdigit():
+            limit = int(args[0])
+        elif args[0] == "user" and len(args) > 1:
+            try:
+                actor_id = normalize_user_id(args[1])
+            except ValueError as exc:
+                await message.answer(f"Не понял user ID: {exc}\n\nПример: `/audit user 123456789`", parse_mode="Markdown")
+                return
+            if len(args) > 2 and args[2].isdigit():
+                limit = int(args[2])
+        else:
+            category = args[0].lower()
+            if category not in AUDIT_FILTERS:
+                category = ""
+            if len(args) > 1 and args[1].isdigit():
+                limit = int(args[1])
+    audit_message(
+        message,
+        "command_audit",
+        f"Opened audit log, limit={limit}, category={category or 'all'}, actor={actor_id or 'any'}",
+        notify=False,
+    )
+    await message.answer(audit_text(limit, category, actor_id), reply_markup=audit_keyboard())
 
 
 async def send_grant_access(message: Message, command: CommandObject) -> None:
@@ -2725,7 +2800,21 @@ async def callbacks(callback: CallbackQuery) -> None:
             await callback.answer("Only root admin can read audit log.", show_alert=True)
             return
         await callback.answer()
-        await show_bot_screen(callback, audit_text(20), reply_markup=access_keyboard())
+        await show_bot_screen(callback, audit_text(20), reply_markup=audit_keyboard())
+        return
+
+    if action and action.startswith("audit:"):
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Only root admin can read audit log.", show_alert=True)
+            return
+        category = action.split(":", 1)[1]
+        if category == "all":
+            category = ""
+        if category and category not in AUDIT_FILTERS:
+            await callback.answer("Unknown audit filter.", show_alert=True)
+            return
+        await callback.answer()
+        await show_bot_screen(callback, audit_text(30, category), reply_markup=audit_keyboard())
         return
 
     if action == "guide":
