@@ -653,7 +653,7 @@ async def send_start(message: Message) -> None:
         return
     audit_message(message, "command_start", "Opened main menu")
     try:
-        await message.answer(HELP_TEXT, reply_markup=main_menu(), parse_mode="Markdown")
+        await message.answer(HELP_TEXT, reply_markup=main_menu())
     except Exception as exc:
         print(f"Failed to send /start menu with primary markup: {exc}")
         try:
@@ -2803,7 +2803,7 @@ async def callbacks(callback: CallbackQuery) -> None:
 
     if action == "main_menu":
         await callback.answer()
-        await show_bot_screen(callback, HELP_TEXT, reply_markup=main_menu(), parse_mode="Markdown")
+        await show_bot_screen(callback, HELP_TEXT, reply_markup=main_menu())
         return
 
     if action == "settings":
