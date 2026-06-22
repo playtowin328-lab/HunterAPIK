@@ -206,10 +206,17 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS bot_access (
                 user_id TEXT PRIMARY KEY,
                 granted_by TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
                 created_at INTEGER NOT NULL
             )
             """
         )
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(bot_access)").fetchall()
+        }
+        if "role" not in columns:
+            connection.execute("ALTER TABLE bot_access ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_events (
@@ -249,19 +256,51 @@ def is_allowed_bot_user(user_id: str) -> bool:
     return row is not None
 
 
-def grant_bot_access(user_id: str, granted_by: str) -> None:
+def normalize_role(role: str) -> str:
+    value = str(role or "user").strip().lower()
+    if value not in {"admin", "user"}:
+        raise ValueError("Роль должна быть admin или user")
+    return value
+
+
+def get_user_role(user_id: str) -> str:
+    try:
+        user_id = normalize_user_id(user_id)
+    except ValueError:
+        return "guest"
+    if is_root_user_id(user_id):
+        return "root"
+    with db_connect() as connection:
+        row = connection.execute(
+            "SELECT role FROM bot_access WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return normalize_role(row["role"]) if row else "guest"
+
+
+def is_project_admin_user(user) -> bool:
+    if is_root_admin_user(user):
+        return True
+    if not user:
+        return False
+    return get_user_role(str(user.id)) == "admin"
+
+
+def grant_bot_access(user_id: str, granted_by: str, role: str = "user") -> None:
     user_id = normalize_user_id(user_id)
+    role = normalize_role(role)
     now = int(time.time())
     with db_connect() as connection:
         connection.execute(
             """
-            INSERT INTO bot_access(user_id, granted_by, created_at)
-            VALUES (?, ?, ?)
+            INSERT INTO bot_access(user_id, granted_by, role, created_at)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 granted_by = excluded.granted_by,
+                role = excluded.role,
                 created_at = excluded.created_at
             """,
-            (user_id, str(granted_by), now),
+            (user_id, str(granted_by), role, now),
         )
 
 
@@ -336,7 +375,7 @@ AUDIT_FILTERS = {
         "pairing_code_created",
     ],
     "commands": ["device_command"],
-    "access": ["grant_access", "revoke_access", "command_admins", "command_audit"],
+    "access": ["grant_access", "revoke_access", "command_admins", "command_roles", "command_root_settings", "command_audit"],
     "builds": ["build_apk_lite", "build_apk_full", "build_pc_agent"],
     "bot": ["command_start", "command_settings", "command_guide", "callback", "mini_app_event"],
 }
@@ -487,9 +526,14 @@ def access_text() -> str:
         f"Допущено через бота: {len(rows)}",
         "",
         "Команды владельца:",
-        "/grant 123456789 — выдать доступ",
+        "/grant 123456789 — выдать доступ user",
+        "/grant_admin 123456789 — выдать роль admin",
+        "/grant_user 123456789 — выдать роль user",
+        "/role 123456789 admin — сменить роль",
         "/revoke 123456789 — забрать доступ",
-        "/admins — список доступа",
+        "/roles — список ролей",
+        "/admins — список доступа и ролей",
+        "/root_settings — настройки root",
         "/audit 20 — журнал действий",
         "/audit devices 50 — действия с устройствами",
         "/audit user 123456789 — действия пользователя",
@@ -501,7 +545,7 @@ def access_text() -> str:
         lines.append("Выданные доступы:")
         for row in rows[:20]:
             created = datetime.fromtimestamp(int(row["created_at"])).strftime("%d.%m %H:%M")
-            lines.append(f"- {row['user_id']} · выдал {row['granted_by']} · {created}")
+            lines.append(f"- {row['user_id']} · {row['role']} · выдал {row['granted_by']} · {created}")
     return "\n".join(lines)
 
 
@@ -510,7 +554,48 @@ def access_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Обновить список", callback_data="access_info")],
             [InlineKeyboardButton(text="Audit log", callback_data="audit_info")],
+            [InlineKeyboardButton(text="Root settings", callback_data="root_settings")],
             nav_row(None),
+        ]
+    )
+
+
+def root_settings_text() -> str:
+    with db_connect() as connection:
+        role_rows = connection.execute(
+            "SELECT role, COUNT(*) AS count FROM bot_access GROUP BY role ORDER BY role"
+        ).fetchall()
+        device_count = connection.execute("SELECT COUNT(*) AS count FROM devices").fetchone()["count"]
+        owner_count = connection.execute("SELECT COUNT(DISTINCT owner_id) AS count FROM devices").fetchone()["count"]
+        online_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM devices WHERE ? - last_seen <= ?",
+            (now_ts(), DEVICE_TTL_SECONDS),
+        ).fetchone()["count"]
+    role_map = {row["role"]: int(row["count"]) for row in role_rows}
+    return "\n".join(
+        [
+            "Root settings",
+            "",
+            f"Root ADMIN_IDS: {', '.join(sorted(ADMIN_IDS)) if ADMIN_IDS else 'public root mode'}",
+            f"Roles: admin={role_map.get('admin', 0)}, user={role_map.get('user', 0)}",
+            f"Devices: {device_count} total, {online_count} online, owners={owner_count}",
+            f"Polling: {'enabled' if BOT_POLLING_ENABLED else 'disabled'} · {BOT_POLLING_STATUS}",
+            f"Instance: {INSTANCE_ID}",
+            f"Public URL: {PUBLIC_BASE_URL or 'missing'}",
+            f"Mini App URL: {MINI_APP_URL or 'missing'}",
+            f"Storage: {STORAGE_DIR}",
+            f"DB: {DB_PATH}",
+            f"Device TTL: {DEVICE_TTL_SECONDS}s",
+            f"Pairing TTL: {PAIRING_TTL_SECONDS}s",
+            f"GitHub repo: {GITHUB_REPO or 'missing'}",
+            f"GitHub token: {'set' if GITHUB_TOKEN else 'missing'}",
+            "",
+            "Root commands:",
+            "/grant_admin 123456789",
+            "/grant_user 123456789",
+            "/role 123456789 admin",
+            "/revoke 123456789",
+            "/audit devices 50",
         ]
     )
 
@@ -694,6 +779,20 @@ async def send_admins(message: Message) -> None:
     await message.answer(access_text(), reply_markup=access_keyboard())
 
 
+async def send_root_settings(message: Message) -> None:
+    if not await ensure_root_message(message):
+        return
+    audit_message(message, "command_root_settings", "Opened root settings", notify=False)
+    await message.answer(root_settings_text(), reply_markup=access_keyboard())
+
+
+async def send_roles(message: Message) -> None:
+    if not await ensure_root_message(message):
+        return
+    audit_message(message, "command_roles", "Opened role list", notify=False)
+    await message.answer(access_text(), reply_markup=access_keyboard())
+
+
 async def send_audit(message: Message, command: CommandObject) -> None:
     if not await ensure_root_message(message):
         return
@@ -732,19 +831,60 @@ async def send_grant_access(message: Message, command: CommandObject) -> None:
         return
     try:
         user_id = normalize_user_id(command.args or "")
-        grant_bot_access(user_id, str(message.from_user.id))
+        grant_bot_access(user_id, str(message.from_user.id), "user")
     except ValueError as exc:
         await message.answer(
             f"Не понял ID: {exc}\n\nПример: `/grant 123456789`",
             parse_mode="Markdown",
         )
         return
-    audit_message(message, "grant_access", f"Granted bot access to {user_id}", {"target_user_id": user_id})
+    audit_message(message, "grant_access", f"Granted user role to {user_id}", {"target_user_id": user_id, "role": "user"})
     await message.answer(
-        f"Доступ выдан пользователю `{user_id}`.",
+        f"Доступ выдан пользователю `{user_id}` с ролью `user`.",
         parse_mode="Markdown",
         reply_markup=access_keyboard(),
     )
+
+
+async def send_grant_role(message: Message, command: CommandObject, role: str | None = None) -> None:
+    if not await ensure_root_message(message):
+        return
+    args = (command.args or "").strip().split()
+    try:
+        if role is None:
+            if len(args) < 2:
+                raise ValueError("Пример: /role 123456789 admin")
+            user_id = normalize_user_id(args[0])
+            target_role = normalize_role(args[1])
+        else:
+            user_id = normalize_user_id(args[0] if args else "")
+            target_role = normalize_role(role)
+        if user_id in ADMIN_IDS:
+            await message.answer("Этот пользователь уже root через ADMIN_IDS. Его роль меняется только в Railway variables.")
+            return
+        grant_bot_access(user_id, str(message.from_user.id), target_role)
+    except ValueError as exc:
+        await message.answer(f"Не понял команду: {exc}\n\nПримеры:\n/role 123456789 admin\n/grant_admin 123456789")
+        return
+    audit_message(
+        message,
+        "grant_access",
+        f"Granted {target_role} role to {user_id}",
+        {"target_user_id": user_id, "role": target_role},
+    )
+    await message.answer(f"Роль `{target_role}` выдана пользователю `{user_id}`.", parse_mode="Markdown", reply_markup=access_keyboard())
+
+
+async def send_grant_admin(message: Message, command: CommandObject) -> None:
+    await send_grant_role(message, command, "admin")
+
+
+async def send_grant_user(message: Message, command: CommandObject) -> None:
+    await send_grant_role(message, command, "user")
+
+
+async def send_set_role(message: Message, command: CommandObject) -> None:
+    await send_grant_role(message, command, None)
 
 
 async def send_revoke_access(message: Message, command: CommandObject) -> None:
@@ -785,6 +925,7 @@ async def send_status(message: Message) -> None:
         "Bot status",
         f"Admin lock: {'on' if ADMIN_IDS else 'off'}",
         f"Your Telegram ID: {message.from_user.id}",
+        f"Your role: {get_user_role(str(message.from_user.id))}",
         f"Public URL: {PUBLIC_BASE_URL or 'missing'}",
         f"Mini App URL: {MINI_APP_URL or 'missing'}",
         f"Agent APK: {apk_source}",
@@ -843,8 +984,10 @@ async def send_connect(message: Message) -> None:
 async def send_devices(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
-    audit_message(message, "command_devices", "Opened device list")
-    await message.answer(format_devices_text(message.from_user.id), reply_markup=connect_keyboard())
+    can_view_all = is_project_admin_user(message.from_user)
+    audit_message(message, "command_devices", "Opened all devices" if can_view_all else "Opened own device list")
+    text = format_all_devices_text() if can_view_all else format_devices_text(message.from_user.id)
+    await message.answer(text, reply_markup=connect_keyboard())
 
 
 async def send_apk_list(message: Message) -> None:
@@ -1285,15 +1428,37 @@ def format_devices_text(owner_id: int) -> str:
         return "Пока нет подключенных устройств. Нажми «Подключить телефон» и введи код в Android Agent."
 
     lines = ["📡 Твои устройства:"]
+    lines.extend(format_device_lines(devices, include_owner=False))
+    return "\n".join(lines)
+
+
+def format_all_devices_text() -> str:
+    devices = list_all_devices()
+    if not devices:
+        return "В проекте пока нет подключенных устройств."
+
+    online_count = sum(1 for device in devices if device.get("online"))
+    lines = [f"📡 Все устройства проекта: {len(devices)} всего, {online_count} online"]
+    lines.extend(format_device_lines(devices, include_owner=True))
+    return "\n".join(lines)
+
+
+def format_device_lines(devices: list[dict], include_owner: bool = False) -> list[str]:
+    lines = []
     for device in devices:
         status = "🟢 online" if device.get("online") else "⚫ offline"
+        owner_line = f"Owner: {device.get('owner_id', 'unknown')}\n" if include_owner else ""
+        health = device.get("health") or {}
+        health_line = f"Состояние: {health.get('label')}\n" if health.get("label") else ""
         lines.append(
             f"\n{status} — {device.get('name', 'Unknown')}\n"
+            f"{owner_line}"
             f"Платформа: {device.get('platform', 'unknown')}\n"
-            f"Агент: {device.get('agent', 'unknown')}"
+            f"Агент: {device.get('agent', 'unknown')}\n"
+            f"{health_line}"
+            f"Device ID: {device.get('device_id', 'unknown')}"
         )
-
-    return "\n".join(lines)
+    return lines
 
 
 def user_dir(user_id: int) -> Path:
@@ -1949,14 +2114,27 @@ def device_exists(owner_id: str, device_id: str) -> bool:
 
 
 def list_devices_for_user(owner_id: str) -> list[dict]:
+    return list_devices(owner_id=str(owner_id))
+
+
+def list_all_devices() -> list[dict]:
+    return list_devices(owner_id="")
+
+
+def list_devices(owner_id: str = "") -> list[dict]:
     now = int(time.time())
     result = []
 
     with db_connect() as connection:
-        rows = connection.execute(
-            "SELECT * FROM devices WHERE owner_id = ? ORDER BY last_seen DESC",
-            (str(owner_id),),
-        ).fetchall()
+        if owner_id:
+            rows = connection.execute(
+                "SELECT * FROM devices WHERE owner_id = ? ORDER BY last_seen DESC",
+                (str(owner_id),),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT * FROM devices ORDER BY last_seen DESC"
+            ).fetchall()
 
     for row in rows:
         item = {
@@ -2828,6 +3006,14 @@ async def callbacks(callback: CallbackQuery) -> None:
         await show_bot_screen(callback, access_text(), reply_markup=access_keyboard())
         return
 
+    if action == "root_settings":
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Only root admin can open root settings.", show_alert=True)
+            return
+        await callback.answer()
+        await show_bot_screen(callback, root_settings_text(), reply_markup=access_keyboard())
+        return
+
     if action == "audit_info":
         if not is_root_admin_user(callback.from_user):
             await callback.answer("Only root admin can read audit log.", show_alert=True)
@@ -2950,7 +3136,8 @@ async def callbacks(callback: CallbackQuery) -> None:
 
     if action == "my_devices":
         await callback.answer()
-        await show_bot_screen(callback, format_devices_text(callback.from_user.id), reply_markup=connect_keyboard())
+        text = format_all_devices_text() if is_project_admin_user(callback.from_user) else format_devices_text(callback.from_user.id)
+        await show_bot_screen(callback, text, reply_markup=connect_keyboard())
         return
 
     if action == "control_info":
@@ -3071,7 +3258,8 @@ async def callbacks(callback: CallbackQuery) -> None:
         return
 
     if action == "my_devices":
-        await callback.message.answer(format_devices_text(callback.from_user.id))
+        text = format_all_devices_text() if is_project_admin_user(callback.from_user) else format_devices_text(callback.from_user.id)
+        await callback.message.answer(text)
         await callback.answer()
         return
 
@@ -3163,8 +3351,13 @@ async def run_bot() -> None:
     dp.message.register(send_settings, Command("settings"))
     dp.message.register(send_my_id, Command("myid"))
     dp.message.register(send_admins, Command("admins"))
+    dp.message.register(send_roles, Command("roles"))
+    dp.message.register(send_root_settings, Command("root_settings"))
     dp.message.register(send_audit, Command("audit"))
     dp.message.register(send_grant_access, Command("grant"))
+    dp.message.register(send_grant_admin, Command("grant_admin"))
+    dp.message.register(send_grant_user, Command("grant_user"))
+    dp.message.register(send_set_role, Command("role"))
     dp.message.register(send_revoke_access, Command("revoke"))
     dp.message.register(send_status, Command("status"))
     dp.message.register(send_check, Command("check"))
