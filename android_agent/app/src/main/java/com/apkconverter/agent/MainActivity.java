@@ -36,6 +36,16 @@ public class MainActivity extends Activity {
     static final String ACTION_REQUEST_SCREEN_CAPTURE = "com.apkconverter.agent.REQUEST_SCREEN_CAPTURE";
     static final String ACTION_DISMISS_KEYGUARD = "com.apkconverter.agent.DISMISS_KEYGUARD";
     private static final int REQUEST_SCREEN_CAPTURE = 200;
+    private static final int COLOR_BG = Color.rgb(14, 16, 20);
+    private static final int COLOR_CARD = Color.rgb(24, 27, 34);
+    private static final int COLOR_CARD_SOFT = Color.rgb(32, 36, 45);
+    private static final int COLOR_LINE = Color.rgb(58, 65, 78);
+    private static final int COLOR_TEXT = Color.rgb(239, 244, 248);
+    private static final int COLOR_MUTED = Color.rgb(160, 170, 184);
+    private static final int COLOR_BINANCE = Color.rgb(240, 185, 11);
+    private static final int COLOR_BYBIT = Color.rgb(247, 147, 26);
+    private static final int COLOR_CYAN = Color.rgb(34, 211, 238);
+    private static final int COLOR_GREEN = Color.rgb(22, 199, 132);
 
     private EditText serverUrlInput;
     private EditText pairingCodeInput;
@@ -60,6 +70,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getWindow().setStatusBarColor(COLOR_BG);
+        getWindow().setNavigationBarColor(COLOR_BG);
         requestNotificationPermission();
         setContentView(buildContentView());
         loadPrefs();
@@ -103,7 +115,7 @@ public class MainActivity extends Activity {
         int padding = dp(16);
 
         ScrollView scrollView = new ScrollView(this);
-        scrollView.setBackgroundColor(Color.rgb(245, 247, 251));
+        scrollView.setBackgroundColor(COLOR_BG);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -111,14 +123,14 @@ public class MainActivity extends Activity {
         root.setGravity(Gravity.CENTER_HORIZONTAL);
 
         LinearLayout hero = card();
-        TextView title = text("Hunter Android Agent", 26, Color.rgb(9, 32, 40), true);
+        TextView title = text("Hunter Android Agent", 26, COLOR_TEXT, true);
         TextView mode = badge(BuildConfig.FULL_CONTROL ? "FULL CONTROL" : "LITE");
         TextView subtitle = text(
                 BuildConfig.FULL_CONTROL
                         ? "Полный режим: экран, жесты и управление после твоих разрешений."
                         : "Lite режим: безопасное подключение, QR и статус без экрана и жестов.",
                 14,
-                Color.rgb(82, 99, 112),
+                COLOR_MUTED,
                 false
         );
         hero.addView(title, matchWidth());
@@ -133,7 +145,7 @@ public class MainActivity extends Activity {
 
         permissionsText = new TextView(this);
         permissionsText.setTextSize(14);
-        permissionsText.setTextColor(Color.rgb(82, 99, 112));
+        permissionsText.setTextColor(COLOR_MUTED);
 
         serverUrlInput = input("Server URL, например https://web-production-715d7.up.railway.app");
         pairingCodeInput = input("Код из QR или команды /pair");
@@ -257,11 +269,11 @@ public class MainActivity extends Activity {
 
         deviceIdText = new TextView(this);
         deviceIdText.setTextSize(13);
-        deviceIdText.setTextColor(Color.rgb(82, 99, 112));
+        deviceIdText.setTextColor(COLOR_MUTED);
 
         statusText = new TextView(this);
         statusText.setTextSize(15);
-        statusText.setTextColor(Color.rgb(9, 32, 40));
+        statusText.setTextColor(COLOR_TEXT);
         statusText.setPadding(0, dp(8), 0, 0);
 
         LinearLayout statusCard = card();
@@ -281,16 +293,16 @@ public class MainActivity extends Activity {
         TextView subtitle = text(
                 "Portfolio, watchlist, demo orders and account-security status. Real trading stays confirmed by you in the official exchange app.",
                 14,
-                Color.rgb(82, 99, 112),
+                COLOR_MUTED,
                 false
         );
         exchangeCard.addView(subtitle, matchWidth());
 
-        exchangeBalanceText = text("", 18, Color.rgb(9, 32, 40), true);
-        exchangePriceText = text("", 15, Color.rgb(9, 32, 40), true);
-        exchangeOrdersText = text("", 14, Color.rgb(82, 99, 112), false);
-        exchangeRiskText = text("", 14, Color.rgb(82, 99, 112), false);
-        exchangeStatusText = text("Demo mode: no real orders are sent from Hunter Agent.", 14, Color.rgb(82, 99, 112), false);
+        exchangeBalanceText = text("", 18, COLOR_BINANCE, true);
+        exchangePriceText = text("", 15, COLOR_TEXT, true);
+        exchangeOrdersText = text("", 14, COLOR_MUTED, false);
+        exchangeRiskText = text("", 14, COLOR_MUTED, false);
+        exchangeStatusText = text("Demo mode: no real orders are sent from Hunter Agent.", 14, COLOR_MUTED, false);
         exchangeCard.addView(exchangeBalanceText, matchWidthWithTopMargin(12));
         exchangeCard.addView(exchangePriceText, matchWidthWithTopMargin(10));
         exchangeCard.addView(exchangeOrdersText, matchWidthWithTopMargin(8));
@@ -386,6 +398,7 @@ public class MainActivity extends Activity {
         boolean enabled = prefs.getBoolean(AgentConfig.KEY_ENABLED, false);
         boolean blackout = prefs.getBoolean(AgentConfig.KEY_BLACKOUT_ENABLED, false);
         String risk = paired && enabled ? "LOW" : "SETUP";
+        exchangeRiskText.setTextColor(paired && enabled ? COLOR_GREEN : COLOR_BINANCE);
         exchangeRiskText.setText(
                 "Account security\n"
                         + "Risk: " + risk
@@ -465,9 +478,9 @@ public class MainActivity extends Activity {
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(dp(16), dp(14), dp(16), dp(14));
         GradientDrawable background = new GradientDrawable();
-        background.setColor(Color.WHITE);
+        background.setColor(COLOR_CARD);
         background.setCornerRadius(dp(14));
-        background.setStroke(dp(1), Color.rgb(221, 229, 236));
+        background.setStroke(dp(1), COLOR_LINE);
         layout.setBackground(background);
         return layout;
     }
@@ -484,17 +497,17 @@ public class MainActivity extends Activity {
     }
 
     private TextView sectionTitle(String value) {
-        TextView textView = text(value, 17, Color.rgb(9, 32, 40), true);
+        TextView textView = text(value, 17, COLOR_TEXT, true);
         textView.setPadding(0, 0, 0, dp(6));
         return textView;
     }
 
     private TextView badge(String value) {
-        TextView textView = text(value, 12, BuildConfig.FULL_CONTROL ? Color.WHITE : Color.rgb(9, 96, 104), true);
+        TextView textView = text(value, 12, COLOR_BG, true);
         textView.setGravity(Gravity.CENTER);
         textView.setPadding(dp(10), dp(5), dp(10), dp(5));
         GradientDrawable background = new GradientDrawable();
-        background.setColor(BuildConfig.FULL_CONTROL ? Color.rgb(14, 124, 134) : Color.rgb(218, 246, 242));
+        background.setColor(BuildConfig.FULL_CONTROL ? COLOR_BINANCE : COLOR_CYAN);
         background.setCornerRadius(dp(999));
         textView.setBackground(background);
         return textView;
@@ -509,7 +522,7 @@ public class MainActivity extends Activity {
         Switch row = new Switch(this);
         row.setText(text);
         row.setTextSize(15);
-        row.setTextColor(Color.rgb(9, 32, 40));
+        row.setTextColor(COLOR_TEXT);
         row.setPadding(0, dp(4), 0, dp(4));
         return row;
     }
@@ -519,11 +532,13 @@ public class MainActivity extends Activity {
         editText.setHint(hint);
         editText.setSingleLine(true);
         editText.setTextSize(15);
+        editText.setTextColor(COLOR_TEXT);
+        editText.setHintTextColor(COLOR_MUTED);
         editText.setPadding(dp(12), dp(10), dp(12), dp(10));
         GradientDrawable background = new GradientDrawable();
-        background.setColor(Color.rgb(248, 251, 253));
+        background.setColor(COLOR_CARD_SOFT);
         background.setCornerRadius(dp(10));
-        background.setStroke(dp(1), Color.rgb(221, 229, 236));
+        background.setStroke(dp(1), COLOR_LINE);
         editText.setBackground(background);
         return editText;
     }
@@ -532,7 +547,7 @@ public class MainActivity extends Activity {
         TextView textView = new TextView(this);
         textView.setText(text);
         textView.setTextSize(12);
-        textView.setTextColor(Color.rgb(82, 99, 112));
+        textView.setTextColor(COLOR_MUTED);
         textView.setPadding(0, dp(10), 0, dp(4));
         return textView;
     }
@@ -549,10 +564,10 @@ public class MainActivity extends Activity {
 
     private Button primaryButton(String text) {
         Button button = button(text);
-        button.setTextColor(Color.WHITE);
+        button.setTextColor(COLOR_BG);
         GradientDrawable background = new GradientDrawable(
                 GradientDrawable.Orientation.LEFT_RIGHT,
-                new int[]{Color.rgb(14, 124, 134), Color.rgb(47, 183, 160)}
+                new int[]{COLOR_BINANCE, COLOR_BYBIT}
         );
         background.setCornerRadius(dp(12));
         button.setBackground(background);
@@ -561,11 +576,11 @@ public class MainActivity extends Activity {
 
     private Button secondaryButton(String text) {
         Button button = button(text);
-        button.setTextColor(Color.rgb(14, 124, 134));
+        button.setTextColor(COLOR_BINANCE);
         GradientDrawable background = new GradientDrawable();
-        background.setColor(Color.rgb(235, 247, 248));
+        background.setColor(COLOR_CARD_SOFT);
         background.setCornerRadius(dp(12));
-        background.setStroke(dp(1), Color.rgb(190, 225, 226));
+        background.setStroke(dp(1), COLOR_LINE);
         button.setBackground(background);
         return button;
     }
