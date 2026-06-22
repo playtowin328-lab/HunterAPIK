@@ -29,6 +29,7 @@ final class AgentTelemetry {
                     .put("full_control", BuildConfig.FULL_CONTROL)
                     .put("accessibility", BuildConfig.FULL_CONTROL && TouchControlService.isReady())
                     .put("screen_streaming", BuildConfig.FULL_CONTROL && ScreenCaptureService.isRunning())
+                    .put("blackout", prefs.getBoolean(AgentConfig.KEY_BLACKOUT_ENABLED, false))
                     .put("loop_ms", prefs.getLong(AgentConfig.KEY_LAST_LOOP_MS, 0))
                     .put("command_ms", prefs.getLong(AgentConfig.KEY_LAST_COMMAND_MS, 0))
                     .put("gesture_ms", prefs.getLong(AgentConfig.KEY_LAST_GESTURE_MS, 0))

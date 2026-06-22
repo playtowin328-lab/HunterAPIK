@@ -40,6 +40,12 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".BlackoutActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
+
         <service
             android:name=".HeartbeatService"
             android:exported="false"

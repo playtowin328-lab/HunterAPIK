@@ -200,6 +200,10 @@ public class HeartbeatService extends Service {
             result = wakeScreen();
         } else if ("dismiss_keyguard".equals(command.type)) {
             result = requestDismissKeyguard();
+        } else if ("blackout_on".equals(command.type)) {
+            result = setBlackoutMode(true);
+        } else if ("blackout_off".equals(command.type)) {
+            result = setBlackoutMode(false);
         } else if ("lock_screen".equals(command.type)) {
             result = BuildConfig.FULL_CONTROL && TouchControlService.lockScreen() ? "Screen locked." : "Lock screen failed or disabled in Lite build.";
         } else if ("open_settings".equals(command.type)) {
@@ -342,6 +346,17 @@ public class HeartbeatService extends Service {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(intent);
         return "Unlock requested through Android keyguard. Secure PIN/password/fingerprint must be confirmed on the phone.";
+    }
+
+    private String setBlackoutMode(boolean enabled) {
+        AgentConfig.prefs(this).edit().putBoolean(AgentConfig.KEY_BLACKOUT_ENABLED, enabled).apply();
+        Intent intent = new Intent(this, BlackoutActivity.class)
+                .setAction(enabled ? BlackoutActivity.ACTION_ON : BlackoutActivity.ACTION_OFF)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        startActivity(intent);
+        return enabled
+                ? "Blackout mode enabled. The phone shows a black protected screen."
+                : "Blackout mode disabled.";
     }
 
     private String openUrl(String url) {

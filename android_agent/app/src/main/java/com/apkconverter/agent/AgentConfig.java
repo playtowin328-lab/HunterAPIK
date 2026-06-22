@@ -22,6 +22,7 @@ final class AgentConfig {
     static final String KEY_LAST_ERROR = "last_error";
     static final String KEY_LAST_GESTURE_MS = "last_gesture_ms";
     static final String KEY_LAST_GESTURE_RESULT = "last_gesture_result";
+    static final String KEY_BLACKOUT_ENABLED = "blackout_enabled";
 
     private AgentConfig() {
     }
