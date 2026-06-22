@@ -2252,6 +2252,9 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         if owner_id:
             separator = "&" if "?" in mini_app_url else "?"
             mini_app_url = f"{mini_app_url}{separator}owner_id={quote(owner_id, safe='')}"
+        agent_open_link = f"apkagent://open?server={quote(public_server_url(), safe='')}"
+        if owner_id:
+            agent_open_link = f"{agent_open_link}&owner_id={quote(owner_id, safe='')}"
         remote_ok = False
         remote_detail = "not checked"
         if not apk_path:
@@ -2305,7 +2308,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
       <h1>Установка Android Agent</h1>
       <span class="status">{escape(source_text)}</span>
       <p>Android Agent Lite подключает твой Android-телефон к Telegram-боту и мини-апу без доступа к экрану и жестам. Сборка рассчитана на Android 10+ и сделана так, чтобы меньше раздражать Play Protect.</p>
-      <a class="ghost" href="apkagent://open">Открыть установленный Agent</a>
+      <a class="ghost" href="{escape(agent_open_link, quote=True)}">Открыть установленный Agent</a>
       {download_button}
       {mode_download_buttons}
       <a class="ghost" href="{escape(actions_url, quote=True)}">Статус сборки APK</a>

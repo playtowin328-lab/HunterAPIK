@@ -631,11 +631,24 @@ public class MainActivity extends Activity {
 
         Uri uri = intent.getData();
         if ("apkagent".equals(uri.getScheme()) && "open".equals(uri.getHost())) {
+            String server = uri.getQueryParameter("server");
+            String ownerId = uri.getQueryParameter("owner_id");
+            if (server != null && !server.trim().isEmpty()) {
+                serverUrlInput.setText(server.trim());
+            }
+            if (ownerId != null && !ownerId.trim().isEmpty()) {
+                ownerIdInput.setText(ownerId.trim());
+            }
+            savePrefs();
             if (AgentConfig.prefs(this).getBoolean(AgentConfig.KEY_ENABLED, false)) {
                 startAgentService();
             }
             renderStatus();
-            statusText.setText("Agent открыт из мини-апа.");
+            if (AgentConfig.prefs(this).getString(AgentConfig.KEY_DEVICE_SECRET, "").isEmpty()) {
+                statusText.setText("Agent открыт из мини-апа. Сервер сохранен, теперь открой QR/код подключения.");
+            } else {
+                statusText.setText("Agent открыт из мини-апа. Подключение сохранено, heartbeat запущен.");
+            }
             return;
         }
         if (!"apkagent".equals(uri.getScheme()) || !"pair".equals(uri.getHost())) {

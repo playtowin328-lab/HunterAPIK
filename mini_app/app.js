@@ -46,7 +46,7 @@ const ownerId = String(telegramUser?.id || urlParams.get("owner_id") || localSto
 localStorage.setItem("apk_owner_id", ownerId);
 
 const apiBaseUrl = window.location.origin;
-const agentOpenLink = "apkagent://open";
+const agentOpenLink = `apkagent://open?server=${encodeURIComponent(apiBaseUrl)}&owner_id=${encodeURIComponent(ownerId)}`;
 const agentInstallUrl = `${apiBaseUrl}/agent?owner_id=${encodeURIComponent(ownerId)}`;
 const localDeviceIdKey = "apk_converter_local_device_id";
 const typeNames = {
@@ -62,6 +62,7 @@ const qualityProfiles = {
 
 let devices = [];
 let currentPairLinks = null;
+let currentPairExpiresAt = 0;
 let selectedDeviceId = localStorage.getItem("hunter_selected_device_id") || "";
 let remotePanelCollapsed = false;
 let refreshInFlight = false;
@@ -730,8 +731,8 @@ installAgentButton.addEventListener("click", () => {
 });
 
 openInstalledAgentButton.addEventListener("click", () => {
-  setupText.textContent = "Открываю установленный Android Agent...";
-  window.location.href = agentOpenLink;
+  setupText.textContent = "Готовлю автономное подключение Agent...";
+  openAgentWithPairing();
 });
 
 requestPairButton.addEventListener("click", async () => {
@@ -739,6 +740,7 @@ requestPairButton.addEventListener("click", async () => {
   try {
     const payload = await createPairingQr();
     currentPairLinks = payload.links;
+    currentPairExpiresAt = Date.now() + (payload.expires_in || 600) * 1000;
     pairQrImage.src = payload.qr_image_data;
     pairCode.textContent = payload.code;
     pairResult.classList.remove("hidden");
@@ -756,6 +758,25 @@ openPairPageButton.addEventListener("click", () => {
 openAgentDeepLinkButton.addEventListener("click", () => {
   window.location.href = currentPairLinks?.app_link || agentOpenLink;
 });
+
+async function openAgentWithPairing() {
+  try {
+    const pairIsFresh = currentPairLinks && Date.now() < currentPairExpiresAt - 5000;
+    const payload = pairIsFresh ? null : await createPairingQr();
+    if (payload) {
+      currentPairLinks = payload.links;
+      currentPairExpiresAt = Date.now() + (payload.expires_in || 600) * 1000;
+      pairQrImage.src = payload.qr_image_data;
+      pairCode.textContent = payload.code;
+      pairResult.classList.remove("hidden");
+    }
+    setupText.textContent = "Открываю Agent с готовым кодом подключения...";
+    window.location.href = currentPairLinks?.app_link || agentOpenLink;
+  } catch (error) {
+    setupText.textContent = `${error.message}. Открываю Agent без кода.`;
+    window.location.href = agentOpenLink;
+  }
+}
 
 closeRemotePanel.addEventListener("click", () => {
   const device = selectedDevice();
