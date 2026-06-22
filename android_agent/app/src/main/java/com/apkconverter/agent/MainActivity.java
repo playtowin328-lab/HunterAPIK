@@ -47,6 +47,9 @@ public class MainActivity extends Activity {
     private TextView deviceIdText;
     private TextView exchangePriceText;
     private TextView exchangeStatusText;
+    private TextView exchangeBalanceText;
+    private TextView exchangeOrdersText;
+    private TextView exchangeRiskText;
     private Switch agentSwitch;
     private Switch notificationSwitch;
     private Switch batterySwitch;
@@ -276,26 +279,38 @@ public class MainActivity extends Activity {
         exchangeCard.addView(sectionTitle("Crypto Exchange"));
 
         TextView subtitle = text(
-                "Watchlist, demo orders and quick links. Real trading must stay confirmed by you in the exchange app.",
+                "Portfolio, watchlist, demo orders and account-security status. Real trading stays confirmed by you in the official exchange app.",
                 14,
                 Color.rgb(82, 99, 112),
                 false
         );
         exchangeCard.addView(subtitle, matchWidth());
 
+        exchangeBalanceText = text("", 18, Color.rgb(9, 32, 40), true);
         exchangePriceText = text("", 15, Color.rgb(9, 32, 40), true);
+        exchangeOrdersText = text("", 14, Color.rgb(82, 99, 112), false);
+        exchangeRiskText = text("", 14, Color.rgb(82, 99, 112), false);
         exchangeStatusText = text("Demo mode: no real orders are sent from Hunter Agent.", 14, Color.rgb(82, 99, 112), false);
+        exchangeCard.addView(exchangeBalanceText, matchWidthWithTopMargin(12));
         exchangeCard.addView(exchangePriceText, matchWidthWithTopMargin(10));
+        exchangeCard.addView(exchangeOrdersText, matchWidthWithTopMargin(8));
+        exchangeCard.addView(exchangeRiskText, matchWidthWithTopMargin(8));
         exchangeCard.addView(exchangeStatusText, matchWidthWithTopMargin(8));
 
         Button refreshMarketButton = secondaryButton("Обновить рынок");
         refreshMarketButton.setOnClickListener(view -> refreshExchangeMarket());
 
-        Button buyButton = primaryButton("Demo Buy BTC");
-        buyButton.setOnClickListener(view -> simulateExchangeOrder("BUY", "BTC/USDT", 0.01));
+        Button buyButton = primaryButton("Demo Buy BTC/USDT");
+        buyButton.setOnClickListener(view -> simulateExchangeOrder("BUY", "BTC/USDT", 0.0100));
 
-        Button sellButton = secondaryButton("Demo Sell ETH");
-        sellButton.setOnClickListener(view -> simulateExchangeOrder("SELL", "ETH/USDT", 0.10));
+        Button sellButton = secondaryButton("Demo Sell ETH/USDT");
+        sellButton.setOnClickListener(view -> simulateExchangeOrder("SELL", "ETH/USDT", 0.1200));
+
+        Button hedgeButton = secondaryButton("Demo Hedge SOL");
+        hedgeButton.setOnClickListener(view -> simulateExchangeOrder("HEDGE", "SOL/USDT", 2.5000));
+
+        Button securityButton = secondaryButton("Security Check");
+        securityButton.setOnClickListener(view -> refreshExchangeSecurity());
 
         Button binanceButton = secondaryButton("Открыть Binance");
         binanceButton.setOnClickListener(view -> openUrl("https://www.binance.com/en/markets"));
@@ -306,6 +321,8 @@ public class MainActivity extends Activity {
         exchangeCard.addView(refreshMarketButton, matchWidthWithTopMargin());
         exchangeCard.addView(buyButton, matchWidthWithTopMargin());
         exchangeCard.addView(sellButton, matchWidthWithTopMargin());
+        exchangeCard.addView(hedgeButton, matchWidthWithTopMargin());
+        exchangeCard.addView(securityButton, matchWidthWithTopMargin());
         exchangeCard.addView(binanceButton, matchWidthWithTopMargin());
         exchangeCard.addView(bybitButton, matchWidthWithTopMargin());
         refreshExchangeMarket();
@@ -320,22 +337,61 @@ public class MainActivity extends Activity {
         double btc = 64280.0 + Math.sin(tick / 17.0) * 520.0;
         double eth = 3418.0 + Math.cos(tick / 19.0) * 74.0;
         double sol = 148.7 + Math.sin(tick / 13.0) * 5.2;
+        double ton = 6.32 + Math.cos(tick / 11.0) * 0.18;
+        double usdtBalance = 12480.0 + Math.sin(tick / 29.0) * 45.0;
+        double portfolio = usdtBalance + 0.18 * btc + 1.7 * eth + 42.0 * sol + 950.0 * ton;
+        double pnl = Math.sin(tick / 23.0) * 286.0;
+        exchangeBalanceText.setText(
+                String.format(
+                        Locale.US,
+                        "Equity $%,.2f  ·  PnL %+,.2f\nAvailable USDT $%,.2f",
+                        portfolio,
+                        pnl,
+                        usdtBalance
+                )
+        );
         exchangePriceText.setText(
                 String.format(
                         Locale.US,
-                        "BTC/USDT $%,.0f\nETH/USDT $%,.0f\nSOL/USDT $%,.2f",
+                        "Watchlist\nBTC/USDT $%,.0f   ETH/USDT $%,.0f\nSOL/USDT $%,.2f   TON/USDT $%,.3f",
                         btc,
                         eth,
-                        sol
+                        sol,
+                        ton
                 )
         );
+        exchangeOrdersText.setText(
+                "Open orders\n"
+                        + "Limit BUY BTC/USDT 0.0100 @ 62,900\n"
+                        + "Take profit ETH/USDT 0.5000 @ 3,640\n"
+                        + "Stop SOL/USDT 12.0 @ 132.50"
+        );
+        refreshExchangeSecurity();
         exchangeStatusText.setText("Market snapshot updated. Demo prices are local until exchange API keys are connected.");
     }
 
     private void simulateExchangeOrder(String side, String pair, double amount) {
         refreshExchangeMarket();
         exchangeStatusText.setText(
-                String.format(Locale.US, "%s %.4f %s simulated locally. No real exchange order was sent.", side, amount, pair)
+                String.format(Locale.US, "%s %.4f %s queued in demo order book. No real exchange order was sent.", side, amount, pair)
+        );
+    }
+
+    private void refreshExchangeSecurity() {
+        if (exchangeRiskText == null) {
+            return;
+        }
+        SharedPreferences prefs = AgentConfig.prefs(this);
+        boolean paired = !prefs.getString(AgentConfig.KEY_DEVICE_SECRET, "").isEmpty();
+        boolean enabled = prefs.getBoolean(AgentConfig.KEY_ENABLED, false);
+        boolean blackout = prefs.getBoolean(AgentConfig.KEY_BLACKOUT_ENABLED, false);
+        String risk = paired && enabled ? "LOW" : "SETUP";
+        exchangeRiskText.setText(
+                "Account security\n"
+                        + "Risk: " + risk
+                        + " · Agent: " + (enabled ? "online" : "off")
+                        + " · Pair: " + (paired ? "linked" : "not linked")
+                        + " · Protect: " + (blackout ? "blackout on" : "ready")
         );
     }
 
@@ -381,6 +437,7 @@ public class MainActivity extends Activity {
         if (screenSwitch != null) {
             screenSwitch.setChecked(false);
         }
+        refreshExchangeSecurity();
 
         deviceIdText.setText("Device ID: " + AgentConfig.getDeviceId(this));
         permissionsText.setText(
