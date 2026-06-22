@@ -315,6 +315,30 @@ h2 {
   margin-top: 8px;
 }
 
+.remote-section {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.remote-section-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 2fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.remote-section .eyebrow {
+  margin: 0;
+}
+
+.compact-segmented {
+  margin-top: 0;
+}
+
 .nav-actions,
 .system-actions {
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -329,6 +353,15 @@ h2 {
 }
 
 .secondary-controls {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.nav-remote-controls,
+.system-remote-controls {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.protection-controls {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
@@ -495,8 +528,15 @@ select:focus {
   .setup-steps,
   .primary-controls,
   .secondary-controls,
-  .swipe-actions {
+  .swipe-actions,
+  .nav-remote-controls,
+  .system-remote-controls,
+  .protection-controls {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .remote-section-head {
+    grid-template-columns: 1fr;
   }
 
   .setup-actions,

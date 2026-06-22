@@ -86,44 +86,70 @@
           <img id="remoteScreenImage" alt="Экран выбранного устройства">
         </div>
 
-        <div class="segmented" role="group" aria-label="Качество экрана">
-          <button class="remote-quality-button" data-quality="fast" type="button">Быстро</button>
-          <button class="remote-quality-button" data-quality="balanced" type="button">Баланс</button>
-          <button class="remote-quality-button" data-quality="quality" type="button">Качество</button>
+        <div class="remote-section">
+          <div class="remote-section-head">
+            <p class="eyebrow">Экран</p>
+            <div class="segmented compact-segmented" role="group" aria-label="Качество экрана">
+              <button class="remote-quality-button" data-quality="fast" type="button">Быстро</button>
+              <button class="remote-quality-button" data-quality="balanced" type="button">Баланс</button>
+              <button class="remote-quality-button" data-quality="quality" type="button">Качество</button>
+            </div>
+          </div>
+          <div class="remote-grid primary-controls">
+            <button class="secondary-button remote-screen-button" type="button">Запустить экран</button>
+            <button class="secondary-button danger-soft remote-stop-screen-button" type="button">Остановить экран</button>
+            <button class="ghost-button neutral remote-command-button" data-command="wake_screen" type="button">Разбудить</button>
+            <button class="ghost-button neutral remote-command-button" data-command="dismiss_keyguard" type="button">Разблокировать</button>
+          </div>
         </div>
 
-        <div class="remote-grid primary-controls">
-          <button class="secondary-button remote-screen-button" type="button">Экран</button>
-          <button class="secondary-button danger-soft remote-stop-screen-button" type="button">Стоп</button>
-          <button class="secondary-button danger-soft remote-command-button" data-command="lost_mode_on" type="button">Lost</button>
-          <button class="secondary-button remote-command-button" data-command="lost_mode_off" type="button">Clear</button>
-          <button class="ghost-button neutral remote-command-button" data-command="back" type="button">Back</button>
-          <button class="ghost-button neutral remote-command-button" data-command="home" type="button">Home</button>
-          <button class="ghost-button neutral remote-command-button" data-command="recents" type="button">Recent</button>
+        <div class="remote-section">
+          <p class="eyebrow">Навигация</p>
+          <div class="remote-grid nav-remote-controls">
+            <button class="ghost-button neutral remote-command-button" data-command="back" type="button">Назад</button>
+            <button class="ghost-button neutral remote-command-button" data-command="home" type="button">Домой</button>
+            <button class="ghost-button neutral remote-command-button" data-command="recents" type="button">Недавние</button>
+            <button class="ghost-button neutral remote-command-button" data-command="notifications" type="button">Шторка</button>
+            <button class="ghost-button neutral remote-command-button" data-command="quick_settings" type="button">Быстрые</button>
+            <button class="ghost-button neutral remote-command-button" data-command="swipe_up" type="button">Вверх</button>
+            <button class="ghost-button neutral remote-command-button" data-command="swipe_down" type="button">Вниз</button>
+            <button class="ghost-button neutral remote-command-button" data-command="swipe_left" type="button">Влево</button>
+            <button class="ghost-button neutral remote-command-button" data-command="swipe_right" type="button">Вправо</button>
+          </div>
         </div>
 
-        <div class="remote-grid secondary-controls">
-          <button class="ghost-button neutral remote-command-button" data-command="notifications" type="button">Шторка</button>
-          <button class="ghost-button neutral remote-command-button" data-command="quick_settings" type="button">Quick</button>
-          <button class="ghost-button neutral remote-command-button" data-command="wake_screen" type="button">Wake</button>
-          <button class="ghost-button neutral remote-command-button" data-command="dismiss_keyguard" type="button">Unlock</button>
-          <button class="ghost-button neutral remote-command-button" data-command="blackout_on" type="button">Black</button>
-          <button class="ghost-button neutral remote-command-button" data-command="blackout_off" type="button">Clear</button>
-          <button class="ghost-button neutral remote-command-button" data-command="play_alarm" type="button">Alarm</button>
-          <button class="ghost-button neutral remote-command-button" data-command="stop_alarm" type="button">Quiet</button>
-          <button class="ghost-button neutral remote-command-button" data-command="lock_screen" type="button">Lock</button>
-          <button class="ghost-button neutral remote-command-button" data-command="open_settings" type="button">Settings</button>
-          <button class="ghost-button neutral remote-command-button" data-command="request_notification_permission" type="button">Notif</button>
-          <button class="ghost-button neutral remote-command-button" data-command="request_battery_permission" type="button">Battery</button>
-          <button class="ghost-button neutral remote-command-button" data-command="request_accessibility_permission" type="button">Access</button>
-          <button class="ghost-button neutral remote-command-button" data-command="request_screen_permission" type="button">Screen OK</button>
+        <div class="remote-section">
+          <p class="eyebrow">Защита</p>
+          <div class="remote-grid protection-controls">
+            <button class="secondary-button danger-soft remote-command-button" data-command="lost_mode_on" type="button">Режим кражи</button>
+            <button class="secondary-button remote-command-button" data-command="lost_mode_off" type="button">Снять режим</button>
+            <button class="ghost-button neutral remote-command-button" data-command="blackout_on" type="button">Черный экран</button>
+            <button class="ghost-button neutral remote-command-button" data-command="blackout_off" type="button">Убрать экран</button>
+            <button class="ghost-button neutral remote-command-button" data-command="play_alarm" type="button">Сигнал</button>
+            <button class="ghost-button neutral remote-command-button" data-command="stop_alarm" type="button">Тишина</button>
+            <button class="ghost-button neutral remote-command-button" data-command="lock_screen" type="button">Заблокировать</button>
+          </div>
         </div>
 
+        <div class="remote-section">
+          <p class="eyebrow">Система и разрешения</p>
+          <div class="remote-grid system-remote-controls">
+            <button class="ghost-button neutral remote-command-button" data-command="request_notification_permission" type="button">Разрешить уведомления</button>
+            <button class="ghost-button neutral remote-command-button" data-command="request_battery_permission" type="button">Работа в фоне</button>
+            <button class="ghost-button neutral remote-command-button" data-command="request_accessibility_permission" type="button">Жесты</button>
+            <button class="ghost-button neutral remote-command-button" data-command="request_screen_permission" type="button">Доступ к экрану</button>
+            <button class="ghost-button neutral remote-command-button" data-command="open_settings" type="button">Настройки</button>
+            <button class="ghost-button neutral remote-command-button" data-command="open_wifi_settings" type="button">Wi-Fi</button>
+            <button class="ghost-button neutral remote-command-button" data-command="open_battery_settings" type="button">Батарея</button>
+            <button class="ghost-button neutral remote-command-button" data-command="request_actions" type="button">Проверка</button>
+            <button class="ghost-button neutral remote-command-button" data-command="request_files" type="button">Файлы</button>
+          </div>
+        </div>
         <div class="text-actions">
           <input id="remotePanelTextInput" type="text" placeholder="Текст на телефон" maxlength="240">
-          <button class="secondary-button" id="remotePanelSendText" type="button">Send</button>
-          <button class="ghost-button neutral remote-command-button" data-command="key_enter" type="button">Enter</button>
-          <button class="ghost-button neutral remote-command-button" data-command="key_delete" type="button">Del</button>
+          <button class="secondary-button" id="remotePanelSendText" type="button">Отправить</button>
+          <button class="ghost-button neutral remote-command-button" data-command="key_enter" type="button">Ввод</button>
+          <button class="ghost-button neutral remote-command-button" data-command="key_delete" type="button">Удалить</button>
         </div>
 
         <p class="control-note" id="remoteControlNote">Выбери устройство из списка.</p>
@@ -163,58 +189,7 @@
 
           <div class="actions">
             <button class="primary-button open-remote-button" type="button">Пульт</button>
-            <button class="secondary-button screen-button" type="button">Экран</button>
-            <button class="secondary-button danger-soft stop-screen-button" type="button">Стоп</button>
-            <button class="secondary-button danger-soft lost-mode-on-button" type="button">Lost</button>
-            <button class="secondary-button lost-mode-off-button" type="button">Clear</button>
-            <button class="secondary-button files-button" type="button">Файлы</button>
-            <button class="secondary-button commands-button" type="button">Проверка</button>
             <button class="ghost-button id-button neutral" type="button">ID</button>
-          </div>
-
-          <div class="segmented quality-actions" role="group" aria-label="Качество экрана">
-            <button class="quality-button" data-quality="fast" type="button">Быстро</button>
-            <button class="quality-button" data-quality="balanced" type="button">Баланс</button>
-            <button class="quality-button" data-quality="quality" type="button">Качество</button>
-          </div>
-
-          <div class="button-grid nav-actions">
-            <button class="ghost-button neutral back-button" type="button">Back</button>
-            <button class="ghost-button neutral home-button" type="button">Home</button>
-            <button class="ghost-button neutral recents-button" type="button">Recent</button>
-            <button class="ghost-button neutral notifications-button" type="button">Шторка</button>
-            <button class="ghost-button neutral quick-settings-button" type="button">Quick</button>
-            <button class="ghost-button neutral wake-screen-button" type="button">Wake</button>
-            <button class="ghost-button neutral unlock-screen-button" type="button">Unlock</button>
-            <button class="ghost-button neutral blackout-on-button" type="button">Black</button>
-            <button class="ghost-button neutral blackout-off-button" type="button">Clear</button>
-            <button class="ghost-button neutral alarm-on-button" type="button">Alarm</button>
-            <button class="ghost-button neutral alarm-off-button" type="button">Quiet</button>
-            <button class="ghost-button neutral lock-screen-button" type="button">Lock</button>
-          </div>
-
-          <div class="button-grid swipe-actions">
-            <button class="ghost-button neutral swipe-up-button" type="button">Вверх</button>
-            <button class="ghost-button neutral swipe-down-button" type="button">Вниз</button>
-            <button class="ghost-button neutral swipe-left-button" type="button">Влево</button>
-            <button class="ghost-button neutral swipe-right-button" type="button">Вправо</button>
-          </div>
-
-          <div class="button-grid system-actions">
-            <button class="ghost-button neutral settings-button" type="button">Settings</button>
-            <button class="ghost-button neutral wifi-settings-button" type="button">Wi‑Fi</button>
-            <button class="ghost-button neutral battery-settings-button" type="button">Battery</button>
-            <button class="ghost-button neutral request-notification-permission-button" type="button">Notif</button>
-            <button class="ghost-button neutral request-battery-permission-button" type="button">Bg OK</button>
-            <button class="ghost-button neutral request-accessibility-permission-button" type="button">Access</button>
-            <button class="ghost-button neutral request-screen-permission-button" type="button">Screen OK</button>
-          </div>
-
-          <div class="text-actions">
-            <input class="remote-text-input" type="text" placeholder="Текст на телефон" maxlength="240">
-            <button class="secondary-button send-text-button" type="button">Send</button>
-            <button class="ghost-button neutral enter-button" type="button">Enter</button>
-            <button class="ghost-button neutral delete-key-button" type="button">Del</button>
           </div>
 
           <div class="manage-actions">
@@ -223,9 +198,6 @@
             <button class="ghost-button delete-device-button" type="button">Delete</button>
           </div>
 
-          <div class="screen-preview" hidden>
-            <img alt="Последний кадр экрана устройства">
-          </div>
           <p class="control-note"></p>
         </div>
       </article>

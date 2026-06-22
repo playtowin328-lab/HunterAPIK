@@ -59,6 +59,37 @@ const qualityProfiles = {
   balanced: { label: "Баланс", requestMs: 900, frameMs: 700, waitMs: 1800, max_size: 960 },
   quality: { label: "Качество", requestMs: 1400, frameMs: 1000, waitMs: 2600, max_size: 1440 },
 };
+const remoteCommandMessages = {
+  back: "Кнопка Назад отправлена.",
+  home: "Кнопка Домой отправлена.",
+  recents: "Открываются недавние приложения.",
+  notifications: "Шторка уведомлений открывается.",
+  quick_settings: "Быстрые настройки открываются.",
+  wake_screen: "Экран пробуждается.",
+  dismiss_keyguard: "Запрос разблокировки отправлен. PIN и биометрию нужно подтвердить на телефоне.",
+  swipe_up: "Свайп вверх отправлен.",
+  swipe_down: "Свайп вниз отправлен.",
+  swipe_left: "Свайп влево отправлен.",
+  swipe_right: "Свайп вправо отправлен.",
+  lost_mode_on: "Режим кражи включается: экран закрывается, сигнал запускается, блокировка запрошена.",
+  lost_mode_off: "Режим кражи выключается.",
+  blackout_on: "Черный защитный экран включается.",
+  blackout_off: "Черный экран выключается.",
+  play_alarm: "Громкий сигнал запускается на телефоне.",
+  stop_alarm: "Сигнал останавливается.",
+  lock_screen: "Блокировка экрана запрошена.",
+  request_notification_permission: "Запрос уведомлений открыт на телефоне.",
+  request_battery_permission: "Запрос работы в фоне открыт на телефоне.",
+  request_accessibility_permission: "Настройки жестов и Accessibility открыты на телефоне.",
+  request_screen_permission: "Запрос доступа к экрану открыт на телефоне.",
+  open_settings: "Открываются настройки телефона.",
+  open_wifi_settings: "Открываются настройки Wi-Fi.",
+  open_battery_settings: "Открываются настройки батареи.",
+  request_actions: "Проверка модуля управления отправлена.",
+  request_files: "Запрос файлов отправлен агенту.",
+  key_enter: "Enter отправлен.",
+  key_delete: "Delete отправлен.",
+};
 
 let devices = [];
 let currentPairLinks = null;
@@ -577,92 +608,11 @@ function render() {
     $(".telemetry", card).innerHTML = formatTelemetry(device).map((item) => `<span>${item}</span>`).join("");
 
     const controlNote = $(".control-note", card);
-    const screenPreview = $(".screen-preview", card);
-    const screenImage = $("img", screenPreview);
     controlNote.textContent = formatDeviceNote(device);
 
     $(".open-remote-button", card).addEventListener("click", () => {
       selectDevice(device);
       remotePanel.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-
-    updateQualityButtons(device, card, ".quality-button");
-    $$(".quality-button", card).forEach((button) => {
-      button.addEventListener("click", () => {
-        const quality = setDeviceQuality(device, button.dataset.quality);
-        updateQualityButtons(device, card, ".quality-button");
-        controlNote.textContent = `Режим экрана: ${qualityProfiles[quality].label}.`;
-        if (screenPollers.has(device.device_id)) startScreenPolling(device, screenPreview, screenImage, controlNote);
-      });
-    });
-
-    $(".screen-button", card).addEventListener("click", async () => {
-      if (/iphone|ios|ipad/i.test(`${device.platform} ${device.name}`)) {
-        controlNote.textContent = "iPhone нельзя полноценно управлять сторонним APK. Нужен Apple screen sharing или approved-сервис.";
-        return;
-      }
-      if (!canControlDevice(device)) {
-        controlNote.textContent = formatHealthHint(device, "Сначала запусти Android Agent, чтобы устройство стало Online.");
-        return;
-      }
-      try {
-        controlNote.textContent = "Запрашиваю экран, жду ответ агента...";
-        const profile = qualityProfiles[getDeviceQuality(device)];
-        const result = await sendCommandAndWait(device, "request_screen", qualityPayload(device), profile.waitMs);
-        controlNote.textContent = commandResultText(result, "Запрос экрана обработан.");
-        startScreenPolling(device, screenPreview, screenImage, controlNote);
-      } catch (error) {
-        controlNote.textContent = error.message;
-      }
-    });
-
-    $(".stop-screen-button", card).addEventListener("click", async () => {
-      await sendSimpleDeviceCommand(device, "stop_screen", controlNote, "Команда остановки экрана отправлена.");
-      stopScreenPolling(device.device_id);
-    });
-
-    const simpleButtons = [
-      [".back-button", "back", "Back отправлен."],
-      [".home-button", "home", "Home отправлен."],
-      [".recents-button", "recents", "Recent отправлен."],
-      [".notifications-button", "notifications", "Шторка уведомлений открывается."],
-      [".quick-settings-button", "quick_settings", "Быстрые настройки открываются."],
-      [".wake-screen-button", "wake_screen", "Экран пробуждается."],
-      [".unlock-screen-button", "dismiss_keyguard", "Запрос разблокировки отправлен. Если стоит PIN/биометрия, подтвердить нужно на телефоне."],
-      [".blackout-on-button", "blackout_on", "Blackout mode включается. На телефоне откроется черный защитный экран."],
-      [".blackout-off-button", "blackout_off", "Blackout mode выключается."],
-      [".alarm-on-button", "play_alarm", "Громкий сигнал включается на телефоне."],
-      [".alarm-off-button", "stop_alarm", "Громкий сигнал выключается."],
-      [".lost-mode-on-button", "lost_mode_on", "Lost Mode включается: экран закрыт, сигнал включен, блокировка запрошена."],
-      [".lost-mode-off-button", "lost_mode_off", "Lost Mode выключается."],
-      [".lock-screen-button", "lock_screen", "Блокировка отправлена."],
-      [".settings-button", "open_settings", "Settings открываются."],
-      [".wifi-settings-button", "open_wifi_settings", "Wi‑Fi настройки открываются."],
-      [".battery-settings-button", "open_battery_settings", "Battery настройки открываются."],
-      [".request-notification-permission-button", "request_notification_permission", "Запрос уведомлений открыт на телефоне."],
-      [".request-battery-permission-button", "request_battery_permission", "Запрос фоновой работы открыт на телефоне."],
-      [".request-accessibility-permission-button", "request_accessibility_permission", "Accessibility настройки открыты на телефоне."],
-      [".request-screen-permission-button", "request_screen_permission", "Запрос доступа к экрану открыт на телефоне."],
-      [".swipe-up-button", "swipe_up", "Свайп вверх отправлен."],
-      [".swipe-down-button", "swipe_down", "Свайп вниз отправлен."],
-      [".swipe-left-button", "swipe_left", "Свайп влево отправлен."],
-      [".swipe-right-button", "swipe_right", "Свайп вправо отправлен."],
-      [".enter-button", "key_enter", "Enter отправлен."],
-      [".delete-key-button", "key_delete", "Delete отправлен."],
-    ];
-    simpleButtons.forEach(([selector, command, text]) => {
-      $(selector, card).addEventListener("click", () => sendSimpleDeviceCommand(device, command, controlNote, text));
-    });
-
-    const remoteTextInput = $(".remote-text-input", card);
-    $(".send-text-button", card).addEventListener("click", async () => {
-      const text = remoteTextInput.value.trim();
-      if (!text) {
-        controlNote.textContent = "Введи текст для отправки.";
-        return;
-      }
-      await sendSimpleDeviceCommand(device, "input_text", controlNote, "Текст отправлен.", { text });
-      remoteTextInput.value = "";
     });
 
     $(".rename-device-button", card).addEventListener("click", async () => {
@@ -697,13 +647,6 @@ function render() {
       }
     });
 
-    $(".files-button", card).addEventListener("click", () => {
-      sendSimpleDeviceCommand(device, "request_files", controlNote, "Запрос файлов отправлен агенту.");
-    });
-    $(".commands-button", card).addEventListener("click", () => {
-      sendSimpleDeviceCommand(device, "request_actions", controlNote, "Проверка модулей отправлена агенту.");
-    });
-
     const idButton = $(".id-button", card);
     idButton.addEventListener("click", () => {
       navigator.clipboard?.writeText(device.device_id);
@@ -713,11 +656,7 @@ function render() {
       }, 1200);
     });
 
-    bindScreenGestures(screenImage, () => device, controlNote);
     deviceList.append(card);
-    if (activeScreenIds.has(device.device_id) && device.online) {
-      startScreenPolling(device, screenPreview, screenImage, controlNote);
-    }
   });
 
   renderRemotePanel(restartRemoteScreen);
@@ -852,10 +791,10 @@ $$(".remote-quality-button", remotePanel).forEach((button) => {
 
 $$(".remote-command-button", remotePanel).forEach((button) => {
   button.addEventListener("click", () => {
-    const label = button.textContent.trim();
     const command = button.dataset.command;
     const textPayload = command === "input_text" ? { text: remotePanelTextInput.value.trim() } : {};
-    sendSimpleDeviceCommand(selectedDevice(), command, remoteControlNote, `${label} отправлен.`, textPayload);
+    const successText = remoteCommandMessages[command] || "Команда отправлена.";
+    sendSimpleDeviceCommand(selectedDevice(), command, remoteControlNote, successText, textPayload);
   });
 });
 
