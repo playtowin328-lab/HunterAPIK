@@ -601,6 +601,22 @@ def main_menu() -> InlineKeyboardMarkup:
     )
 
 
+def fallback_main_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Подключить телефон", callback_data="connect_wizard"),
+                InlineKeyboardButton(text="Мои устройства", callback_data="my_devices"),
+            ],
+            [
+                InlineKeyboardButton(text="Инструкция", callback_data="guide"),
+                InlineKeyboardButton(text="APK", callback_data="connect_build_now"),
+            ],
+            [InlineKeyboardButton(text="Полная проверка", callback_data="connect_check")],
+        ]
+    )
+
+
 def nav_row(back: str | None = None) -> list[InlineKeyboardButton]:
     row: list[InlineKeyboardButton] = []
     if back:
@@ -636,7 +652,15 @@ async def send_start(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
     audit_message(message, "command_start", "Opened main menu")
-    await message.answer(HELP_TEXT, reply_markup=main_menu(), parse_mode="Markdown")
+    try:
+        await message.answer(HELP_TEXT, reply_markup=main_menu(), parse_mode="Markdown")
+    except Exception as exc:
+        print(f"Failed to send /start menu with primary markup: {exc}")
+        try:
+            await message.answer(HELP_TEXT, reply_markup=fallback_main_menu())
+        except Exception as fallback_exc:
+            print(f"Failed to send /start fallback menu: {fallback_exc}")
+            await message.answer("Бот запущен. Отправь /check, /connect или /pair.")
 
 
 async def send_settings(message: Message) -> None:
@@ -3152,6 +3176,7 @@ async def run_bot() -> None:
     global BOT_POLLING_READY
     BOT_POLLING_READY = True
     try:
+        await bot.delete_webhook(drop_pending_updates=False)
         await dp.start_polling(bot)
     finally:
         web_server.shutdown()
