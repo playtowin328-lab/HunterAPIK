@@ -254,11 +254,29 @@ function createPairingQr() {
   return apiJson(`${apiBaseUrl}/api/pair/new?owner_id=${encodeURIComponent(ownerId)}`);
 }
 
+function apiAuthPayload(extra = {}) {
+  if (!tg?.initData) return { ...extra };
+  return { actor_id: ownerId, init_data: tg.initData, ...extra };
+}
+
+function apiAuthParams(extra = {}) {
+  const params = new URLSearchParams({ ...extra });
+  if (tg?.initData) {
+    params.set("actor_id", ownerId);
+    params.set("init_data", tg.initData);
+  }
+  return params;
+}
+
+function deviceOwnerId(device) {
+  return String(device?.owner_id || ownerId);
+}
+
 function registerDevice(device) {
   return apiJson(`${apiBaseUrl}/api/devices/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ owner_id: ownerId, ...device }),
+    body: JSON.stringify(apiAuthPayload({ owner_id: ownerId, ...device })),
   });
 }
 
@@ -266,13 +284,18 @@ function sendCommand(device, type, payload = {}) {
   return apiJson(`${apiBaseUrl}/api/devices/command`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ owner_id: ownerId, device_id: device.device_id, type, payload }),
+    body: JSON.stringify(apiAuthPayload({ owner_id: deviceOwnerId(device), device_id: device.device_id, type, payload })),
   });
 }
 
 function getCommandStatus(device, commandId) {
+  const params = apiAuthParams({
+    owner_id: deviceOwnerId(device),
+    device_id: device.device_id,
+    command_id: commandId,
+  });
   return apiJson(
-    `${apiBaseUrl}/api/devices/commands/status?owner_id=${encodeURIComponent(ownerId)}&device_id=${encodeURIComponent(device.device_id)}&command_id=${encodeURIComponent(commandId)}`
+    `${apiBaseUrl}/api/devices/commands/status?${params.toString()}`
   );
 }
 
@@ -321,12 +344,13 @@ function manageDevice(device, action, payload = {}) {
   return apiJson(`${apiBaseUrl}/api/devices/manage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ owner_id: ownerId, device_id: device.device_id, action, ...payload }),
+    body: JSON.stringify(apiAuthPayload({ owner_id: deviceOwnerId(device), device_id: device.device_id, action, ...payload })),
   });
 }
 
 function loadScreenFrame(device) {
-  return apiJson(`${apiBaseUrl}/api/devices/screen?owner_id=${encodeURIComponent(ownerId)}&device_id=${encodeURIComponent(device.device_id)}`);
+  const params = apiAuthParams({ owner_id: deviceOwnerId(device), device_id: device.device_id });
+  return apiJson(`${apiBaseUrl}/api/devices/screen?${params.toString()}`);
 }
 
 async function requestFreshScreenFrame(device) {

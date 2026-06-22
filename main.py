@@ -2207,6 +2207,38 @@ def webapp_user_id_from_query(query: dict) -> str:
     return user_id if user_id.isdigit() else ""
 
 
+def webapp_user_id_from_payload(payload: dict) -> str:
+    validated = validate_telegram_init_data(str(payload.get("init_data", "")))
+    user = (validated or {}).get("user") or {}
+    user_id = str(user.get("id") or "").strip()
+    actor_id = str(payload.get("actor_id", "")).strip()
+    if not user_id.isdigit():
+        return ""
+    if actor_id and actor_id != user_id:
+        return ""
+    return user_id
+
+
+def query_value(query: dict, key: str) -> str:
+    return str(query.get(key, [""])[0]).strip()
+
+
+def query_has_webapp_auth(query: dict) -> bool:
+    return bool(query_value(query, "init_data") or query_value(query, "actor_id"))
+
+
+def payload_has_webapp_auth(payload: dict) -> bool:
+    return bool(str(payload.get("init_data", "")).strip() or str(payload.get("actor_id", "")).strip())
+
+
+def can_access_owner(actor_id: str, owner_id: str) -> bool:
+    if not actor_id:
+        return True
+    if str(actor_id) == str(owner_id):
+        return True
+    return get_user_role(actor_id) in {"root", "admin"}
+
+
 def rename_device(owner_id: str, device_id: str, name: str) -> bool:
     clean_name = name.strip()[:80]
     if not clean_name:
@@ -2339,11 +2371,18 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed_url.path == "/api/devices/commands/status":
             query = parse_qs(parsed_url.query)
-            owner_id = query.get("owner_id", [""])[0].strip()
-            device_id = query.get("device_id", [""])[0].strip()
-            command_id = query.get("command_id", [""])[0].strip()
+            owner_id = query_value(query, "owner_id")
+            device_id = query_value(query, "device_id")
+            command_id = query_value(query, "command_id")
             if not owner_id or not device_id or not command_id:
                 self.send_json({"error": "owner_id, device_id and command_id are required"}, HTTPStatus.BAD_REQUEST)
+                return
+            actor_id = webapp_user_id_from_query(query)
+            if query_has_webapp_auth(query) and not actor_id:
+                self.send_json({"error": "bad Telegram WebApp auth"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not can_access_owner(actor_id, owner_id):
+                self.send_json({"error": "forbidden for this device owner"}, HTTPStatus.FORBIDDEN)
                 return
             command = get_device_command(owner_id, device_id, command_id)
             if not command:
@@ -2355,8 +2394,15 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed_url.path == "/api/devices/screen":
             query = parse_qs(parsed_url.query)
-            owner_id = query.get("owner_id", [""])[0].strip()
-            device_id = query.get("device_id", [""])[0].strip()
+            owner_id = query_value(query, "owner_id")
+            device_id = query_value(query, "device_id")
+            actor_id = webapp_user_id_from_query(query)
+            if query_has_webapp_auth(query) and not actor_id:
+                self.send_json({"error": "bad Telegram WebApp auth"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not can_access_owner(actor_id, owner_id):
+                self.send_json({"error": "forbidden for this device owner"}, HTTPStatus.FORBIDDEN)
+                return
             frame = load_screen_frame(owner_id, device_id)
             if not frame:
                 self.send_json({"error": "screen frame not found"}, HTTPStatus.NOT_FOUND)
@@ -2373,6 +2419,9 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 return
 
             webapp_user_id = webapp_user_id_from_query(query)
+            if query_has_webapp_auth(query) and not webapp_user_id:
+                self.send_json({"error": "bad Telegram WebApp auth"}, HTTPStatus.UNAUTHORIZED)
+                return
             can_view_all = bool(webapp_user_id and webapp_user_id == owner_id and get_user_role(webapp_user_id) in {"root", "admin"})
             devices = list_all_devices() if can_view_all else list_devices_for_user(owner_id)
             self.send_json({"devices": devices, "scope": "all" if can_view_all else "own"})
@@ -2744,12 +2793,20 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 raise ValueError("payload must be an object")
             if not owner_id or not device_id:
                 raise ValueError("owner_id and device_id are required")
+            actor_id = webapp_user_id_from_payload(payload)
+            if payload_has_webapp_auth(payload) and not actor_id:
+                self.send_json({"error": "bad Telegram WebApp auth"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not can_access_owner(actor_id, owner_id):
+                self.send_json({"error": "forbidden for this device owner"}, HTTPStatus.FORBIDDEN)
+                return
             command = create_device_command(owner_id, device_id, command_type, command_payload)
             audit_event(
-                owner_id,
+                actor_id or owner_id,
                 "device_command",
                 f"Command {command_type} sent to {device_id}",
                 {
+                    "owner_id": owner_id,
                     "device_id": device_id,
                     "command_id": command["command_id"],
                     "type": command_type,
@@ -2773,6 +2830,13 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             action = str(payload.get("action", "")).strip()
             if not owner_id or not device_id:
                 raise ValueError("owner_id and device_id are required")
+            actor_id = webapp_user_id_from_payload(payload)
+            if payload_has_webapp_auth(payload) and not actor_id:
+                self.send_json({"error": "bad Telegram WebApp auth"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not can_access_owner(actor_id, owner_id):
+                self.send_json({"error": "forbidden for this device owner"}, HTTPStatus.FORBIDDEN)
+                return
 
             if action == "rename":
                 ok = rename_device(owner_id, device_id, str(payload.get("name", "")))
@@ -2784,10 +2848,11 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 raise ValueError("unsupported action")
             if ok:
                 audit_event(
-                    owner_id,
+                    actor_id or owner_id,
                     "device_manage",
                     f"Device {action}: {device_id}",
                     {
+                        "owner_id": owner_id,
                         "device_id": device_id,
                         "action": action,
                         "name": str(payload.get("name", ""))[:80],
