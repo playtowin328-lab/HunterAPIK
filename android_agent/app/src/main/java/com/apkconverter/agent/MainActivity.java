@@ -2,6 +2,7 @@ package com.apkconverter.agent;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.KeyguardManager;
 import android.content.ClipboardManager;
 import android.content.ClipData;
 import android.content.Context;
@@ -18,6 +19,7 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
+import android.view.WindowManager;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
@@ -32,6 +34,7 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     static final String ACTION_REQUEST_SCREEN_CAPTURE = "com.apkconverter.agent.REQUEST_SCREEN_CAPTURE";
+    static final String ACTION_DISMISS_KEYGUARD = "com.apkconverter.agent.DISMISS_KEYGUARD";
     private static final int REQUEST_SCREEN_CAPTURE = 200;
 
     private EditText serverUrlInput;
@@ -60,6 +63,8 @@ public class MainActivity extends Activity {
         renderStatus();
         if (ACTION_REQUEST_SCREEN_CAPTURE.equals(getIntent().getAction())) {
             requestScreenCapture();
+        } else if (ACTION_DISMISS_KEYGUARD.equals(getIntent().getAction())) {
+            requestDismissKeyguard();
         } else {
             handlePairIntent(getIntent(), true);
         }
@@ -69,7 +74,11 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        handlePairIntent(intent, true);
+        if (ACTION_DISMISS_KEYGUARD.equals(intent.getAction())) {
+            requestDismissKeyguard();
+        } else {
+            handlePairIntent(intent, true);
+        }
     }
 
     @Override
@@ -721,6 +730,45 @@ public class MainActivity extends Activity {
         }
         MediaProjectionManager manager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_SCREEN_CAPTURE);
+    }
+
+    private void requestDismissKeyguard() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        } else {
+            getWindow().addFlags(
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                            | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                            | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            );
+        }
+
+        KeyguardManager keyguardManager = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        if (keyguardManager == null || !keyguardManager.isKeyguardLocked()) {
+            statusText.setText("Экран уже доступен или блокировка не активна.");
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            keyguardManager.requestDismissKeyguard(this, new KeyguardManager.KeyguardDismissCallback() {
+                @Override
+                public void onDismissSucceeded() {
+                    statusText.setText("Android снял блокировку системным способом.");
+                }
+
+                @Override
+                public void onDismissCancelled() {
+                    statusText.setText("Разблокировка отменена на устройстве.");
+                }
+
+                @Override
+                public void onDismissError() {
+                    statusText.setText("Android не разрешил удаленно снять блокировку. PIN/биометрию нужно подтвердить на телефоне.");
+                }
+            });
+        } else {
+            statusText.setText("Запрос разблокировки показан. Для PIN/биометрии нужно подтверждение на телефоне.");
+        }
     }
 
     @Override

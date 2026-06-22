@@ -196,6 +196,10 @@ public class HeartbeatService extends Service {
             result = BuildConfig.FULL_CONTROL && TouchControlService.notifications() ? "Notifications opened." : "Notifications failed or disabled in Lite build.";
         } else if ("quick_settings".equals(command.type)) {
             result = BuildConfig.FULL_CONTROL && TouchControlService.quickSettings() ? "Quick settings opened." : "Quick settings failed or disabled in Lite build.";
+        } else if ("wake_screen".equals(command.type)) {
+            result = wakeScreen();
+        } else if ("dismiss_keyguard".equals(command.type)) {
+            result = requestDismissKeyguard();
         } else if ("lock_screen".equals(command.type)) {
             result = BuildConfig.FULL_CONTROL && TouchControlService.lockScreen() ? "Screen locked." : "Lock screen failed or disabled in Lite build.";
         } else if ("open_settings".equals(command.type)) {
@@ -313,6 +317,31 @@ public class HeartbeatService extends Service {
         } catch (Exception exc) {
             return false;
         }
+    }
+
+    private String wakeScreen() {
+        PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (powerManager == null) {
+            return "Wake failed. PowerManager unavailable.";
+        }
+        PowerManager.WakeLock screenWakeLock = powerManager.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK
+                        | PowerManager.ACQUIRE_CAUSES_WAKEUP
+                        | PowerManager.ON_AFTER_RELEASE,
+                "apkconverter:wake-screen"
+        );
+        screenWakeLock.setReferenceCounted(false);
+        screenWakeLock.acquire(5000L);
+        screenWakeLock.release();
+        return "Screen wake requested.";
+    }
+
+    private String requestDismissKeyguard() {
+        Intent intent = new Intent(this, MainActivity.class)
+                .setAction(MainActivity.ACTION_DISMISS_KEYGUARD)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(intent);
+        return "Unlock requested through Android keyguard. Secure PIN/password/fingerprint must be confirmed on the phone.";
     }
 
     private String openUrl(String url) {

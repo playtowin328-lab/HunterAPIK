@@ -596,6 +596,8 @@ function render() {
       [".recents-button", "recents", "Recent отправлен."],
       [".notifications-button", "notifications", "Шторка уведомлений открывается."],
       [".quick-settings-button", "quick_settings", "Быстрые настройки открываются."],
+      [".wake-screen-button", "wake_screen", "Экран пробуждается."],
+      [".unlock-screen-button", "dismiss_keyguard", "Запрос разблокировки отправлен. Если стоит PIN/биометрия, подтвердить нужно на телефоне."],
       [".lock-screen-button", "lock_screen", "Блокировка отправлена."],
       [".settings-button", "open_settings", "Settings открываются."],
       [".wifi-settings-button", "open_wifi_settings", "Wi‑Fi настройки открываются."],
