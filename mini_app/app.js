@@ -202,6 +202,27 @@ function formatDiagnostics(device) {
   return parts.join(" · ");
 }
 
+function formatHealthHint(device, fallback = "") {
+  const health = device.health || {};
+  const hints = Array.isArray(health.hints) ? health.hints.filter(Boolean) : [];
+  if (hints.length) return hints.join(" ");
+  if (fallback) return fallback;
+  return device.online ? "Готов к командам." : "Запусти Android Agent на телефоне.";
+}
+
+function formatDeviceNote(device) {
+  const diagnostics = formatDiagnostics(device);
+  const healthHint = formatHealthHint(device);
+  if (device.online) {
+    return diagnostics ? `${healthHint} ${diagnostics}` : healthHint;
+  }
+  return diagnostics ? `${healthHint} Последнее: ${diagnostics}` : healthHint;
+}
+
+function canControlDevice(device) {
+  return Boolean(device?.online && device?.health?.state !== "revoked");
+}
+
 function setTelegramTheme() {
   const savedTheme = localStorage.getItem("apk_converter_theme");
   const dark = savedTheme ? savedTheme === "dark" : tg?.colorScheme === "dark";
@@ -355,8 +376,8 @@ async function sendSimpleDeviceCommand(device, type, controlNote, successText, p
     controlNote.textContent = "Сначала выбери устройство.";
     return;
   }
-  if (!device.online) {
-    controlNote.textContent = "Устройство offline. Запусти агент на телефоне.";
+  if (!canControlDevice(device)) {
+    controlNote.textContent = formatHealthHint(device);
     return;
   }
 
@@ -383,12 +404,9 @@ function renderRemotePanel(restartScreen = false) {
 
   remotePanel.classList.remove("hidden");
   remoteDeviceTitle.textContent = device.name;
-  remoteDeviceMeta.textContent = `${device.platform || "unknown"} · ${device.agent || "agent"} · ${device.online ? "Online" : "Offline"}`;
+  remoteDeviceMeta.textContent = `${device.platform || "unknown"} · ${device.agent || "agent"} · ${device.health?.label || (device.online ? "Online" : "Offline")}`;
   updateQualityButtons(device, remotePanel, ".remote-quality-button");
-  const diagnostics = formatDiagnostics(device);
-  remoteControlNote.textContent = device.online
-    ? diagnostics || "Пульт готов. Запусти экран или отправь команду."
-    : `Устройство offline.${diagnostics ? ` Последнее: ${diagnostics}` : ""}`;
+  remoteControlNote.textContent = formatDeviceNote(device);
 
   if (restartScreen && device.online) {
     startScreenPolling(device, remoteScreenPreview, remoteScreenImage, remoteControlNote);
@@ -402,8 +420,8 @@ async function startRemoteScreen() {
     remoteControlNote.textContent = "iPhone требует Apple screen sharing или approved-сервис. Прямое управление сторонним APK невозможно.";
     return;
   }
-  if (!device.online) {
-    remoteControlNote.textContent = "Устройство offline. Запусти агент или ADB-мост.";
+  if (!canControlDevice(device)) {
+    remoteControlNote.textContent = formatHealthHint(device, "Устройство offline. Запусти агент или ADB-мост.");
     return;
   }
   try {
@@ -514,9 +532,11 @@ function render() {
 
   devices.forEach((device) => {
     const card = template.content.firstElementChild.cloneNode(true);
+    const healthState = device.health?.state || (device.online ? "online" : "offline");
     card.classList.toggle("offline", !device.online);
+    card.dataset.health = healthState;
     $("h2", card).textContent = device.name;
-    $(".status-pill", card).textContent = device.online ? "Online" : "Offline";
+    $(".status-pill", card).textContent = device.health?.label || (device.online ? "Online" : "Offline");
 
     const platform = device.platform ? ` · ${device.platform}` : "";
     const agent = device.agent ? ` · ${device.agent}` : "";
@@ -527,10 +547,7 @@ function render() {
     const controlNote = $(".control-note", card);
     const screenPreview = $(".screen-preview", card);
     const screenImage = $("img", screenPreview);
-    const diagnostics = formatDiagnostics(device);
-    controlNote.textContent = device.online
-      ? diagnostics || "Готов к командам. Для экрана нужно отдельное разрешение на телефоне."
-      : `Устройство offline.${diagnostics ? ` Последнее: ${diagnostics}` : " Запусти агент на телефоне."}`;
+    controlNote.textContent = formatDeviceNote(device);
 
     $(".open-remote-button", card).addEventListener("click", () => {
       selectDevice(device);
@@ -552,8 +569,8 @@ function render() {
         controlNote.textContent = "iPhone нельзя полноценно управлять сторонним APK. Нужен Apple screen sharing или approved-сервис.";
         return;
       }
-      if (!device.online) {
-        controlNote.textContent = "Сначала запусти Android Agent, чтобы устройство стало Online.";
+      if (!canControlDevice(device)) {
+        controlNote.textContent = formatHealthHint(device, "Сначала запусти Android Agent, чтобы устройство стало Online.");
         return;
       }
       try {

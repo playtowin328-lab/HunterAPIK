@@ -1442,6 +1442,65 @@ def device_diagnostics(owner_id: str, device_id: str) -> dict:
     return diagnostics
 
 
+def device_health(device: dict, diagnostics: dict) -> dict:
+    now = int(time.time())
+    last_seen = int(device.get("last_seen") or 0)
+    last_seen_age = max(0, now - last_seen) if last_seen else None
+    telemetry = device.get("telemetry") or {}
+    secret_set = bool(str(device.get("secret", "")).strip())
+    online = bool(device.get("online"))
+    pending_commands = int(diagnostics.get("pending_commands") or 0)
+    oldest_pending_age = int(diagnostics.get("oldest_pending_age") or 0)
+
+    issues: list[str] = []
+    hints: list[str] = []
+
+    if not secret_set:
+        issues.append("pairing_revoked")
+        hints.append("Привязка сброшена. Получи новый QR и открой его на телефоне.")
+    if last_seen_age is None:
+        issues.append("never_seen")
+        hints.append("Агент еще ни разу не прислал heartbeat.")
+    elif not online:
+        issues.append("heartbeat_stale")
+        hints.append("Запусти Android Agent и проверь интернет/режим энергосбережения.")
+    if pending_commands >= 3 or oldest_pending_age > 60:
+        issues.append("command_queue_stuck")
+        hints.append("Есть зависшие команды. Если агент online, попробуй перезапустить его.")
+    if telemetry.get("last_error"):
+        issues.append("agent_error")
+        hints.append(str(telemetry.get("last_error"))[:160])
+    if telemetry.get("screen_error"):
+        issues.append("screen_error")
+        hints.append(str(telemetry.get("screen_error"))[:160])
+
+    if not issues:
+        state = "online" if online else "waiting"
+        label = "Online" if online else "Ожидает первый heartbeat"
+        hints.append("Готов к командам." if online else "Открой агент на телефоне.")
+    elif "pairing_revoked" in issues:
+        state = "revoked"
+        label = "Нужна новая привязка"
+    elif "heartbeat_stale" in issues or "never_seen" in issues:
+        state = "offline"
+        label = "Offline"
+    elif "command_queue_stuck" in issues:
+        state = "degraded"
+        label = "Команды ждут агент"
+    else:
+        state = "warning"
+        label = "Нужна проверка"
+
+    return {
+        "state": state,
+        "label": label,
+        "issues": issues,
+        "hints": hints[:4],
+        "last_seen_age": last_seen_age,
+        "secret_set": secret_set,
+    }
+
+
 def screen_paths(owner_id: str, device_id: str) -> tuple[Path, Path]:
     safe_owner = "".join(ch for ch in str(owner_id) if ch.isalnum() or ch in {"_", "-"})
     safe_device = "".join(ch for ch in str(device_id) if ch.isalnum() or ch in {"_", "-"})
@@ -1805,12 +1864,15 @@ def list_devices_for_user(owner_id: str) -> list[dict]:
             "type": row["type"],
             "platform": row["platform"],
             "agent": row["agent"],
+            "secret": row["secret"],
             "telemetry": json.loads(row["telemetry_json"] or "{}"),
             "last_seen": int(row["last_seen"]),
             "created_at": int(row["created_at"]),
         }
         item["online"] = now - item["last_seen"] <= DEVICE_TTL_SECONDS
         item["diagnostics"] = device_diagnostics(item["owner_id"], item["device_id"])
+        item["health"] = device_health(item, item["diagnostics"])
+        item.pop("secret", None)
         result.append(item)
 
     return result
