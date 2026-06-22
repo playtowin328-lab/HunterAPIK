@@ -69,6 +69,7 @@ let refreshInFlight = false;
 let refreshTimer = null;
 const screenPollers = new Map();
 const pendingScreenRequests = new Set();
+window.currentDeviceScope = "own";
 
 function getLocalDeviceId() {
   const existingId = localStorage.getItem(localDeviceIdKey);
@@ -242,8 +243,11 @@ async function apiJson(url, options = {}) {
 }
 
 async function loadDevicesFromApi() {
-  const payload = await apiJson(`${apiBaseUrl}/api/devices?owner_id=${encodeURIComponent(ownerId)}`);
+  const params = new URLSearchParams({ owner_id: ownerId });
+  if (tg?.initData) params.set("init_data", tg.initData);
+  const payload = await apiJson(`${apiBaseUrl}/api/devices?${params.toString()}`);
   devices = payload.devices || [];
+  window.currentDeviceScope = payload.scope || "own";
 }
 
 function createPairingQr() {
@@ -516,8 +520,9 @@ function render() {
   const onlineCount = devices.filter((device) => device.online).length;
   onlineDevices.textContent = onlineCount;
   userName.textContent = profileName;
+  const scopeText = window.currentDeviceScope === "all" ? "все устройства проекта" : "твои устройства";
   setupText.textContent = devices.length
-    ? `${devices.length} устройств, online: ${onlineCount}.`
+    ? `${scopeText}: ${devices.length}, online: ${onlineCount}.`
     : "Установи APK, получи QR и запусти Android Agent на телефоне.";
 
   if (!devices.length) {

@@ -2,6 +2,8 @@ import asyncio
 import io
 import json
 import os
+import hmac
+import hashlib
 import secrets
 import sqlite3
 import threading
@@ -2166,6 +2168,45 @@ def public_device(device: dict) -> dict:
     return item
 
 
+def validate_telegram_init_data(init_data: str) -> dict | None:
+    if not BOT_TOKEN or not init_data:
+        return None
+    parsed = parse_qs(init_data, keep_blank_values=True)
+    received_hash = (parsed.pop("hash", [""])[0] or "").strip()
+    if not received_hash:
+        return None
+
+    data_check_parts = []
+    for key in sorted(parsed):
+        if key == "hash":
+            continue
+        value = parsed[key][0] if parsed[key] else ""
+        data_check_parts.append(f"{key}={value}")
+    data_check_string = "\n".join(data_check_parts)
+    secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode("utf-8"), hashlib.sha256).digest()
+    calculated_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(calculated_hash, received_hash):
+        return None
+
+    user_raw = parsed.get("user", [""])[0]
+    try:
+        user = json.loads(user_raw) if user_raw else {}
+    except json.JSONDecodeError:
+        user = {}
+    auth_date = int(parsed.get("auth_date", ["0"])[0] or 0)
+    if auth_date and now_ts() - auth_date > 24 * 60 * 60:
+        return None
+    return {"user": user, "auth_date": auth_date}
+
+
+def webapp_user_id_from_query(query: dict) -> str:
+    init_data = query.get("init_data", [""])[0]
+    validated = validate_telegram_init_data(init_data)
+    user = (validated or {}).get("user") or {}
+    user_id = str(user.get("id") or "").strip()
+    return user_id if user_id.isdigit() else ""
+
+
 def rename_device(owner_id: str, device_id: str, name: str) -> bool:
     clean_name = name.strip()[:80]
     if not clean_name:
@@ -2331,7 +2372,10 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": "owner_id is required"}, HTTPStatus.BAD_REQUEST)
                 return
 
-            self.send_json({"devices": list_devices_for_user(owner_id)})
+            webapp_user_id = webapp_user_id_from_query(query)
+            can_view_all = bool(webapp_user_id and webapp_user_id == owner_id and get_user_role(webapp_user_id) in {"root", "admin"})
+            devices = list_all_devices() if can_view_all else list_devices_for_user(owner_id)
+            self.send_json({"devices": devices, "scope": "all" if can_view_all else "own"})
             return
 
         if parsed_url.path == "/api/pair/new":
