@@ -17,6 +17,7 @@ const currentDeviceText = $("#currentDeviceText");
 const connectCurrentDevice = $("#connectCurrentDevice");
 const setupText = $("#setupText");
 const installAgentButton = $("#installAgentButton");
+const openInstalledAgentButton = $("#openInstalledAgentButton");
 const requestPairButton = $("#requestPairButton");
 const refreshButton = $("#refreshButton");
 const pairResult = $("#pairResult");
@@ -40,10 +41,13 @@ const remotePanelSendText = $("#remotePanelSendText");
 
 const telegramUser = tg?.initDataUnsafe?.user;
 const profileName = telegramUser?.first_name || telegramUser?.username || "Я";
-const ownerId = String(telegramUser?.id || localStorage.getItem("apk_owner_id") || crypto.randomUUID());
+const urlParams = new URLSearchParams(window.location.search);
+const ownerId = String(telegramUser?.id || urlParams.get("owner_id") || localStorage.getItem("apk_owner_id") || crypto.randomUUID());
 localStorage.setItem("apk_owner_id", ownerId);
 
 const apiBaseUrl = window.location.origin;
+const agentOpenLink = "apkagent://open";
+const agentInstallUrl = `${apiBaseUrl}/agent?owner_id=${encodeURIComponent(ownerId)}`;
 const localDeviceIdKey = "apk_converter_local_device_id";
 const typeNames = {
   phone: "Телефон",
@@ -60,6 +64,8 @@ let devices = [];
 let currentPairLinks = null;
 let selectedDeviceId = localStorage.getItem("hunter_selected_device_id") || "";
 let remotePanelCollapsed = false;
+let refreshInFlight = false;
+let refreshTimer = null;
 const screenPollers = new Map();
 const pendingScreenRequests = new Set();
 
@@ -203,7 +209,9 @@ function setTelegramTheme() {
 }
 
 async function apiJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 12000);
+  const response = await fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timeout));
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(payload.error || `HTTP ${response.status}`);
@@ -660,11 +668,18 @@ function renderCurrentDevice() {
 }
 
 async function refreshDevices() {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
   try {
     await loadDevicesFromApi();
     render();
   } catch (error) {
-    deviceList.innerHTML = `<p class="empty-state">${error.message}</p>`;
+    if (!devices.length) {
+      deviceList.innerHTML = `<p class="empty-state">${error.message}</p>`;
+    }
+    setupText.textContent = `API connection issue: ${error.message}`;
+  } finally {
+    refreshInFlight = false;
   }
 }
 
@@ -689,12 +704,17 @@ deviceForm.addEventListener("submit", async (event) => {
 
 connectCurrentDevice.addEventListener("click", () => {
   currentDeviceText.textContent = "Открываю страницу установки Android Agent...";
-  openExternal(`${apiBaseUrl}/agent`);
+  openExternal(agentInstallUrl);
 });
 
 installAgentButton.addEventListener("click", () => {
   setupText.textContent = "Открываю страницу установки APK...";
-  openExternal(`${apiBaseUrl}/agent`);
+  openExternal(agentInstallUrl);
+});
+
+openInstalledAgentButton.addEventListener("click", () => {
+  setupText.textContent = "Открываю установленный Android Agent...";
+  window.location.href = agentOpenLink;
 });
 
 requestPairButton.addEventListener("click", async () => {
@@ -717,7 +737,7 @@ openPairPageButton.addEventListener("click", () => {
 });
 
 openAgentDeepLinkButton.addEventListener("click", () => {
-  if (currentPairLinks?.app_link) openExternal(currentPairLinks.app_link);
+  window.location.href = currentPairLinks?.app_link || agentOpenLink;
 });
 
 closeRemotePanel.addEventListener("click", () => {
@@ -781,7 +801,18 @@ themeButton.addEventListener("click", () => {
   localStorage.setItem("apk_converter_theme", dark ? "dark" : "light");
 });
 
+function startRefreshLoop() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    if (!document.hidden) refreshDevices();
+  }, 15000);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refreshDevices();
+});
+
 setTelegramTheme();
 renderCurrentDevice();
 refreshDevices();
-setInterval(refreshDevices, 15000);
+startRefreshLoop();

@@ -48,7 +48,7 @@ ADMIN_IDS = {
 }
 WEBAPP_HOST = os.getenv("WEBAPP_HOST", "0.0.0.0")
 WEBAPP_PORT = int(os.getenv("PORT", os.getenv("WEBAPP_PORT", "8080")))
-DEVICE_TTL_SECONDS = int(os.getenv("DEVICE_TTL_SECONDS", "90"))
+DEVICE_TTL_SECONDS = int(os.getenv("DEVICE_TTL_SECONDS", "300"))
 BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
 STORAGE_DIR.mkdir(exist_ok=True)
@@ -78,6 +78,12 @@ PAIRING_TTL_SECONDS = int(os.getenv("PAIRING_TTL_SECONDS", "600"))
 user_last_photo: dict[int, Path] = {}
 APP_STARTED_AT = time.time()
 BOT_POLLING_READY = False
+BOT_INSTANCE: Bot | None = None
+BOT_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def now_ts() -> int:
+    return int(time.time())
 
 
 def pil_modules():
@@ -142,11 +148,14 @@ async def ensure_root_message(message: Message) -> bool:
 def db_connect() -> sqlite3.Connection:
     connection = sqlite3.connect(DB_PATH, timeout=15)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout = 15000")
+    connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
 
 def init_db() -> None:
     with db_connect() as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS devices (
@@ -198,6 +207,20 @@ def init_db() -> None:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_events (
+                event_id TEXT PRIMARY KEY,
+                actor_id TEXT NOT NULL,
+                actor_name TEXT NOT NULL DEFAULT '',
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at DESC)")
 
 
 init_db()
@@ -251,6 +274,155 @@ def list_bot_access_users() -> list[sqlite3.Row]:
         return list(connection.execute("SELECT * FROM bot_access ORDER BY created_at DESC"))
 
 
+def user_display_name(user) -> str:
+    if not user:
+        return ""
+    username = getattr(user, "username", None)
+    full_name = getattr(user, "full_name", None)
+    if username:
+        return f"@{username}"
+    return str(full_name or getattr(user, "id", "") or "")
+
+
+def is_root_user_id(user_id: str) -> bool:
+    user_id = str(user_id or "").strip()
+    return not ADMIN_IDS or user_id in ADMIN_IDS
+
+
+def save_audit_event(
+    actor_id: str,
+    action: str,
+    detail: str = "",
+    metadata: dict | None = None,
+    actor_name: str = "",
+) -> dict:
+    event = {
+        "event_id": secrets.token_urlsafe(16),
+        "actor_id": str(actor_id or "unknown")[:64],
+        "actor_name": str(actor_name or "")[:120],
+        "action": str(action or "unknown")[:80],
+        "detail": str(detail or "")[:600],
+        "metadata": metadata or {},
+        "created_at": now_ts(),
+    }
+    with db_connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO audit_events(event_id, actor_id, actor_name, action, detail, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event["event_id"],
+                event["actor_id"],
+                event["actor_name"],
+                event["action"],
+                event["detail"],
+                json.dumps(event["metadata"], ensure_ascii=False),
+                event["created_at"],
+            ),
+        )
+    return event
+
+
+def list_audit_events(limit: int = 20) -> list[sqlite3.Row]:
+    safe_limit = max(1, min(int(limit or 20), 100))
+    with db_connect() as connection:
+        return list(
+            connection.execute(
+                "SELECT * FROM audit_events ORDER BY created_at DESC LIMIT ?",
+                (safe_limit,),
+            )
+        )
+
+
+def audit_event_text(event: dict | sqlite3.Row) -> str:
+    if isinstance(event, sqlite3.Row):
+        created_at = int(event["created_at"])
+        actor_id = event["actor_id"]
+        actor_name = event["actor_name"]
+        action = event["action"]
+        detail = event["detail"]
+    else:
+        created_at = int(event["created_at"])
+        actor_id = event["actor_id"]
+        actor_name = event["actor_name"]
+        action = event["action"]
+        detail = event["detail"]
+    created = datetime.fromtimestamp(created_at).strftime("%d.%m %H:%M:%S")
+    actor = f"{actor_name} ({actor_id})" if actor_name else str(actor_id)
+    return f"{created}\n{actor}\n{action}: {detail}".strip()
+
+
+async def notify_root_admins(event: dict) -> None:
+    if not BOT_INSTANCE or not ADMIN_IDS:
+        return
+    text = "Audit event\n\n" + audit_event_text(event)
+    for admin_id in sorted(ADMIN_IDS):
+        if str(admin_id) == str(event.get("actor_id")):
+            continue
+        try:
+            await BOT_INSTANCE.send_message(admin_id, text)
+        except Exception as exc:
+            print(f"Failed to send audit notification to {admin_id}: {exc}")
+
+
+def schedule_root_notification(event: dict, notify: bool = True) -> None:
+    if not notify or not BOT_LOOP or not BOT_INSTANCE:
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(notify_root_admins(event), BOT_LOOP)
+    except Exception as exc:
+        print(f"Failed to schedule audit notification: {exc}")
+
+
+def audit_event(
+    actor_id: str,
+    action: str,
+    detail: str = "",
+    metadata: dict | None = None,
+    actor_name: str = "",
+    notify: bool = True,
+) -> dict:
+    event = save_audit_event(actor_id, action, detail, metadata, actor_name)
+    schedule_root_notification(event, notify=notify)
+    return event
+
+
+def audit_message(message: Message, action: str, detail: str = "", metadata: dict | None = None, notify: bool = True) -> None:
+    user = message.from_user
+    audit_event(
+        str(user.id if user else "unknown"),
+        action,
+        detail,
+        metadata,
+        user_display_name(user),
+        notify=notify,
+    )
+
+
+def audit_callback(callback: CallbackQuery, action: str, detail: str = "", metadata: dict | None = None, notify: bool = True) -> None:
+    user = callback.from_user
+    audit_event(
+        str(user.id if user else "unknown"),
+        action,
+        detail,
+        metadata,
+        user_display_name(user),
+        notify=notify,
+    )
+
+
+def audit_text(limit: int = 20) -> str:
+    rows = list_audit_events(limit)
+    if not rows:
+        return "Audit log is empty."
+    lines = [f"Audit log: last {len(rows)} events"]
+    for row in rows:
+        lines.append("")
+        lines.append(audit_event_text(row))
+    return "\n".join(lines)
+
+
 def access_text() -> str:
     root_ids = ", ".join(sorted(ADMIN_IDS)) if ADMIN_IDS else "не задано, бот в публичном режиме"
     rows = list_bot_access_users()
@@ -264,6 +436,7 @@ def access_text() -> str:
         "/grant 123456789 — выдать доступ",
         "/revoke 123456789 — забрать доступ",
         "/admins — список доступа",
+        "/audit 20 — журнал действий",
         "",
         "Пользователь без доступа увидит свой Telegram ID и сможет прислать его тебе.",
     ]
@@ -280,6 +453,7 @@ def access_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Обновить список", callback_data="access_info")],
+            [InlineKeyboardButton(text="Audit log", callback_data="audit_info")],
             nav_row(None),
         ]
     )
@@ -408,31 +582,47 @@ async def show_bot_screen(
 async def send_start(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
+    audit_message(message, "command_start", "Opened main menu")
     await message.answer(HELP_TEXT, reply_markup=main_menu(), parse_mode="Markdown")
 
 
 async def send_settings(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
+    audit_message(message, "command_settings", "Opened settings")
     await message.answer(SETTINGS_TEXT, reply_markup=nav_keyboard(None))
 
 
 async def send_guide(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
+    audit_message(message, "command_guide", "Opened guide")
     await message.answer(GUIDE_TEXT, reply_markup=connect_keyboard(), parse_mode="Markdown")
 
 
 async def send_my_id(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
+    audit_message(message, "command_myid", "Requested owner id", notify=False)
     await message.answer(f"Твой owner_id для агента: `{message.from_user.id}`", parse_mode="Markdown")
 
 
 async def send_admins(message: Message) -> None:
     if not await ensure_root_message(message):
         return
+    audit_message(message, "command_admins", "Opened access list", notify=False)
     await message.answer(access_text(), reply_markup=access_keyboard())
+
+
+async def send_audit(message: Message, command: CommandObject) -> None:
+    if not await ensure_root_message(message):
+        return
+    try:
+        limit = int((command.args or "20").strip())
+    except ValueError:
+        limit = 20
+    audit_message(message, "command_audit", f"Opened audit log, limit={limit}", notify=False)
+    await message.answer(audit_text(limit))
 
 
 async def send_grant_access(message: Message, command: CommandObject) -> None:
@@ -447,6 +637,7 @@ async def send_grant_access(message: Message, command: CommandObject) -> None:
             parse_mode="Markdown",
         )
         return
+    audit_message(message, "grant_access", f"Granted bot access to {user_id}", {"target_user_id": user_id})
     await message.answer(
         f"Доступ выдан пользователю `{user_id}`.",
         parse_mode="Markdown",
@@ -469,6 +660,12 @@ async def send_revoke_access(message: Message, command: CommandObject) -> None:
         await message.answer("Этот пользователь указан в ADMIN_IDS. Убрать его можно только в Railway variables.")
         return
     removed = revoke_bot_access(user_id)
+    audit_message(
+        message,
+        "revoke_access",
+        f"Revoked bot access for {user_id}: {removed}",
+        {"target_user_id": user_id, "removed": removed},
+    )
     await message.answer(
         f"Доступ для `{user_id}` {'забран' if removed else 'не найден в списке'}.",
         parse_mode="Markdown",
@@ -479,6 +676,7 @@ async def send_revoke_access(message: Message, command: CommandObject) -> None:
 async def send_status(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
+    audit_message(message, "command_status", "Requested bot status")
     apk_ready, apk_url, apk_detail = apk_download_status()
     apk_source = f"ready - {apk_url}" if apk_ready else f"not ready - {apk_detail}"
     lines = [
@@ -536,18 +734,21 @@ def connect_text(owner_id: int) -> str:
 async def send_connect(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
+    audit_message(message, "command_connect", "Opened connect wizard")
     await message.answer(connect_text(message.from_user.id), reply_markup=connect_keyboard())
 
 
 async def send_devices(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
+    audit_message(message, "command_devices", "Opened device list")
     await message.answer(format_devices_text(message.from_user.id), reply_markup=connect_keyboard())
 
 
 async def send_apk_list(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
+    audit_message(message, "command_apk", "Opened APK list")
     await message.answer(apk_list_text(), reply_markup=apk_list_keyboard())
 
 
@@ -610,6 +811,7 @@ def run_deploy_checks(owner_id: int) -> str:
 async def send_check(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
+    audit_message(message, "command_check", "Started deployment check")
     await message.answer("Running deployment check...")
     result = await asyncio.to_thread(run_deploy_checks, message.from_user.id)
     await message.answer(result)
@@ -620,6 +822,7 @@ async def send_build_apk(message: Message, command: CommandObject) -> None:
         return
 
     app_name = (command.args or "Hunter Agent").strip() or "Hunter Agent"
+    audit_message(message, "build_apk_lite", f"Started Lite APK build: {app_name}", {"app_name": app_name})
     await start_apk_build(message, message.from_user.id, app_name, "lite")
 
 
@@ -628,6 +831,7 @@ async def send_build_apk_full(message: Message, command: CommandObject) -> None:
         return
 
     app_name = (command.args or "Hunter Agent Full").strip() or "Hunter Agent Full"
+    audit_message(message, "build_apk_full", f"Started Full APK build: {app_name}", {"app_name": app_name})
     await start_apk_build(message, message.from_user.id, app_name, "full")
 
 
@@ -687,12 +891,14 @@ def pc_agent_adb_setup_text(owner_id: int) -> str:
 async def send_pc_agent(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
+    audit_message(message, "command_pc_agent", "Opened PC Agent section")
     await message.answer(pc_agent_text(), reply_markup=pc_agent_keyboard(), parse_mode="Markdown")
 
 
 async def send_build_pc_agent(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
+    audit_message(message, "build_pc_agent", "Started PC Agent build")
     await start_pc_agent_build(message)
 
 
@@ -944,6 +1150,13 @@ async def send_pairing_details(message: Message, owner_id: int) -> None:
     code = create_pairing_code(owner_id)
     links = pair_links(code)
     keyboard = with_nav(pairing_keyboard(links), "connect_wizard")
+    audit_event(
+        str(owner_id),
+        "pairing_code_created",
+        "Created pairing QR/code from bot",
+        {"code": code, "expires_in": PAIRING_TTL_SECONDS},
+        user_display_name(message.from_user),
+    )
     try:
         await message.answer_photo(
             photo=make_pairing_qr(links["web_link"], code),
@@ -1057,6 +1270,8 @@ def create_device_command(owner_id: str, device_id: str, command_type: str, payl
         "open_settings",
         "open_wifi_settings",
         "open_battery_settings",
+        "open_url",
+        "open_app_details",
         "swipe_up",
         "swipe_down",
         "swipe_left",
@@ -1135,6 +1350,7 @@ def next_device_command(owner_id: str, device_id: str) -> dict | None:
 
 
 def complete_device_command(owner_id: str, device_id: str, command_id: str, status: str, result: str = "") -> dict | None:
+    result = str(result or "")[:1200]
     now = int(time.time())
     with db_connect() as connection:
         row = connection.execute(
@@ -1562,6 +1778,15 @@ def upsert_device(raw_device: dict) -> dict:
     return device
 
 
+def device_exists(owner_id: str, device_id: str) -> bool:
+    with db_connect() as connection:
+        row = connection.execute(
+            "SELECT 1 FROM devices WHERE owner_id = ? AND device_id = ?",
+            (str(owner_id), str(device_id)),
+        ).fetchone()
+    return row is not None
+
+
 def list_devices_for_user(owner_id: str) -> list[dict]:
     now = int(time.time())
     result = []
@@ -1696,7 +1921,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed_url.path == "/agent":
-            self.handle_agent_page()
+            self.handle_agent_page(parsed_url)
             return
 
         if parsed_url.path == f"/{AGENT_APK_NAME}":
@@ -1775,6 +2000,12 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             code = create_pairing_code(owner_id)
             links = pair_links(code)
             qr_base64 = base64.b64encode(make_pairing_qr_bytes(links["web_link"])).decode("ascii")
+            audit_event(
+                owner_id,
+                "pairing_code_created",
+                "Created pairing QR/code from mini app",
+                {"code": code, "expires_in": PAIRING_TTL_SECONDS},
+            )
             self.send_json(
                 {
                     "code": code,
@@ -1837,7 +2068,9 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def handle_agent_page(self) -> None:
+    def handle_agent_page(self, parsed_url) -> None:
+        query = parse_qs(parsed_url.query)
+        owner_id = query.get("owner_id", [""])[0].strip()
         apk_path = agent_apk_path()
         download_url = f"{public_server_url()}/{AGENT_APK_NAME}"
         release_url = release_apk_url()
@@ -1849,6 +2082,9 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         )
         actions_url = f"https://github.com/{GITHUB_REPO}/actions/workflows/{GITHUB_WORKFLOW}"
         mini_app_url = MINI_APP_URL or public_server_url()
+        if owner_id:
+            separator = "&" if "?" in mini_app_url else "?"
+            mini_app_url = f"{mini_app_url}{separator}owner_id={quote(owner_id, safe='')}"
         remote_ok = False
         remote_detail = "not checked"
         if not apk_path:
@@ -1902,6 +2138,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
       <h1>Установка Android Agent</h1>
       <span class="status">{escape(source_text)}</span>
       <p>Android Agent Lite подключает твой Android-телефон к Telegram-боту и мини-апу без доступа к экрану и жестам. Сборка рассчитана на Android 10+ и сделана так, чтобы меньше раздражать Play Protect.</p>
+      <a class="ghost" href="apkagent://open">Открыть установленный Agent</a>
       {download_button}
       {mode_download_buttons}
       <a class="ghost" href="{escape(actions_url, quote=True)}">Статус сборки APK</a>
@@ -2037,7 +2274,23 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             if not is_authorized_device_request(self.headers, payload):
                 self.send_json({"error": "bad agent token"}, HTTPStatus.UNAUTHORIZED)
                 return
+            owner_id = str(payload.get("owner_id", "")).strip()
+            device_id = str(payload.get("device_id", "")).strip()
+            was_known = device_exists(owner_id, device_id) if owner_id and device_id else True
             device = upsert_device(payload)
+            if not was_known:
+                audit_event(
+                    device["owner_id"],
+                    "device_added",
+                    f"New device registered: {device['name']} ({device['platform']}, {device['agent']})",
+                    {
+                        "device_id": device["device_id"],
+                        "name": device["name"],
+                        "platform": device["platform"],
+                        "agent": device["agent"],
+                        "source": parsed_url.path,
+                    },
+                )
         except (json.JSONDecodeError, ValueError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -2057,7 +2310,20 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             device_secret = secrets.token_urlsafe(32)
             payload["owner_id"] = owner_id
             payload["secret"] = device_secret
+            device_id = str(payload.get("device_id", "")).strip()
+            was_known = device_exists(owner_id, device_id) if device_id else False
             device = upsert_device(payload)
+            audit_event(
+                owner_id,
+                "device_paired" if not was_known else "device_repaired",
+                f"{'New device paired' if not was_known else 'Device re-paired'}: {device['name']} ({device['platform']})",
+                {
+                    "device_id": device["device_id"],
+                    "name": device["name"],
+                    "platform": device["platform"],
+                    "agent": device["agent"],
+                },
+            )
         except (json.JSONDecodeError, ValueError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -2085,6 +2351,18 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             if not owner_id or not device_id:
                 raise ValueError("owner_id and device_id are required")
             command = create_device_command(owner_id, device_id, command_type, command_payload)
+            audit_event(
+                owner_id,
+                "device_command",
+                f"Command {command_type} sent to {device_id}",
+                {
+                    "device_id": device_id,
+                    "command_id": command["command_id"],
+                    "type": command_type,
+                    "payload": command_payload or {},
+                },
+                notify=not (command_type == "request_screen" and (command_payload or {}).get("stream")),
+            )
         except (json.JSONDecodeError, ValueError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -2110,6 +2388,17 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 ok = revoke_device(owner_id, device_id)
             else:
                 raise ValueError("unsupported action")
+            if ok:
+                audit_event(
+                    owner_id,
+                    "device_manage",
+                    f"Device {action}: {device_id}",
+                    {
+                        "device_id": device_id,
+                        "action": action,
+                        "name": str(payload.get("name", ""))[:80],
+                    },
+                )
         except (json.JSONDecodeError, ValueError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -2259,6 +2548,12 @@ async def handle_photo(message: Message, bot: Bot) -> None:
         return
 
     user_last_photo[user_id] = input_path
+    audit_message(
+        message,
+        "photo_uploaded",
+        "Uploaded photo for image tools or APK icon",
+        {"file": input_path.name},
+    )
 
     await message.answer(
         "Фото принято ✅\nВыбери, что сделать с ним:",
@@ -2292,6 +2587,12 @@ async def handle_document_image(message: Message, bot: Bot) -> None:
         return
 
     user_last_photo[user_id] = input_path
+    audit_message(
+        message,
+        "image_document_uploaded",
+        "Uploaded image document for image tools or APK icon",
+        {"file": input_path.name, "mime_type": document.mime_type, "size": document.file_size},
+    )
 
     await message.answer(
         "Картинка принята как файл ✅\nВыбери действие:",
@@ -2307,6 +2608,13 @@ async def handle_web_app_data(message: Message) -> None:
     except (TypeError, json.JSONDecodeError):
         await message.answer("Мини-апп прислал данные, но я не смог их прочитать.")
         return
+
+    audit_message(
+        message,
+        "mini_app_event",
+        f"Mini app event: {payload.get('event', 'unknown')}",
+        {"event": payload.get("event"), "device": payload.get("device")},
+    )
 
     if payload.get("event") == "request_pair":
         await send_pairing_details(message, message.from_user.id)
@@ -2330,6 +2638,7 @@ async def callbacks(callback: CallbackQuery) -> None:
     if not await ensure_callback_admin(callback):
         return
     action = callback.data
+    audit_callback(callback, "callback", f"Pressed: {action}", {"callback_data": action})
 
     if action == "main_menu":
         await callback.answer()
@@ -2347,6 +2656,14 @@ async def callbacks(callback: CallbackQuery) -> None:
             return
         await callback.answer()
         await show_bot_screen(callback, access_text(), reply_markup=access_keyboard())
+        return
+
+    if action == "audit_info":
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Only root admin can read audit log.", show_alert=True)
+            return
+        await callback.answer()
+        await show_bot_screen(callback, audit_text(20), reply_markup=access_keyboard())
         return
 
     if action == "guide":
@@ -2650,8 +2967,11 @@ async def run_bot() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is missing. Add it to Railway variables.")
 
-    web_server = start_web_app()
     bot = Bot(token=BOT_TOKEN)
+    global BOT_INSTANCE, BOT_LOOP
+    BOT_INSTANCE = bot
+    BOT_LOOP = asyncio.get_running_loop()
+    web_server = start_web_app()
     dp = Dispatcher()
     dp.message.register(send_start, CommandStart())
     dp.message.register(send_start, Command("help"))
@@ -2659,6 +2979,7 @@ async def run_bot() -> None:
     dp.message.register(send_settings, Command("settings"))
     dp.message.register(send_my_id, Command("myid"))
     dp.message.register(send_admins, Command("admins"))
+    dp.message.register(send_audit, Command("audit"))
     dp.message.register(send_grant_access, Command("grant"))
     dp.message.register(send_revoke_access, Command("revoke"))
     dp.message.register(send_status, Command("status"))
@@ -2684,6 +3005,8 @@ async def run_bot() -> None:
     finally:
         web_server.shutdown()
         web_server.server_close()
+        BOT_INSTANCE = None
+        BOT_LOOP = None
 
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ import android.net.NetworkCapabilities;
 import android.os.BatteryManager;
 import android.os.Build;
 
+import org.json.JSONObject;
+
 final class AgentTelemetry {
     private AgentTelemetry() {
     }
@@ -16,27 +18,31 @@ final class AgentTelemetry {
     static String toJson(Context context) {
         BatteryStatus battery = batteryStatus(context);
         android.content.SharedPreferences prefs = AgentConfig.prefs(context);
-        return "{"
-                + "\"battery_percent\":" + battery.percent + ","
-                + "\"charging\":" + battery.charging + ","
-                + "\"network\":\"" + escape(networkType(context)) + "\","
-                + "\"android\":\"" + escape(Build.VERSION.RELEASE) + "\","
-                + "\"manufacturer\":\"" + escape(Build.MANUFACTURER) + "\","
-                + "\"model\":\"" + escape(Build.MODEL) + "\","
-                + "\"full_control\":" + BuildConfig.FULL_CONTROL + ","
-                + "\"accessibility\":" + (BuildConfig.FULL_CONTROL && TouchControlService.isReady()) + ","
-                + "\"screen_streaming\":" + (BuildConfig.FULL_CONTROL && ScreenCaptureService.isRunning()) + ","
-                + "\"loop_ms\":" + prefs.getLong(AgentConfig.KEY_LAST_LOOP_MS, 0) + ","
-                + "\"command_ms\":" + prefs.getLong(AgentConfig.KEY_LAST_COMMAND_MS, 0) + ","
-                + "\"gesture_ms\":" + prefs.getLong(AgentConfig.KEY_LAST_GESTURE_MS, 0) + ","
-                + "\"gesture_result\":\"" + escape(prefs.getString(AgentConfig.KEY_LAST_GESTURE_RESULT, "")) + "\","
-                + "\"error_count\":" + prefs.getInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0) + ","
-                + "\"last_error\":\"" + escape(prefs.getString(AgentConfig.KEY_LAST_ERROR, "")) + "\","
-                + "\"screen_ms\":" + ScreenCaptureService.getLastUploadMs() + ","
-                + "\"screen_frames\":" + ScreenCaptureService.getUploadedFrames() + ","
-                + "\"screen_dropped\":" + ScreenCaptureService.getDroppedFrames() + ","
-                + "\"screen_error\":\"" + escape(ScreenCaptureService.getLastError()) + "\""
-                + "}";
+        try {
+            return new JSONObject()
+                    .put("battery_percent", battery.percent)
+                    .put("charging", battery.charging)
+                    .put("network", networkType(context))
+                    .put("android", Build.VERSION.RELEASE)
+                    .put("manufacturer", Build.MANUFACTURER)
+                    .put("model", Build.MODEL)
+                    .put("full_control", BuildConfig.FULL_CONTROL)
+                    .put("accessibility", BuildConfig.FULL_CONTROL && TouchControlService.isReady())
+                    .put("screen_streaming", BuildConfig.FULL_CONTROL && ScreenCaptureService.isRunning())
+                    .put("loop_ms", prefs.getLong(AgentConfig.KEY_LAST_LOOP_MS, 0))
+                    .put("command_ms", prefs.getLong(AgentConfig.KEY_LAST_COMMAND_MS, 0))
+                    .put("gesture_ms", prefs.getLong(AgentConfig.KEY_LAST_GESTURE_MS, 0))
+                    .put("gesture_result", prefs.getString(AgentConfig.KEY_LAST_GESTURE_RESULT, ""))
+                    .put("error_count", prefs.getInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0))
+                    .put("last_error", prefs.getString(AgentConfig.KEY_LAST_ERROR, ""))
+                    .put("screen_ms", ScreenCaptureService.getLastUploadMs())
+                    .put("screen_frames", ScreenCaptureService.getUploadedFrames())
+                    .put("screen_dropped", ScreenCaptureService.getDroppedFrames())
+                    .put("screen_error", ScreenCaptureService.getLastError())
+                    .toString();
+        } catch (Exception exc) {
+            return "{}";
+        }
     }
 
     private static BatteryStatus batteryStatus(Context context) {
@@ -82,17 +88,6 @@ final class AgentTelemetry {
             return "ethernet";
         }
         return "other";
-    }
-
-    private static String escape(String value) {
-        if (value == null) {
-            return "";
-        }
-        return value
-                .replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r");
     }
 
     private static final class BatteryStatus {

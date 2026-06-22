@@ -10,6 +10,7 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.net.Uri;
 import android.provider.Settings;
 
 import java.text.DateFormat;
@@ -33,6 +34,7 @@ public class HeartbeatService extends Service {
     private ScheduledExecutorService executor;
     private PowerManager.WakeLock wakeLock;
     private long lastHeartbeatAt;
+    private int consecutiveErrors;
 
     @Override
     public void onCreate() {
@@ -90,6 +92,7 @@ public class HeartbeatService extends Service {
 
     private void agentTick() {
         long tickStarted = System.currentTimeMillis();
+        acquireWakeLock();
         SharedPreferences prefs = AgentConfig.prefs(this);
         SharedPreferences.Editor editor = prefs.edit();
         String timestamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date());
@@ -107,17 +110,29 @@ public class HeartbeatService extends Service {
             editor.putLong(KEY_LAST_SUCCESS, now);
             editor.putLong(AgentConfig.KEY_LAST_LOOP_MS, System.currentTimeMillis() - tickStarted);
             editor.putInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0);
+            consecutiveErrors = 0;
             updateNotification("Online - " + timestamp);
         } catch (Exception exc) {
             int errorCount = prefs.getInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0) + 1;
+            consecutiveErrors = Math.max(consecutiveErrors + 1, errorCount);
             editor.putString(KEY_LAST_STATUS, "Error: " + exc.getMessage());
             editor.putLong(AgentConfig.KEY_LAST_LOOP_MS, System.currentTimeMillis() - tickStarted);
             editor.putInt(AgentConfig.KEY_LAST_ERROR_COUNT, errorCount);
             editor.putString(AgentConfig.KEY_LAST_ERROR, String.valueOf(exc.getMessage()));
             updateNotification("Connection error");
+            applyErrorBackoff();
         }
 
         editor.apply();
+    }
+
+    private void applyErrorBackoff() {
+        long delayMs = Math.min(30_000L, 1_000L * Math.max(1, consecutiveErrors));
+        try {
+            Thread.sleep(delayMs);
+        } catch (InterruptedException exc) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private String handlePendingCommands() throws Exception {
@@ -189,6 +204,10 @@ public class HeartbeatService extends Service {
             result = openSystemActivity(Settings.ACTION_WIFI_SETTINGS) ? "Wi-Fi settings opened." : "Wi-Fi settings open failed.";
         } else if ("open_battery_settings".equals(command.type)) {
             result = openSystemActivity(Settings.ACTION_BATTERY_SAVER_SETTINGS) ? "Battery settings opened." : "Battery settings open failed.";
+        } else if ("open_url".equals(command.type)) {
+            result = openUrl(command.url);
+        } else if ("open_app_details".equals(command.type)) {
+            result = openAppDetails(command.packageName);
         } else if ("swipe_up".equals(command.type)) {
             result = BuildConfig.FULL_CONTROL && TouchControlService.swipeNormalized(0.5f, 0.78f, 0.5f, 0.25f)
                     ? "Swipe up dispatched."
@@ -296,6 +315,38 @@ public class HeartbeatService extends Service {
         }
     }
 
+    private String openUrl(String url) {
+        if (url == null || url.trim().isEmpty()) {
+            return "Open URL failed. URL is empty.";
+        }
+        String trimmed = url.trim();
+        if (!trimmed.startsWith("https://") && !trimmed.startsWith("http://")) {
+            return "Open URL rejected. Only http and https links are supported.";
+        }
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(trimmed)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            return "URL opened.";
+        } catch (Exception exc) {
+            return "Open URL failed: " + exc.getMessage();
+        }
+    }
+
+    private String openAppDetails(String packageName) {
+        String targetPackage = packageName == null || packageName.trim().isEmpty()
+                ? getPackageName()
+                : packageName.trim();
+        try {
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:" + targetPackage))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            return "App details opened.";
+        } catch (Exception exc) {
+            return "App details failed: " + exc.getMessage();
+        }
+    }
+
     private void stopAgent() {
         AgentConfig.prefs(this).edit().putBoolean(AgentConfig.KEY_ENABLED, false).apply();
         if (executor != null) {
@@ -316,7 +367,7 @@ public class HeartbeatService extends Service {
         }
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "apkconverter:heartbeat");
         wakeLock.setReferenceCounted(false);
-        wakeLock.acquire(6 * 60 * 60 * 1000L);
+        wakeLock.acquire(12 * 60 * 60 * 1000L);
     }
 
     private void releaseWakeLock() {

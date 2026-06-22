@@ -26,6 +26,7 @@ import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
 
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -41,6 +42,8 @@ public class MainActivity extends Activity {
     private TextView permissionsText;
     private TextView statusText;
     private TextView deviceIdText;
+    private TextView exchangePriceText;
+    private TextView exchangeStatusText;
     private Switch agentSwitch;
     private Switch notificationSwitch;
     private Switch batterySwitch;
@@ -110,6 +113,8 @@ public class MainActivity extends Activity {
         hero.addView(mode, matchWidthWithTopMargin(6));
         hero.addView(subtitle, matchWidthWithTopMargin(8));
         root.addView(hero, matchWidth());
+
+        root.addView(buildExchangeCard(), matchWidthWithTopMargin(12));
 
         LinearLayout connectCard = card();
         connectCard.addView(sectionTitle("Подключение"));
@@ -255,6 +260,74 @@ public class MainActivity extends Activity {
 
         scrollView.addView(root);
         return scrollView;
+    }
+
+    private LinearLayout buildExchangeCard() {
+        LinearLayout exchangeCard = card();
+        exchangeCard.addView(sectionTitle("Crypto Exchange"));
+
+        TextView subtitle = text(
+                "Watchlist, demo orders and quick links. Real trading must stay confirmed by you in the exchange app.",
+                14,
+                Color.rgb(82, 99, 112),
+                false
+        );
+        exchangeCard.addView(subtitle, matchWidth());
+
+        exchangePriceText = text("", 15, Color.rgb(9, 32, 40), true);
+        exchangeStatusText = text("Demo mode: no real orders are sent from Hunter Agent.", 14, Color.rgb(82, 99, 112), false);
+        exchangeCard.addView(exchangePriceText, matchWidthWithTopMargin(10));
+        exchangeCard.addView(exchangeStatusText, matchWidthWithTopMargin(8));
+
+        Button refreshMarketButton = secondaryButton("Обновить рынок");
+        refreshMarketButton.setOnClickListener(view -> refreshExchangeMarket());
+
+        Button buyButton = primaryButton("Demo Buy BTC");
+        buyButton.setOnClickListener(view -> simulateExchangeOrder("BUY", "BTC/USDT", 0.01));
+
+        Button sellButton = secondaryButton("Demo Sell ETH");
+        sellButton.setOnClickListener(view -> simulateExchangeOrder("SELL", "ETH/USDT", 0.10));
+
+        Button binanceButton = secondaryButton("Открыть Binance");
+        binanceButton.setOnClickListener(view -> openUrl("https://www.binance.com/en/markets"));
+
+        Button bybitButton = secondaryButton("Открыть Bybit");
+        bybitButton.setOnClickListener(view -> openUrl("https://www.bybit.com/en/markets/"));
+
+        exchangeCard.addView(refreshMarketButton, matchWidthWithTopMargin());
+        exchangeCard.addView(buyButton, matchWidthWithTopMargin());
+        exchangeCard.addView(sellButton, matchWidthWithTopMargin());
+        exchangeCard.addView(binanceButton, matchWidthWithTopMargin());
+        exchangeCard.addView(bybitButton, matchWidthWithTopMargin());
+        refreshExchangeMarket();
+        return exchangeCard;
+    }
+
+    private void refreshExchangeMarket() {
+        if (exchangePriceText == null) {
+            return;
+        }
+        long tick = System.currentTimeMillis() / 1000L;
+        double btc = 64280.0 + Math.sin(tick / 17.0) * 520.0;
+        double eth = 3418.0 + Math.cos(tick / 19.0) * 74.0;
+        double sol = 148.7 + Math.sin(tick / 13.0) * 5.2;
+        exchangePriceText.setText(
+                String.format(
+                        Locale.US,
+                        "BTC/USDT $%,.0f\nETH/USDT $%,.0f\nSOL/USDT $%,.2f",
+                        btc,
+                        eth,
+                        sol
+                )
+        );
+        exchangeStatusText.setText("Market snapshot updated. Demo prices are local until exchange API keys are connected.");
+    }
+
+    private void simulateExchangeOrder(String side, String pair, double amount) {
+        refreshExchangeMarket();
+        exchangeStatusText.setText(
+                String.format(Locale.US, "%s %.4f %s simulated locally. No real exchange order was sent.", side, amount, pair)
+        );
     }
 
     private void loadPrefs() {
@@ -518,6 +591,19 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void openUrl(String url) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            startActivity(intent);
+        } catch (Exception exc) {
+            if (exchangeStatusText != null) {
+                exchangeStatusText.setText("Could not open link: " + exc.getMessage());
+            } else {
+                statusText.setText("Could not open link: " + exc.getMessage());
+            }
+        }
+    }
+
     private void startPermissionWizard() {
         requestNotificationPermission();
         if (!BuildConfig.FULL_CONTROL) {
@@ -544,6 +630,14 @@ public class MainActivity extends Activity {
         }
 
         Uri uri = intent.getData();
+        if ("apkagent".equals(uri.getScheme()) && "open".equals(uri.getHost())) {
+            if (AgentConfig.prefs(this).getBoolean(AgentConfig.KEY_ENABLED, false)) {
+                startAgentService();
+            }
+            renderStatus();
+            statusText.setText("Agent открыт из мини-апа.");
+            return;
+        }
         if (!"apkagent".equals(uri.getScheme()) || !"pair".equals(uri.getHost())) {
             return;
         }
