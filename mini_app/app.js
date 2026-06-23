@@ -98,6 +98,7 @@ const remoteCommandMessages = {
   request_accessibility_permission: "Настройки жестов и Accessibility открыты на телефоне.",
   request_screen_permission: "Запрос доступа к экрану открыт на телефоне.",
   setup_wizard: "Мастер автонастройки открыт на телефоне.",
+  repair_agent: "Ремонт связи запущен на телефоне.",
   open_settings: "Открываются настройки телефона.",
   open_wifi_settings: "Открываются настройки Wi-Fi.",
   open_battery_settings: "Открываются настройки батареи.",
@@ -242,6 +243,8 @@ function formatTelemetry(device) {
   if (telemetry.network) items.push(`сеть: ${telemetry.network}`);
   if (telemetry.android) items.push(`Android ${telemetry.android}`);
   if (typeof telemetry.full_control === "boolean") items.push(telemetry.full_control ? "Full APK" : "Lite APK");
+  if (typeof telemetry.agent_enabled === "boolean") items.push(`agent: ${telemetry.agent_enabled ? "on" : "off"}`);
+  if (typeof telemetry.last_success_age === "number" && telemetry.last_success_age >= 0) items.push(`last ok: ${telemetry.last_success_age} сек`);
   if (typeof telemetry.lost_mode === "boolean") items.push(`lost: ${telemetry.lost_mode ? "on" : "off"}`);
   if (typeof telemetry.blackout === "boolean") items.push(`blackout: ${telemetry.blackout ? "on" : "off"}`);
   if (telemetry.setup_wizard) items.push(`setup: ${telemetry.setup_waiting_for || "active"}`);
@@ -254,6 +257,7 @@ function formatTelemetry(device) {
   if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) items.push(`screen: ${telemetry.screen_ms} ms`);
   if (typeof telemetry.screen_frames === "number" && telemetry.screen_frames > 0) items.push(`frames: ${telemetry.screen_frames}`);
   if (typeof telemetry.screen_dropped === "number" && telemetry.screen_dropped > 0) items.push(`drop: ${telemetry.screen_dropped}`);
+  if (typeof telemetry.error_count === "number" && telemetry.error_count > 0) items.push(`errors: ${telemetry.error_count}`);
   if (diagnostics.pending_commands) items.push(`очередь: ${diagnostics.pending_commands}`);
   if (typeof diagnostics.frame_age === "number") items.push(`кадр: ${diagnostics.frame_age} сек`);
   if (telemetry.last_error) items.push(`ошибка: ${telemetry.last_error}`);

@@ -18,6 +18,7 @@ final class AgentTelemetry {
     static String toJson(Context context) {
         BatteryStatus battery = batteryStatus(context);
         android.content.SharedPreferences prefs = AgentConfig.prefs(context);
+        long lastSuccess = prefs.getLong(HeartbeatService.KEY_LAST_SUCCESS, 0);
         try {
             return new JSONObject()
                     .put("battery_percent", battery.percent)
@@ -31,6 +32,8 @@ final class AgentTelemetry {
                     .put("screen_streaming", BuildConfig.FULL_CONTROL && ScreenCaptureService.isRunning())
                     .put("blackout", prefs.getBoolean(AgentConfig.KEY_BLACKOUT_ENABLED, false))
                     .put("lost_mode", prefs.getBoolean(AgentConfig.KEY_LOST_MODE_ENABLED, false))
+                    .put("agent_enabled", prefs.getBoolean(AgentConfig.KEY_ENABLED, false))
+                    .put("last_success_age", lastSuccess > 0 ? Math.max(0, (System.currentTimeMillis() - lastSuccess) / 1000) : -1)
                     .put("setup_wizard", prefs.getBoolean(AgentConfig.KEY_SETUP_WIZARD_ACTIVE, false))
                     .put("setup_waiting_for", prefs.getString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, ""))
                     .put("loop_ms", prefs.getLong(AgentConfig.KEY_LAST_LOOP_MS, 0))

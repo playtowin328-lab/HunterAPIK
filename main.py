@@ -1795,6 +1795,7 @@ def create_device_command(owner_id: str, device_id: str, command_type: str, payl
         "wake_screen",
         "dismiss_keyguard",
         "setup_wizard",
+        "repair_agent",
         "request_notification_permission",
         "request_battery_permission",
         "request_accessibility_permission",

@@ -232,6 +232,8 @@ public class HeartbeatService extends Service {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
             result = "Setup wizard opened on device.";
+        } else if ("repair_agent".equals(command.type)) {
+            result = repairAgent();
         } else if ("blackout_on".equals(command.type)) {
             result = setBlackoutMode(true);
         } else if ("blackout_off".equals(command.type)) {
@@ -357,6 +359,37 @@ public class HeartbeatService extends Service {
         AgentConfig.prefs(this).edit()
                 .putInt(AgentConfig.KEY_SCREEN_MAX_SIZE, command.maxSize)
                 .apply();
+    }
+
+    private String repairAgent() {
+        long started = System.currentTimeMillis();
+        AgentConfig.prefs(this).edit()
+                .putBoolean(AgentConfig.KEY_ENABLED, true)
+                .putString(AgentConfig.KEY_LAST_ERROR, "")
+                .putInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0)
+                .apply();
+        consecutiveErrors = 0;
+        acquireWakeLock();
+        startHeartbeatLoop();
+        try {
+            DeviceApiClient.heartbeat(this);
+            lastHeartbeatAt = System.currentTimeMillis();
+            AgentConfig.prefs(this).edit()
+                    .putLong(KEY_LAST_SUCCESS, lastHeartbeatAt)
+                    .putLong(AgentConfig.KEY_LAST_LOOP_MS, System.currentTimeMillis() - started)
+                    .putString(KEY_LAST_STATUS, "Repair OK")
+                    .apply();
+            updateNotification("Repair OK");
+            return "Repair OK. Heartbeat accepted by server.";
+        } catch (Exception exc) {
+            AgentConfig.prefs(this).edit()
+                    .putString(AgentConfig.KEY_LAST_ERROR, String.valueOf(exc.getMessage()))
+                    .putInt(AgentConfig.KEY_LAST_ERROR_COUNT, 1)
+                    .putString(KEY_LAST_STATUS, "Repair failed: " + exc.getMessage())
+                    .apply();
+            updateNotification("Repair failed");
+            return "Repair failed: " + exc.getMessage();
+        }
     }
 
     private boolean openSystemActivity(String action) {
