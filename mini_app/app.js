@@ -38,6 +38,10 @@ const remoteScreenImage = $("#remoteScreenImage");
 const remoteControlNote = $("#remoteControlNote");
 const remotePanelTextInput = $("#remotePanelTextInput");
 const remotePanelSendText = $("#remotePanelSendText");
+const remoteConnectionStatus = $("#remoteConnectionStatus");
+const remoteBatteryStatus = $("#remoteBatteryStatus");
+const remoteSecurityStatus = $("#remoteSecurityStatus");
+const remoteCommandStatus = $("#remoteCommandStatus");
 
 const telegramUser = tg?.initDataUnsafe?.user;
 const profileName = telegramUser?.first_name || telegramUser?.username || "Я";
@@ -254,6 +258,28 @@ function formatDeviceNote(device) {
   return diagnostics ? `${healthHint} Последнее: ${diagnostics}` : healthHint;
 }
 
+function formatRemoteStatus(device) {
+  const telemetry = device?.telemetry || {};
+  const diagnostics = device?.diagnostics || {};
+  const battery = typeof telemetry.battery_percent === "number" && telemetry.battery_percent >= 0
+    ? `${telemetry.battery_percent}%${telemetry.charging ? " · заряд" : ""}`
+    : "нет данных";
+  const security = [
+    telemetry.lost_mode ? "Lost" : "",
+    telemetry.blackout ? "Black" : "",
+    telemetry.accessibility ? "жесты" : "",
+    telemetry.screen_streaming ? "экран" : "",
+  ].filter(Boolean).join(" · ") || "готово";
+  const pending = Number(diagnostics.pending_commands || 0);
+  const delivered = Number(diagnostics.delivered_commands || 0);
+  const last = diagnostics.last_command?.type ? ` · ${diagnostics.last_command.type}` : "";
+  return {
+    connection: device?.online ? (device.health?.label || "Online") : "Offline",
+    battery,
+    security,
+    commands: pending ? `ждет ${pending}${last}` : (delivered ? `дост. ${delivered}${last}` : `чисто${last}`),
+  };
+}
 function canControlDevice(device) {
   return Boolean(device?.online && device?.health?.state !== "revoked");
 }
@@ -466,6 +492,11 @@ function renderRemotePanel(restartScreen = false) {
 
   remotePanel.classList.remove("hidden");
   remoteDeviceTitle.textContent = device.name;
+  const remoteStatus = formatRemoteStatus(device);
+  remoteConnectionStatus.textContent = remoteStatus.connection;
+  remoteBatteryStatus.textContent = remoteStatus.battery;
+  remoteSecurityStatus.textContent = remoteStatus.security;
+  remoteCommandStatus.textContent = remoteStatus.commands;
   remoteDeviceMeta.textContent = `${device.platform || "unknown"} · ${device.agent || "agent"} · ${device.health?.label || (device.online ? "Online" : "Offline")}`;
   updateQualityButtons(device, remotePanel, ".remote-quality-button");
   remoteControlNote.textContent = formatDeviceNote(device);
@@ -597,6 +628,7 @@ function render() {
     const card = template.content.firstElementChild.cloneNode(true);
     const healthState = device.health?.state || (device.online ? "online" : "offline");
     card.classList.toggle("offline", !device.online);
+    card.classList.toggle("selected", device.device_id === selectedDeviceId);
     card.dataset.health = healthState;
     $("h2", card).textContent = device.name;
     $(".status-pill", card).textContent = device.health?.label || (device.online ? "Online" : "Offline");
