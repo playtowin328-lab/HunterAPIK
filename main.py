@@ -53,6 +53,7 @@ ADMIN_IDS = {
 WEBAPP_HOST = os.getenv("WEBAPP_HOST", "0.0.0.0")
 WEBAPP_PORT = int(os.getenv("PORT", os.getenv("WEBAPP_PORT", "8080")))
 DEVICE_TTL_SECONDS = int(os.getenv("DEVICE_TTL_SECONDS", "300"))
+DEVICE_MONITOR_INTERVAL_SECONDS = int(os.getenv("DEVICE_MONITOR_INTERVAL_SECONDS", "60"))
 BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
 STORAGE_DIR.mkdir(exist_ok=True)
@@ -69,6 +70,8 @@ PC_AGENT_EXE_NAME = "hunter-pc-agent.exe"
 DEVICE_DB_PATH = STORAGE_DIR / "devices.json"
 PAIRING_DB_PATH = STORAGE_DIR / "pairing_codes.json"
 COMMAND_DB_PATH = STORAGE_DIR / "device_commands.json"
+DEVICE_NOTIFY_STATE_PATH = STORAGE_DIR / "device_notify_state.json"
+DEVICE_NOTIFY_LOCK = threading.Lock()
 SCREEN_DIR = STORAGE_DIR / "screens"
 SCREEN_DIR.mkdir(exist_ok=True)
 BUILD_ASSET_DIR = STORAGE_DIR / "build_assets"
@@ -374,6 +377,7 @@ AUDIT_FILTERS = {
         "device_paired",
         "device_repaired",
         "device_manage",
+        "device_alert",
         "pairing_code_created",
     ],
     "commands": ["device_command"],
@@ -483,6 +487,129 @@ def audit_callback(callback: CallbackQuery, action: str, detail: str = "", metad
     )
 
 
+def load_device_notify_state() -> dict:
+    try:
+        return json.loads(DEVICE_NOTIFY_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {"devices": {}}
+
+
+def save_device_notify_state(data: dict) -> None:
+    DEVICE_NOTIFY_STATE_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def device_notify_key(owner_id: str, device_id: str) -> str:
+    return f"{owner_id}:{device_id}"
+
+
+def battery_bucket(percent: int | None) -> str:
+    if percent is None or percent < 0:
+        return "unknown"
+    if percent <= 5:
+        return "critical"
+    if percent <= 10:
+        return "very_low"
+    if percent <= 20:
+        return "low"
+    return "ok"
+
+
+def device_notify_snapshot(device: dict) -> dict:
+    telemetry = device.get("telemetry") or {}
+    diagnostics = device.get("diagnostics") or {}
+    health = device.get("health") or {}
+    battery_percent = telemetry.get("battery_percent")
+    try:
+        battery_percent = int(battery_percent)
+    except (TypeError, ValueError):
+        battery_percent = -1
+    return {
+        "online": bool(device.get("online")),
+        "health_state": str(health.get("state") or ""),
+        "battery_bucket": battery_bucket(battery_percent),
+        "battery_percent": battery_percent,
+        "charging": bool(telemetry.get("charging")),
+        "network": str(telemetry.get("network") or ""),
+        "lost_mode": bool(telemetry.get("lost_mode")),
+        "blackout": bool(telemetry.get("blackout")),
+        "accessibility": bool(telemetry.get("accessibility")),
+        "screen_streaming": bool(telemetry.get("screen_streaming")),
+        "last_error": str(telemetry.get("last_error") or "")[:180],
+        "screen_error": str(telemetry.get("screen_error") or "")[:180],
+        "pending_commands": int(diagnostics.get("pending_commands") or 0),
+    }
+
+
+def device_alert_detail(device: dict, text: str) -> str:
+    return f"{device.get('name', 'Unknown')} ({device.get('platform', 'unknown')}, {device.get('agent', 'agent')}): {text}"
+
+
+def notify_device_alert(device: dict, text: str, metadata: dict | None = None) -> None:
+    audit_event(
+        "device_monitor",
+        "device_alert",
+        device_alert_detail(device, text),
+        {
+            "owner_id": device.get("owner_id"),
+            "device_id": device.get("device_id"),
+            "name": device.get("name"),
+            **(metadata or {}),
+        },
+        actor_name="Device monitor",
+        notify=True,
+    )
+
+
+def process_device_notifications(device: dict, force: bool = False) -> None:
+    if not device.get("owner_id") or not device.get("device_id"):
+        return
+    with DEVICE_NOTIFY_LOCK:
+        state = load_device_notify_state()
+        devices_state = state.setdefault("devices", {})
+        key = device_notify_key(device["owner_id"], device["device_id"])
+        previous = devices_state.get(key) or {}
+        snapshot = device_notify_snapshot(device)
+
+        alerts: list[tuple[str, dict]] = []
+        if previous:
+            if previous.get("online") is not True and snapshot["online"]:
+                alerts.append(("устройство снова online", {"kind": "online"}))
+            if previous.get("online") is True and not snapshot["online"]:
+                alerts.append(("устройство offline или давно не присылало heartbeat", {"kind": "offline"}))
+            if previous.get("battery_bucket") != snapshot["battery_bucket"] and snapshot["battery_bucket"] in {"low", "very_low", "critical"}:
+                alerts.append((f"низкая батарея: {snapshot['battery_percent']}%", {"kind": "battery", "bucket": snapshot["battery_bucket"]}))
+            if previous.get("charging") != snapshot["charging"] and snapshot["battery_percent"] >= 0:
+                alerts.append(("зарядка подключена" if snapshot["charging"] else "зарядка отключена", {"kind": "charging"}))
+            if previous.get("network") and previous.get("network") != snapshot["network"] and snapshot["network"]:
+                alerts.append((f"сеть изменилась: {previous.get('network')} -> {snapshot['network']}", {"kind": "network"}))
+            if previous.get("lost_mode") != snapshot["lost_mode"]:
+                alerts.append(("Lost Mode включен" if snapshot["lost_mode"] else "Lost Mode выключен", {"kind": "lost_mode"}))
+            if previous.get("blackout") != snapshot["blackout"]:
+                alerts.append(("черный экран включен" if snapshot["blackout"] else "черный экран выключен", {"kind": "blackout"}))
+            if previous.get("accessibility") is True and not snapshot["accessibility"]:
+                alerts.append(("Accessibility/жесты больше не активны", {"kind": "accessibility"}))
+            if previous.get("screen_streaming") != snapshot["screen_streaming"]:
+                alerts.append(("трансляция экрана запущена" if snapshot["screen_streaming"] else "трансляция экрана остановлена", {"kind": "screen"}))
+            if not previous.get("last_error") and snapshot["last_error"]:
+                alerts.append((f"ошибка агента: {snapshot['last_error']}", {"kind": "agent_error"}))
+            if not previous.get("screen_error") and snapshot["screen_error"]:
+                alerts.append((f"ошибка экрана: {snapshot['screen_error']}", {"kind": "screen_error"}))
+            if int(previous.get("pending_commands") or 0) < 3 <= snapshot["pending_commands"]:
+                alerts.append((f"очередь команд растет: {snapshot['pending_commands']} pending", {"kind": "command_queue"}))
+            if previous.get("health_state") not in {"degraded", "warning", "revoked"} and snapshot["health_state"] in {"degraded", "warning", "revoked"}:
+                alerts.append((f"состояние требует внимания: {snapshot['health_state']}", {"kind": "health"}))
+        elif force:
+            alerts.append(("устройство добавлено в мониторинг уведомлений", {"kind": "monitor_started"}))
+
+        devices_state[key] = {**snapshot, "updated_at": now_ts()}
+        save_device_notify_state(state)
+    for detail, metadata in alerts[:6]:
+        notify_device_alert(device, detail, metadata)
+
+
 def audit_text(limit: int = 20, category: str = "", actor_id: str = "") -> str:
     rows = list_audit_events(limit, category, actor_id)
     if not rows:
@@ -588,6 +715,7 @@ def root_settings_text() -> str:
             f"Storage: {STORAGE_DIR}",
             f"DB: {DB_PATH}",
             f"Device TTL: {DEVICE_TTL_SECONDS}s",
+            f"Device monitor: every {DEVICE_MONITOR_INTERVAL_SECONDS}s",
             f"Pairing TTL: {PAIRING_TTL_SECONDS}s",
             f"GitHub repo: {GITHUB_REPO or 'missing'}",
             f"GitHub token: {'set' if GITHUB_TOKEN else 'missing'}",
@@ -2178,6 +2306,14 @@ def public_device(device: dict) -> dict:
     return item
 
 
+def enrich_device_runtime(device: dict) -> dict:
+    item = dict(device)
+    item["online"] = now_ts() - int(item.get("last_seen") or 0) <= DEVICE_TTL_SECONDS
+    item["diagnostics"] = device_diagnostics(item["owner_id"], item["device_id"])
+    item["health"] = device_health(item, item["diagnostics"])
+    return item
+
+
 def validate_telegram_init_data(init_data: str) -> dict | None:
     if not BOT_TOKEN or not init_data:
         return None
@@ -2731,6 +2867,8 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             device_id = str(payload.get("device_id", "")).strip()
             was_known = device_exists(owner_id, device_id) if owner_id and device_id else True
             device = upsert_device(payload)
+            monitored_device = enrich_device_runtime(device)
+            process_device_notifications(monitored_device)
             if not was_known:
                 audit_event(
                     device["owner_id"],
@@ -2748,7 +2886,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
 
-        self.send_json({"ok": True, "device": public_device(device)})
+        self.send_json({"ok": True, "device": public_device(monitored_device)})
 
     def handle_pair_claim(self) -> None:
         try:
@@ -2938,6 +3076,18 @@ def start_web_app() -> ThreadingHTTPServer:
     thread.start()
     print(f"Mini app server started on http://{WEBAPP_HOST}:{WEBAPP_PORT}")
     return server
+
+
+async def device_monitor_loop() -> None:
+    while True:
+        try:
+            for device in await asyncio.to_thread(list_all_devices):
+                process_device_notifications(device)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"Device monitor failed: {exc}")
+        await asyncio.sleep(max(15, DEVICE_MONITOR_INTERVAL_SECONDS))
 
 
 def image_to_pdf(image_path: Path, output_path: Path) -> None:
@@ -3465,6 +3615,7 @@ async def run_bot() -> None:
     BOT_INSTANCE = bot
     BOT_LOOP = asyncio.get_running_loop()
     web_server = start_web_app()
+    monitor_task = asyncio.create_task(device_monitor_loop())
     dp = Dispatcher()
     dp.message.register(send_start, CommandStart())
     dp.message.register(send_start, Command("help"))
@@ -3512,6 +3663,11 @@ async def run_bot() -> None:
         await dp.start_polling(bot)
     finally:
         BOT_POLLING_STATUS = "stopped"
+        monitor_task.cancel()
+        try:
+            await monitor_task
+        except asyncio.CancelledError:
+            pass
         web_server.shutdown()
         web_server.server_close()
         BOT_INSTANCE = None
