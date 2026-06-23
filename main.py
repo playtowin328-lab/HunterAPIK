@@ -2802,6 +2802,11 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     def handle_agent_page(self, parsed_url) -> None:
         query = parse_qs(parsed_url.query)
         owner_id = query.get("owner_id", [""])[0].strip()
+        pairing_code = ""
+        pairing_links: dict[str, str] = {}
+        if owner_id and len(owner_id) <= 64:
+            pairing_code = create_pairing_code(owner_id)
+            pairing_links = pair_links(pairing_code)
         apk_path = agent_apk_path()
         download_url = f"{public_server_url()}/{AGENT_APK_NAME}"
         release_url = release_apk_url()
@@ -2816,14 +2821,23 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         if owner_id:
             separator = "&" if "?" in mini_app_url else "?"
             mini_app_url = f"{mini_app_url}{separator}owner_id={quote(owner_id, safe='')}"
-        agent_open_link = f"apkagent://open?server={quote(public_server_url(), safe='')}"
-        if owner_id:
+        agent_open_link = pairing_links.get("app_link") or f"apkagent://open?server={quote(public_server_url(), safe='')}&setup=1"
+        if owner_id and "owner_id=" not in agent_open_link:
             agent_open_link = f"{agent_open_link}&owner_id={quote(owner_id, safe='')}"
         remote_ok = False
         remote_detail = "not checked"
         if not apk_path:
             remote_ok, remote_detail = probe_url(release_url, "HEAD")
         download_href = download_url if apk_path else release_url
+        pair_box = ""
+        if pairing_code:
+            pair_box = f"""
+      <div class="pairbox">
+        <strong>Р“РѕС‚РѕРІС‹Р№ РєРѕРґ РїРѕРґРєР»СЋС‡РµРЅРёСЏ</strong>
+        <code>{escape(pairing_code)}</code>
+        <a class="primary" href="{escape(agent_open_link, quote=True)}">РћС‚РєСЂС‹С‚СЊ Agent Рё РїРѕРґРєР»СЋС‡РёС‚СЊ</a>
+        <button class="ghost" onclick="navigator.clipboard.writeText('{escape(agent_open_link, quote=True)}')">РЎРєРѕРїРёСЂРѕРІР°С‚СЊ deep link</button>
+      </div>"""
         if apk_path:
             source_text = "APK готов на этом сервере."
         elif remote_ok:
@@ -2862,6 +2876,9 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     .grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }}
     .step {{ padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--soft); }}
     .step strong {{ display:block; margin-bottom:4px; color:var(--warn); }}
+    .pairbox {{ margin-top:12px; padding:12px; border:1px solid #456b57; border-radius:8px; background:#10251f; }}
+    .pairbox strong {{ display:block; margin-bottom:8px; color:#7ee0d3; }}
+    .pairbox code {{ margin-bottom:4px; font-size:22px; text-align:center; }}
     .note {{ border-color:#655326; background:#241f13; }}
     @media (max-width:640px) {{ .grid {{ grid-template-columns:1fr; }} h1 {{ font-size:26px; }} }}
   </style>
@@ -2875,6 +2892,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
       <a class="ghost" href="{escape(agent_open_link, quote=True)}">Открыть установленный Agent</a>
       {download_button}
       {mode_download_buttons}
+      {pair_box}
       <a class="ghost" href="{escape(actions_url, quote=True)}">Статус сборки APK</a>
       <a class="ghost" href="{escape(mini_app_url, quote=True)}">Открыть мини-ап</a>
     </section>

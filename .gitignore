@@ -9,3 +9,6 @@ logs/
 *.sqlite
 *.sqlite3
 .agent_device_id
+android_agent/.gradle/
+android_agent/build/
+android_agent/app/build/
