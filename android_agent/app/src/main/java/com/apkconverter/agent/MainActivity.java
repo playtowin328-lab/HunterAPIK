@@ -949,5 +949,6 @@ public class MainActivity extends Activity {
             screenSwitch.setChecked(true);
         }
         statusText.setText("Передача экрана запущена");
+        moveTaskToBack(true);
     }
 }

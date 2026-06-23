@@ -10,7 +10,9 @@ import android.content.SharedPreferences;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.net.Uri;
 import android.provider.Settings;
@@ -160,8 +162,12 @@ public class HeartbeatService extends Service {
                 result = "Screen preview is disabled in Lite build.";
                 status = "rejected";
             } else if (ScreenCaptureService.isRunning()) {
-                result = "Screen capture already running.";
+                saveScreenOptions(command);
+                result = revealBlackoutForScreenCapture(command)
+                        ? "Screen capture already running. Blackout paused briefly for remote preview."
+                        : "Screen capture already running.";
             } else {
+                saveScreenOptions(command);
                 Intent intent = new Intent(this, MainActivity.class)
                         .setAction(MainActivity.ACTION_REQUEST_SCREEN_CAPTURE)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -341,6 +347,12 @@ public class HeartbeatService extends Service {
                 : "Text input failed. Focus an editable field on the phone.";
     }
 
+    private void saveScreenOptions(DeviceApiClient.RemoteCommand command) {
+        AgentConfig.prefs(this).edit()
+                .putInt(AgentConfig.KEY_SCREEN_MAX_SIZE, command.maxSize)
+                .apply();
+    }
+
     private boolean openSystemActivity(String action) {
         try {
             Intent intent = new Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -433,6 +445,25 @@ public class HeartbeatService extends Service {
         return enabled
                 ? "Blackout mode enabled. The phone shows a black protected screen."
                 : "Blackout mode disabled.";
+    }
+
+    private boolean revealBlackoutForScreenCapture(DeviceApiClient.RemoteCommand command) {
+        if (!command.revealBlackout || !AgentConfig.prefs(this).getBoolean(AgentConfig.KEY_BLACKOUT_ENABLED, false)) {
+            return false;
+        }
+        Intent pauseIntent = new Intent(this, BlackoutActivity.class)
+                .setAction(BlackoutActivity.ACTION_PAUSE)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        startActivity(pauseIntent);
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (AgentConfig.prefs(this).getBoolean(AgentConfig.KEY_BLACKOUT_ENABLED, false)) {
+                Intent resumeIntent = new Intent(this, BlackoutActivity.class)
+                        .setAction(BlackoutActivity.ACTION_ON)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                startActivity(resumeIntent);
+            }
+        }, command.blackoutRevealMs);
+        return true;
     }
 
     private String playAlarm() {

@@ -24,6 +24,7 @@ final class AgentConfig {
     static final String KEY_LAST_GESTURE_RESULT = "last_gesture_result";
     static final String KEY_BLACKOUT_ENABLED = "blackout_enabled";
     static final String KEY_LOST_MODE_ENABLED = "lost_mode_enabled";
+    static final String KEY_SCREEN_MAX_SIZE = "screen_max_size";
 
     private AgentConfig() {
     }

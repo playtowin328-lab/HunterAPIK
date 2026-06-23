@@ -14,18 +14,37 @@ import android.widget.TextView;
 public class BlackoutActivity extends Activity {
     static final String ACTION_ON = "com.apkconverter.agent.BLACKOUT_ON";
     static final String ACTION_OFF = "com.apkconverter.agent.BLACKOUT_OFF";
+    static final String ACTION_PAUSE = "com.apkconverter.agent.BLACKOUT_PAUSE";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        if (ACTION_OFF.equals(getIntent().getAction())) {
-            setBlackoutEnabled(false);
-            finish();
+        if (handleControlIntent()) {
             return;
         }
         setBlackoutEnabled(true);
         configureWindow();
         setContentView(buildView());
+    }
+
+    @Override
+    protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleControlIntent();
+    }
+
+    private boolean handleControlIntent() {
+        if (ACTION_OFF.equals(getIntent().getAction())) {
+            setBlackoutEnabled(false);
+            finish();
+            return true;
+        }
+        if (ACTION_PAUSE.equals(getIntent().getAction())) {
+            finish();
+            return true;
+        }
+        return false;
     }
 
     @Override

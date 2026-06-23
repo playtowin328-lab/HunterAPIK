@@ -100,7 +100,10 @@ final class DeviceApiClient {
             String text = payload.optString("text", "");
             String url = payload.optString("url", "");
             String packageName = payload.optString("package", "");
-            return new RemoteCommand(commandId, type, x, y, endX, endY, text, url, packageName);
+            boolean revealBlackout = payload.optBoolean("reveal_blackout", false);
+            int blackoutRevealMs = Math.max(500, Math.min(3000, payload.optInt("blackout_reveal_ms", 1400)));
+            int maxSize = Math.max(360, Math.min(2160, payload.optInt("max_size", 960)));
+            return new RemoteCommand(commandId, type, x, y, endX, endY, text, url, packageName, revealBlackout, blackoutRevealMs, maxSize);
         });
     }
 
@@ -297,8 +300,11 @@ final class DeviceApiClient {
         final String text;
         final String url;
         final String packageName;
+        final boolean revealBlackout;
+        final int blackoutRevealMs;
+        final int maxSize;
 
-        RemoteCommand(String commandId, String type, float x, float y, float endX, float endY, String text, String url, String packageName) {
+        RemoteCommand(String commandId, String type, float x, float y, float endX, float endY, String text, String url, String packageName, boolean revealBlackout, int blackoutRevealMs, int maxSize) {
             this.commandId = commandId;
             this.type = type;
             this.x = x;
@@ -308,6 +314,9 @@ final class DeviceApiClient {
             this.text = text;
             this.url = url;
             this.packageName = packageName;
+            this.revealBlackout = revealBlackout;
+            this.blackoutRevealMs = blackoutRevealMs;
+            this.maxSize = maxSize;
         }
     }
 }

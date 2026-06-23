@@ -188,8 +188,12 @@ public class ScreenCaptureService extends Service {
             bitmap.copyPixelsFromBuffer(buffer);
 
             Bitmap cropped = Bitmap.createBitmap(bitmap, 0, 0, image.getWidth(), image.getHeight());
-            int targetWidth = Math.min(720, cropped.getWidth());
-            int targetHeight = Math.round((float) cropped.getHeight() * targetWidth / cropped.getWidth());
+            int maxSize = AgentConfig.prefs(this).getInt(AgentConfig.KEY_SCREEN_MAX_SIZE, 960);
+            maxSize = Math.max(360, Math.min(2160, maxSize));
+            int longestSide = Math.max(cropped.getWidth(), cropped.getHeight());
+            float scale = longestSide <= maxSize ? 1f : (float) maxSize / longestSide;
+            int targetWidth = Math.max(1, Math.round(cropped.getWidth() * scale));
+            int targetHeight = Math.max(1, Math.round(cropped.getHeight() * scale));
             Bitmap scaled = Bitmap.createScaledBitmap(cropped, targetWidth, targetHeight, true);
 
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();

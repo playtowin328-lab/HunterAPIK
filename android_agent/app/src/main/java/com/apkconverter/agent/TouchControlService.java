@@ -3,6 +3,9 @@ package com.apkconverter.agent;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityService.GestureResultCallback;
 import android.accessibilityservice.GestureDescription;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.graphics.Path;
 import android.os.Bundle;
 import android.os.SystemClock;
@@ -154,21 +157,20 @@ public class TouchControlService extends AccessibilityService {
     }
 
     static boolean inputText(String text) {
+        long started = SystemClock.elapsedRealtime();
         if (instance == null || text == null) {
+            recordGesture("input_text", 0, false, "service not ready");
             return false;
         }
 
-        AccessibilityNodeInfo node = instance.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+        AccessibilityNodeInfo node = findEditableNode();
         if (node == null) {
+            recordGesture("input_text", SystemClock.elapsedRealtime() - started, false, "editable focus not found");
             return false;
         }
 
-        CharSequence currentText = node.getText();
-        String value = currentText == null ? "" : currentText.toString();
-
-        Bundle args = new Bundle();
-        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value + text);
-        boolean result = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+        boolean result = appendText(node, text) || pasteText(node, text);
+        recordGesture("input_text", SystemClock.elapsedRealtime() - started, result, result ? "inserted" : "setText and paste rejected");
         node.recycle();
         return result;
     }
@@ -202,6 +204,83 @@ public class TouchControlService extends AccessibilityService {
         boolean result = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
         node.recycle();
         return result;
+    }
+
+    private static AccessibilityNodeInfo findEditableNode() {
+        if (instance == null) {
+            return null;
+        }
+        AccessibilityNodeInfo focus = instance.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+        if (focus != null && focus.isEditable()) {
+            return focus;
+        }
+        if (focus != null) {
+            focus.recycle();
+        }
+        AccessibilityNodeInfo root = instance.getRootInActiveWindow();
+        AccessibilityNodeInfo match = findEditableNode(root, true);
+        if (root != null) {
+            root.recycle();
+        }
+        return match;
+    }
+
+    private static AccessibilityNodeInfo findEditableNode(AccessibilityNodeInfo node, boolean allowFirstEditable) {
+        if (node == null) {
+            return null;
+        }
+        if (node.isEditable() && (node.isFocused() || allowFirstEditable)) {
+            return AccessibilityNodeInfo.obtain(node);
+        }
+        for (int index = 0; index < node.getChildCount(); index++) {
+            AccessibilityNodeInfo child = node.getChild(index);
+            AccessibilityNodeInfo match = findEditableNode(child, false);
+            if (child != null) {
+                child.recycle();
+            }
+            if (match != null) {
+                return match;
+            }
+        }
+        if (allowFirstEditable) {
+            for (int index = 0; index < node.getChildCount(); index++) {
+                AccessibilityNodeInfo child = node.getChild(index);
+                AccessibilityNodeInfo match = findEditableNode(child, true);
+                if (child != null) {
+                    child.recycle();
+                }
+                if (match != null) {
+                    return match;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean appendText(AccessibilityNodeInfo node, String text) {
+        node.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
+        CharSequence currentText = node.getText();
+        String value = currentText == null ? "" : currentText.toString();
+
+        Bundle appendArgs = new Bundle();
+        appendArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value + text);
+        if (node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, appendArgs)) {
+            return true;
+        }
+
+        Bundle replaceArgs = new Bundle();
+        replaceArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
+        return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, replaceArgs);
+    }
+
+    private static boolean pasteText(AccessibilityNodeInfo node, String text) {
+        ClipboardManager clipboard = (ClipboardManager) instance.getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null) {
+            return false;
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText("remote text", text));
+        node.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
+        return node.performAction(AccessibilityNodeInfo.ACTION_PASTE);
     }
 
     private static boolean performGlobalActionCompat(int action) {

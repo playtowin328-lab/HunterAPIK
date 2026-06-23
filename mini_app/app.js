@@ -183,7 +183,13 @@ function setDeviceQuality(device, value) {
 
 function qualityPayload(device) {
   const quality = getDeviceQuality(device);
-  return { stream: true, quality, max_size: qualityProfiles[quality].max_size };
+  return {
+    stream: true,
+    quality,
+    max_size: qualityProfiles[quality].max_size,
+    reveal_blackout: true,
+    blackout_reveal_ms: 1400,
+  };
 }
 
 function selectedDevice() {
