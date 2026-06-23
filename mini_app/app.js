@@ -42,6 +42,8 @@ const remoteConnectionStatus = $("#remoteConnectionStatus");
 const remoteBatteryStatus = $("#remoteBatteryStatus");
 const remoteSecurityStatus = $("#remoteSecurityStatus");
 const remoteCommandStatus = $("#remoteCommandStatus");
+const remoteActionLog = $("#remoteActionLog");
+const remoteLogClearButton = $("#remoteLogClearButton");
 
 const telegramUser = tg?.initDataUnsafe?.user;
 const profileName = telegramUser?.first_name || telegramUser?.username || "Я";
@@ -102,6 +104,8 @@ let selectedDeviceId = localStorage.getItem("hunter_selected_device_id") || "";
 let remotePanelCollapsed = false;
 let refreshInFlight = false;
 let refreshTimer = null;
+let remoteCommandBusy = false;
+let remoteLogItems = [];
 const screenPollers = new Map();
 const pendingScreenRequests = new Set();
 window.currentDeviceScope = "own";
@@ -399,6 +403,31 @@ function commandResultText(payload, fallback) {
   return `${command.status || "Статус"}:${result}`;
 }
 
+function renderRemoteLog() {
+  if (!remoteActionLog) return;
+  remoteActionLog.innerHTML = remoteLogItems.length
+    ? remoteLogItems.map((item) => `<li data-status="${item.status}"><span>${item.time}</span><strong>${item.title}</strong><p>${item.detail}</p></li>`).join("")
+    : '<li class="muted-log"><p>Пока нет действий в этой сессии.</p></li>';
+}
+
+function addRemoteLog(title, detail, status = "info") {
+  const time = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date());
+  remoteLogItems = [{ time, title, detail, status }, ...remoteLogItems].slice(0, 8);
+  renderRemoteLog();
+}
+
+function setRemoteBusy(value) {
+  remoteCommandBusy = value;
+  remotePanel.classList.toggle("busy", value);
+  [
+    ...$$(".remote-command-button", remotePanel),
+    $(".remote-screen-button", remotePanel),
+    $(".remote-stop-screen-button", remotePanel),
+    remotePanelSendText,
+  ].filter(Boolean).forEach((button) => {
+    button.disabled = value;
+  });
+}
 function manageDevice(device, action, payload = {}) {
   return apiJson(`${apiBaseUrl}/api/devices/manage`, {
     method: "POST",
@@ -464,17 +493,39 @@ async function sendSimpleDeviceCommand(device, type, controlNote, successText, p
     controlNote.textContent = "Сначала выбери устройство.";
     return;
   }
+  if (remoteCommandBusy && controlNote === remoteControlNote) {
+    controlNote.textContent = "Предыдущая команда еще выполняется.";
+    return;
+  }
   if (!canControlDevice(device)) {
     controlNote.textContent = formatHealthHint(device);
+    if (controlNote === remoteControlNote) {
+      addRemoteLog(type, "Устройство не готово к командам.", "warn");
+    }
     return;
   }
 
   try {
+    if (controlNote === remoteControlNote) {
+      setRemoteBusy(true);
+      addRemoteLog(type, "Команда отправлена, жду ответ агента.", "pending");
+    }
     controlNote.textContent = "Команда отправлена, жду ответ агента...";
     const result = await sendCommandAndWait(device, type, payload);
-    controlNote.textContent = commandResultText(result, successText);
+    const message = commandResultText(result, successText);
+    controlNote.textContent = message;
+    if (controlNote === remoteControlNote) {
+      addRemoteLog(type, message, result?.command?.status === "rejected" ? "warn" : "done");
+    }
   } catch (error) {
     controlNote.textContent = error.message;
+    if (controlNote === remoteControlNote) {
+      addRemoteLog(type, error.message, "error");
+    }
+  } finally {
+    if (controlNote === remoteControlNote) {
+      setRemoteBusy(false);
+    }
   }
 }
 
@@ -509,22 +560,34 @@ function renderRemotePanel(restartScreen = false) {
 async function startRemoteScreen() {
   const device = selectedDevice();
   if (!device) return;
+  if (remoteCommandBusy) {
+    remoteControlNote.textContent = "Предыдущая команда еще выполняется.";
+    return;
+  }
   if (/iphone|ios|ipad/i.test(`${device.platform} ${device.name}`)) {
     remoteControlNote.textContent = "iPhone требует Apple screen sharing или approved-сервис. Прямое управление сторонним APK невозможно.";
     return;
   }
   if (!canControlDevice(device)) {
     remoteControlNote.textContent = formatHealthHint(device, "Устройство offline. Запусти агент или ADB-мост.");
+    addRemoteLog("request_screen", "Устройство не готово к трансляции экрана.", "warn");
     return;
   }
   try {
+    setRemoteBusy(true);
+    addRemoteLog("request_screen", "Запрашиваю доступ к экрану.", "pending");
     remoteControlNote.textContent = "Запрашиваю экран...";
     const profile = qualityProfiles[getDeviceQuality(device)];
     const result = await sendCommandAndWait(device, "request_screen", qualityPayload(device), profile.waitMs);
-    remoteControlNote.textContent = commandResultText(result, `Экран запущен: ${qualityProfiles[getDeviceQuality(device)].label}.`);
+    const screenMessage = commandResultText(result, `Экран запущен: ${qualityProfiles[getDeviceQuality(device)].label}.`);
+    remoteControlNote.textContent = screenMessage;
+    addRemoteLog("request_screen", screenMessage, result?.command?.status === "rejected" ? "warn" : "done");
     startScreenPolling(device, remoteScreenPreview, remoteScreenImage, remoteControlNote);
   } catch (error) {
     remoteControlNote.textContent = error.message;
+    addRemoteLog("request_screen", error.message, "error");
+  } finally {
+    setRemoteBusy(false);
   }
 }
 
@@ -799,6 +862,11 @@ closeRemotePanel.addEventListener("click", () => {
   remotePanel.classList.add("hidden");
 });
 
+remoteLogClearButton?.addEventListener("click", () => {
+  remoteLogItems = [];
+  renderRemoteLog();
+});
+
 $(".remote-screen-button", remotePanel).addEventListener("click", startRemoteScreen);
 
 $(".remote-stop-screen-button", remotePanel).addEventListener("click", async () => {
@@ -865,6 +933,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 setTelegramTheme();
+renderRemoteLog();
 renderCurrentDevice();
 refreshDevices();
 startRefreshLoop();
