@@ -1794,6 +1794,7 @@ def create_device_command(owner_id: str, device_id: str, command_type: str, payl
         "quick_settings",
         "wake_screen",
         "dismiss_keyguard",
+        "setup_wizard",
         "request_notification_permission",
         "request_battery_permission",
         "request_accessibility_permission",
@@ -2292,7 +2293,7 @@ def pair_links(code: str) -> dict[str, str]:
     encoded_server = quote(server, safe="")
     return {
         "server": server,
-        "app_link": f"apkagent://pair?server={encoded_server}&code={code}",
+        "app_link": f"apkagent://pair?server={encoded_server}&code={code}&setup=1",
         "web_link": f"{server}/pair?server={encoded_server}&code={code}",
     }
 
@@ -2755,7 +2756,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         query = parse_qs(parsed_url.query)
         code = query.get("code", [""])[0].strip()
         server = query.get("server", [public_server_url()])[0].strip() or public_server_url()
-        app_link = f"apkagent://pair?server={quote(server, safe='')}&code={quote(code, safe='')}"
+        app_link = f"apkagent://pair?server={quote(server, safe='')}&code={quote(code, safe='')}&setup=1"
         install_link = f"{public_server_url()}/agent"
         html = f"""<!doctype html>
 <html lang="ru">

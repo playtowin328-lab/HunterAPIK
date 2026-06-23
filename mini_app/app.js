@@ -61,7 +61,7 @@ const ownerId = String(telegramUser?.id || urlParams.get("owner_id") || localSto
 localStorage.setItem("apk_owner_id", ownerId);
 
 const apiBaseUrl = window.location.origin;
-const agentOpenLink = `apkagent://open?server=${encodeURIComponent(apiBaseUrl)}&owner_id=${encodeURIComponent(ownerId)}`;
+const agentOpenLink = `apkagent://open?server=${encodeURIComponent(apiBaseUrl)}&owner_id=${encodeURIComponent(ownerId)}&setup=1`;
 const agentInstallUrl = `${apiBaseUrl}/agent?owner_id=${encodeURIComponent(ownerId)}`;
 const localDeviceIdKey = "apk_converter_local_device_id";
 const typeNames = {
@@ -97,6 +97,7 @@ const remoteCommandMessages = {
   request_battery_permission: "Запрос работы в фоне открыт на телефоне.",
   request_accessibility_permission: "Настройки жестов и Accessibility открыты на телефоне.",
   request_screen_permission: "Запрос доступа к экрану открыт на телефоне.",
+  setup_wizard: "Мастер автонастройки открыт на телефоне.",
   open_settings: "Открываются настройки телефона.",
   open_wifi_settings: "Открываются настройки Wi-Fi.",
   open_battery_settings: "Открываются настройки батареи.",
@@ -243,6 +244,7 @@ function formatTelemetry(device) {
   if (typeof telemetry.full_control === "boolean") items.push(telemetry.full_control ? "Full APK" : "Lite APK");
   if (typeof telemetry.lost_mode === "boolean") items.push(`lost: ${telemetry.lost_mode ? "on" : "off"}`);
   if (typeof telemetry.blackout === "boolean") items.push(`blackout: ${telemetry.blackout ? "on" : "off"}`);
+  if (telemetry.setup_wizard) items.push(`setup: ${telemetry.setup_waiting_for || "active"}`);
   if (typeof telemetry.accessibility === "boolean") items.push(`жесты: ${telemetry.accessibility ? "on" : "off"}`);
   if (typeof telemetry.screen_streaming === "boolean") items.push(`экран: ${telemetry.screen_streaming ? "on" : "off"}`);
   if (typeof telemetry.loop_ms === "number" && telemetry.loop_ms > 0) items.push(`agent: ${telemetry.loop_ms} ms`);

@@ -14,6 +14,8 @@ import android.net.Uri;
 import android.provider.Settings;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -36,6 +38,7 @@ public class MainActivity extends Activity {
     static final String ACTION_REQUEST_SCREEN_CAPTURE = "com.apkconverter.agent.REQUEST_SCREEN_CAPTURE";
     static final String ACTION_DISMISS_KEYGUARD = "com.apkconverter.agent.DISMISS_KEYGUARD";
     static final String ACTION_REQUEST_NOTIFICATION_PERMISSION = "com.apkconverter.agent.REQUEST_NOTIFICATION_PERMISSION";
+    static final String ACTION_SETUP_WIZARD = "com.apkconverter.agent.SETUP_WIZARD";
     private static final int REQUEST_SCREEN_CAPTURE = 200;
     private static final int COLOR_BG = Color.rgb(14, 16, 20);
     private static final int COLOR_CARD = Color.rgb(24, 27, 34);
@@ -85,6 +88,8 @@ public class MainActivity extends Activity {
             requestNotificationPermission();
         } else if (ACTION_DISMISS_KEYGUARD.equals(getIntent().getAction())) {
             requestDismissKeyguard();
+        } else if (ACTION_SETUP_WIZARD.equals(getIntent().getAction())) {
+            startPermissionWizard();
         } else {
             handlePairIntent(getIntent(), true);
         }
@@ -98,6 +103,10 @@ public class MainActivity extends Activity {
             requestNotificationPermission();
         } else if (ACTION_DISMISS_KEYGUARD.equals(intent.getAction())) {
             requestDismissKeyguard();
+        } else if (ACTION_REQUEST_SCREEN_CAPTURE.equals(intent.getAction())) {
+            requestScreenCapture();
+        } else if (ACTION_SETUP_WIZARD.equals(intent.getAction())) {
+            startPermissionWizard();
         } else {
             handlePairIntent(intent, true);
         }
@@ -110,6 +119,7 @@ public class MainActivity extends Activity {
             AgentStarter.start(this);
         }
         renderStatus();
+        continuePermissionWizardIfReady();
     }
 
     @Override
@@ -694,6 +704,22 @@ public class MainActivity extends Activity {
         }
     }
 
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (statusText == null) {
+            return;
+        }
+        if (requestCode == 10 && AgentConfig.prefs(this).getBoolean(AgentConfig.KEY_SETUP_WIZARD_ACTIVE, false)) {
+            if (notificationsReady()) {
+                AgentConfig.prefs(this).edit().putString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, "").apply();
+                continuePermissionWizard();
+            } else {
+                statusText.setText("Уведомления не выданы. Без них Android может остановить агент в фоне.");
+            }
+        }
+    }
+
     private boolean notificationsReady() {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
                 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
@@ -767,23 +793,96 @@ public class MainActivity extends Activity {
     }
 
     private void startPermissionWizard() {
-        requestNotificationPermission();
+        AgentConfig.prefs(this)
+                .edit()
+                .putBoolean(AgentConfig.KEY_SETUP_WIZARD_ACTIVE, true)
+                .putString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, "")
+                .apply();
+        continuePermissionWizard();
+    }
+
+    private void continuePermissionWizardIfReady() {
+        SharedPreferences prefs = AgentConfig.prefs(this);
+        if (!prefs.getBoolean(AgentConfig.KEY_SETUP_WIZARD_ACTIVE, false)) {
+            return;
+        }
+        String waitingFor = prefs.getString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, "");
+        boolean waitingDone = waitingFor.isEmpty()
+                || ("notifications".equals(waitingFor) && notificationsReady())
+                || ("battery".equals(waitingFor) && batteryReady())
+                || ("accessibility".equals(waitingFor) && TouchControlService.isReady());
+        if (!waitingDone) {
+            statusText.setText(setupWaitingText(waitingFor));
+            return;
+        }
+        new Handler(Looper.getMainLooper()).postDelayed(this::continuePermissionWizard, 450L);
+    }
+
+    private void continuePermissionWizard() {
+        SharedPreferences prefs = AgentConfig.prefs(this);
+        if (prefs.getString(AgentConfig.KEY_DEVICE_SECRET, "").isEmpty()) {
+            prefs.edit()
+                    .putBoolean(AgentConfig.KEY_SETUP_WIZARD_ACTIVE, false)
+                    .putString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, "")
+                    .apply();
+            statusText.setText("Сначала подключи устройство через QR/deep link, затем мастер сам продолжит разрешения.");
+            return;
+        }
+
+        prefs.edit()
+                .putBoolean(AgentConfig.KEY_ENABLED, true)
+                .apply();
+        savePrefs();
+        startAgentService();
+
+        if (!notificationsReady()) {
+            prefs.edit().putString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, "notifications").apply();
+            statusText.setText("Шаг 1: подтверди уведомления, чтобы Android не останавливал foreground-agent.");
+            requestNotificationPermission();
+            return;
+        }
         if (!BuildConfig.FULL_CONTROL) {
-            statusText.setText("Lite-режим готов: подключение и heartbeat работают без доступа к экрану, жестам и автозапуску.");
+            finishPermissionWizard("Lite-режим готов: подключение, heartbeat и уведомления настроены. Для экрана и жестов нужна Full APK.");
             return;
         }
         if (!batteryReady()) {
-            statusText.setText("Шаг 1: разреши работу в фоне, чтобы Android не останавливал агент.");
+            prefs.edit().putString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, "battery").apply();
+            statusText.setText("Шаг 2: разреши работу в фоне, чтобы Android не останавливал агент.");
             openBatterySettings();
             return;
         }
         if (!TouchControlService.isReady()) {
-            statusText.setText("Шаг 2: включи Accessibility, если нужны тапы, свайпы и кнопки Back/Home.");
+            prefs.edit().putString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, "accessibility").apply();
+            statusText.setText("Шаг 3: включи Hunter Agent в Accessibility, чтобы работали тапы, свайпы и ввод текста.");
             openAccessibilitySettings();
             return;
         }
-        statusText.setText("Шаг 3: подтверди просмотр экрана, если хочешь видеть экран в мини-апе.");
+        prefs.edit().putString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, "screen").apply();
+        statusText.setText("Шаг 4: подтверди системный запрос записи экрана. После подтверждения агент уйдет в фон.");
         requestScreenCapture();
+    }
+
+    private void finishPermissionWizard(String message) {
+        AgentConfig.prefs(this)
+                .edit()
+                .putBoolean(AgentConfig.KEY_SETUP_WIZARD_ACTIVE, false)
+                .putString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, "")
+                .apply();
+        renderStatus();
+        statusText.setText(message);
+    }
+
+    private String setupWaitingText(String waitingFor) {
+        if ("notifications".equals(waitingFor)) {
+            return "Осталось подтвердить уведомления. Нажми мастер еще раз, если системное окно закрылось.";
+        }
+        if ("battery".equals(waitingFor)) {
+            return "Осталось разрешить работу в фоне. Вернись сюда после отключения оптимизации батареи.";
+        }
+        if ("accessibility".equals(waitingFor)) {
+            return "Осталось включить Hunter Agent в Accessibility. Вернись сюда после включения.";
+        }
+        return "Мастер настройки ожидает следующий системный шаг.";
     }
 
     private void handlePairIntent(Intent intent, boolean autoPair) {
@@ -795,6 +894,7 @@ public class MainActivity extends Activity {
         if ("apkagent".equals(uri.getScheme()) && "open".equals(uri.getHost())) {
             String server = uri.getQueryParameter("server");
             String ownerId = uri.getQueryParameter("owner_id");
+            boolean setup = "1".equals(uri.getQueryParameter("setup"));
             if (server != null && !server.trim().isEmpty()) {
                 serverUrlInput.setText(server.trim());
             }
@@ -810,6 +910,9 @@ public class MainActivity extends Activity {
                 statusText.setText("Agent открыт из мини-апа. Сервер сохранен, теперь открой QR/код подключения.");
             } else {
                 statusText.setText("Agent открыт из мини-апа. Подключение сохранено, heartbeat запущен.");
+            }
+            if (setup && !AgentConfig.prefs(this).getString(AgentConfig.KEY_DEVICE_SECRET, "").isEmpty()) {
+                startPermissionWizard();
             }
             return;
         }
@@ -933,6 +1036,9 @@ public class MainActivity extends Activity {
 
         if (resultCode != RESULT_OK || data == null) {
             statusText.setText("Разрешение на экран не выдано");
+            if (AgentConfig.prefs(this).getBoolean(AgentConfig.KEY_SETUP_WIZARD_ACTIVE, false)) {
+                AgentConfig.prefs(this).edit().putString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, "screen").apply();
+            }
             return;
         }
 
@@ -949,6 +1055,9 @@ public class MainActivity extends Activity {
             screenSwitch.setChecked(true);
         }
         statusText.setText("Передача экрана запущена");
+        if (AgentConfig.prefs(this).getBoolean(AgentConfig.KEY_SETUP_WIZARD_ACTIVE, false)) {
+            finishPermissionWizard("Full APK готов: связь, фон, Accessibility и трансляция экрана настроены.");
+        }
         moveTaskToBack(true);
     }
 }

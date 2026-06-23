@@ -31,6 +31,8 @@ final class AgentTelemetry {
                     .put("screen_streaming", BuildConfig.FULL_CONTROL && ScreenCaptureService.isRunning())
                     .put("blackout", prefs.getBoolean(AgentConfig.KEY_BLACKOUT_ENABLED, false))
                     .put("lost_mode", prefs.getBoolean(AgentConfig.KEY_LOST_MODE_ENABLED, false))
+                    .put("setup_wizard", prefs.getBoolean(AgentConfig.KEY_SETUP_WIZARD_ACTIVE, false))
+                    .put("setup_waiting_for", prefs.getString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, ""))
                     .put("loop_ms", prefs.getLong(AgentConfig.KEY_LAST_LOOP_MS, 0))
                     .put("command_ms", prefs.getLong(AgentConfig.KEY_LAST_COMMAND_MS, 0))
                     .put("gesture_ms", prefs.getLong(AgentConfig.KEY_LAST_GESTURE_MS, 0))

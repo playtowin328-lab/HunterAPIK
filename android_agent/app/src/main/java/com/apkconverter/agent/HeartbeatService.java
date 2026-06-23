@@ -226,6 +226,12 @@ public class HeartbeatService extends Service {
                 startActivity(intent);
                 result = "Screen permission requested on device.";
             }
+        } else if ("setup_wizard".equals(command.type)) {
+            Intent intent = new Intent(this, MainActivity.class)
+                    .setAction(MainActivity.ACTION_SETUP_WIZARD)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            result = "Setup wizard opened on device.";
         } else if ("blackout_on".equals(command.type)) {
             result = setBlackoutMode(true);
         } else if ("blackout_off".equals(command.type)) {
