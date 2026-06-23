@@ -71,6 +71,7 @@ DEVICE_DB_PATH = STORAGE_DIR / "devices.json"
 PAIRING_DB_PATH = STORAGE_DIR / "pairing_codes.json"
 COMMAND_DB_PATH = STORAGE_DIR / "device_commands.json"
 DEVICE_NOTIFY_STATE_PATH = STORAGE_DIR / "device_notify_state.json"
+DEVICE_NOTIFY_SETTINGS_PATH = STORAGE_DIR / "device_notify_settings.json"
 DEVICE_NOTIFY_LOCK = threading.Lock()
 SCREEN_DIR = STORAGE_DIR / "screens"
 SCREEN_DIR.mkdir(exist_ok=True)
@@ -378,12 +379,37 @@ AUDIT_FILTERS = {
         "device_repaired",
         "device_manage",
         "device_alert",
+        "device_alert_settings",
         "pairing_code_created",
     ],
     "commands": ["device_command"],
     "access": ["grant_access", "revoke_access", "command_admins", "command_roles", "command_root_settings", "command_audit"],
     "builds": ["build_apk_lite", "build_apk_full", "build_pc_agent"],
     "bot": ["command_start", "command_settings", "command_guide", "callback", "mini_app_event"],
+}
+
+DEVICE_ALERT_KINDS = {
+    "online",
+    "offline",
+    "battery",
+    "charging",
+    "network",
+    "lost_mode",
+    "blackout",
+    "accessibility",
+    "screen",
+    "agent_error",
+    "screen_error",
+    "command_queue",
+    "health",
+}
+
+DEFAULT_DEVICE_NOTIFY_SETTINGS = {
+    "enabled": True,
+    "quiet_hours_enabled": False,
+    "quiet_hours_start": 23,
+    "quiet_hours_end": 8,
+    "enabled_kinds": sorted(DEVICE_ALERT_KINDS),
 }
 
 
@@ -408,6 +434,36 @@ def list_audit_events(limit: int = 20, category: str = "", actor_id: str = "") -
                 params,
             )
         )
+
+
+def audit_row_to_dict(event: sqlite3.Row) -> dict:
+    metadata_raw = event["metadata_json"] if "metadata_json" in event.keys() else "{}"
+    try:
+        metadata = json.loads(metadata_raw or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        metadata = {}
+    return {
+        "event_id": event["event_id"],
+        "actor_id": event["actor_id"],
+        "actor_name": event["actor_name"],
+        "action": event["action"],
+        "detail": event["detail"],
+        "metadata": metadata,
+        "created_at": int(event["created_at"]),
+    }
+
+
+def list_device_alert_events(limit: int = 30) -> list[dict]:
+    try:
+        safe_limit = max(1, min(int(limit or 30), 100))
+    except (TypeError, ValueError):
+        safe_limit = 30
+    with db_connect() as connection:
+        rows = connection.execute(
+            "SELECT * FROM audit_events WHERE action = ? ORDER BY created_at DESC LIMIT ?",
+            ("device_alert", safe_limit),
+        ).fetchall()
+    return [audit_row_to_dict(row) for row in rows]
 
 
 def audit_event_text(event: dict | sqlite3.Row) -> str:
@@ -501,6 +557,70 @@ def save_device_notify_state(data: dict) -> None:
     )
 
 
+def sanitize_device_notify_settings(data: dict | None) -> dict:
+    source = data if isinstance(data, dict) else {}
+    enabled_kinds = source.get("enabled_kinds", DEFAULT_DEVICE_NOTIFY_SETTINGS["enabled_kinds"])
+    if not isinstance(enabled_kinds, list):
+        enabled_kinds = DEFAULT_DEVICE_NOTIFY_SETTINGS["enabled_kinds"]
+    enabled_kinds = sorted({str(kind) for kind in enabled_kinds if str(kind) in DEVICE_ALERT_KINDS})
+    try:
+        quiet_hours_start = int(source.get("quiet_hours_start", DEFAULT_DEVICE_NOTIFY_SETTINGS["quiet_hours_start"]) or 0)
+    except (TypeError, ValueError):
+        quiet_hours_start = DEFAULT_DEVICE_NOTIFY_SETTINGS["quiet_hours_start"]
+    try:
+        quiet_hours_end = int(source.get("quiet_hours_end", DEFAULT_DEVICE_NOTIFY_SETTINGS["quiet_hours_end"]) or 0)
+    except (TypeError, ValueError):
+        quiet_hours_end = DEFAULT_DEVICE_NOTIFY_SETTINGS["quiet_hours_end"]
+    return {
+        "enabled": bool(source.get("enabled", DEFAULT_DEVICE_NOTIFY_SETTINGS["enabled"])),
+        "quiet_hours_enabled": bool(source.get("quiet_hours_enabled", DEFAULT_DEVICE_NOTIFY_SETTINGS["quiet_hours_enabled"])),
+        "quiet_hours_start": max(0, min(23, quiet_hours_start)),
+        "quiet_hours_end": max(0, min(23, quiet_hours_end)),
+        "enabled_kinds": enabled_kinds,
+    }
+
+
+def load_device_notify_settings() -> dict:
+    try:
+        data = json.loads(DEVICE_NOTIFY_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        data = {}
+    return sanitize_device_notify_settings({**DEFAULT_DEVICE_NOTIFY_SETTINGS, **(data if isinstance(data, dict) else {})})
+
+
+def save_device_notify_settings(data: dict) -> dict:
+    settings = sanitize_device_notify_settings({**load_device_notify_settings(), **data})
+    DEVICE_NOTIFY_SETTINGS_PATH.write_text(
+        json.dumps(settings, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return settings
+
+
+def is_quiet_hour(settings: dict) -> bool:
+    if not settings.get("quiet_hours_enabled"):
+        return False
+    hour = datetime.now().hour
+    start = int(settings.get("quiet_hours_start", 23))
+    end = int(settings.get("quiet_hours_end", 8))
+    if start == end:
+        return True
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
+def device_alert_allowed(kind: str) -> bool:
+    settings = load_device_notify_settings()
+    if not settings.get("enabled"):
+        return False
+    if str(kind) not in set(settings.get("enabled_kinds") or []):
+        return False
+    if is_quiet_hour(settings) and kind not in {"offline", "lost_mode", "blackout", "health"}:
+        return False
+    return True
+
+
 def device_notify_key(owner_id: str, device_id: str) -> str:
     return f"{owner_id}:{device_id}"
 
@@ -548,6 +668,10 @@ def device_alert_detail(device: dict, text: str) -> str:
 
 
 def notify_device_alert(device: dict, text: str, metadata: dict | None = None) -> None:
+    metadata = metadata or {}
+    kind = str(metadata.get("kind") or "unknown")
+    if not device_alert_allowed(kind):
+        return
     audit_event(
         "device_monitor",
         "device_alert",
@@ -556,7 +680,7 @@ def notify_device_alert(device: dict, text: str, metadata: dict | None = None) -
             "owner_id": device.get("owner_id"),
             "device_id": device.get("device_id"),
             "name": device.get("name"),
-            **(metadata or {}),
+            **metadata,
         },
         actor_name="Device monitor",
         notify=True,
@@ -690,6 +814,7 @@ def access_keyboard() -> InlineKeyboardMarkup:
 
 
 def root_settings_text() -> str:
+    notify_settings = load_device_notify_settings()
     with db_connect() as connection:
         role_rows = connection.execute(
             "SELECT role, COUNT(*) AS count FROM bot_access GROUP BY role ORDER BY role"
@@ -716,6 +841,10 @@ def root_settings_text() -> str:
             f"DB: {DB_PATH}",
             f"Device TTL: {DEVICE_TTL_SECONDS}s",
             f"Device monitor: every {DEVICE_MONITOR_INTERVAL_SECONDS}s",
+            f"Device alerts: {'on' if notify_settings.get('enabled') else 'off'}",
+            f"Alert kinds: {len(notify_settings.get('enabled_kinds') or [])}/{len(DEVICE_ALERT_KINDS)}",
+            f"Quiet hours: {'on' if notify_settings.get('quiet_hours_enabled') else 'off'} "
+            f"{notify_settings.get('quiet_hours_start')}:00-{notify_settings.get('quiet_hours_end')}:00",
             f"Pairing TTL: {PAIRING_TTL_SECONDS}s",
             f"GitHub repo: {GITHUB_REPO or 'missing'}",
             f"GitHub token: {'set' if GITHUB_TOKEN else 'missing'}",
@@ -2557,6 +2686,21 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             self.send_json({"frame": frame})
             return
 
+        if parsed_url.path == "/api/alerts/device":
+            query = parse_qs(parsed_url.query)
+            actor_id = webapp_user_id_from_query(query)
+            if not actor_id or get_user_role(actor_id) != "root":
+                self.send_json({"error": "root access required"}, HTTPStatus.FORBIDDEN)
+                return
+            self.send_json(
+                {
+                    "settings": load_device_notify_settings(),
+                    "events": list_device_alert_events(query_value(query, "limit") or 30),
+                    "kinds": sorted(DEVICE_ALERT_KINDS),
+                }
+            )
+            return
+
         if parsed_url.path == "/api/devices":
             query = parse_qs(parsed_url.query)
             owner_id = query.get("owner_id", [""])[0].strip()
@@ -2852,6 +2996,10 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             self.handle_screen_upload()
             return
 
+        if parsed_url.path == "/api/alerts/device/settings":
+            self.handle_device_alert_settings()
+            return
+
         if parsed_url.path not in {"/api/devices/register", "/api/devices/heartbeat"}:
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
@@ -2927,6 +3075,29 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 "device": public_device(device),
             }
         )
+
+    def handle_device_alert_settings(self) -> None:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length).decode("utf-8")
+            payload = json.loads(raw_body or "{}")
+            actor_id = webapp_user_id_from_payload(payload)
+            if not actor_id or get_user_role(actor_id) != "root":
+                self.send_json({"error": "root access required"}, HTTPStatus.FORBIDDEN)
+                return
+            settings = save_device_notify_settings(payload.get("settings") or {})
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        audit_event(
+            actor_id,
+            "device_alert_settings",
+            "Updated device alert settings",
+            {"settings": settings},
+            notify=True,
+        )
+        self.send_json({"ok": True, "settings": settings, "kinds": sorted(DEVICE_ALERT_KINDS)})
 
     def handle_create_command(self) -> None:
         try:

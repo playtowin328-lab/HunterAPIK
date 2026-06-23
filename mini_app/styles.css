@@ -115,6 +115,7 @@ h2 {
 .summary > div,
 .setup-panel,
 .remote-panel,
+.alert-panel,
 .device-card,
 .empty-state {
   border: 1px solid var(--line);
@@ -154,7 +155,8 @@ h2 {
 }
 
 .setup-panel,
-.remote-panel {
+.remote-panel,
+.alert-panel {
   display: grid;
   gap: 12px;
   margin-bottom: 12px;
@@ -244,6 +246,61 @@ h2 {
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-top: 10px;
+}
+
+.alert-settings-grid,
+.alert-kind-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.alert-settings-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.alert-settings-grid label,
+.toggle-row,
+.alert-kind {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.alert-settings-grid label span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.toggle-row,
+.alert-kind {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toggle-row span,
+.alert-kind span {
+  margin: 0;
+  color: var(--text);
+}
+
+.toggle-row input,
+.alert-kind input {
+  width: 18px;
+  min-height: 18px;
+}
+
+.alert-kind-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.alert-log {
+  background: var(--surface-soft);
 }
 
 .device-list {
@@ -648,6 +705,8 @@ select:focus {
 
   .setup-steps,
   .remote-status-grid,
+  .alert-settings-grid,
+  .alert-kind-grid,
   .primary-controls,
   .secondary-controls,
   .swipe-actions,

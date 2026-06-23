@@ -72,6 +72,45 @@
         </div>
       </section>
 
+      <section class="alert-panel hidden" id="deviceAlertPanel" aria-label="Уведомления устройств">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Root monitor</p>
+            <h2>Уведомления устройств</h2>
+          </div>
+          <button class="ghost-button neutral" id="deviceAlertRefreshButton" type="button">Обновить</button>
+        </div>
+
+        <div class="alert-settings-grid">
+          <label class="toggle-row">
+            <input id="deviceAlertsEnabled" type="checkbox">
+            <span>Включить уведомления</span>
+          </label>
+          <label class="toggle-row">
+            <input id="deviceAlertsQuietEnabled" type="checkbox">
+            <span>Тихие часы</span>
+          </label>
+          <label>
+            <span>С</span>
+            <input id="deviceAlertsQuietStart" type="number" min="0" max="23" step="1">
+          </label>
+          <label>
+            <span>До</span>
+            <input id="deviceAlertsQuietEnd" type="number" min="0" max="23" step="1">
+          </label>
+        </div>
+
+        <div class="alert-kind-grid" id="deviceAlertKinds"></div>
+
+        <div class="remote-log alert-log" aria-label="История уведомлений устройств">
+          <div class="remote-log-head">
+            <span>Последние события</span>
+            <button class="secondary-button" id="deviceAlertSaveButton" type="button">Сохранить</button>
+          </div>
+          <ul id="deviceAlertLog"></ul>
+        </div>
+      </section>
+
       <section class="remote-panel hidden" id="remotePanel" aria-label="Пульт выбранного устройства">
         <div class="remote-head">
           <div>

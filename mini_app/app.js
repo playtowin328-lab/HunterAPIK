@@ -44,6 +44,15 @@ const remoteSecurityStatus = $("#remoteSecurityStatus");
 const remoteCommandStatus = $("#remoteCommandStatus");
 const remoteActionLog = $("#remoteActionLog");
 const remoteLogClearButton = $("#remoteLogClearButton");
+const deviceAlertPanel = $("#deviceAlertPanel");
+const deviceAlertRefreshButton = $("#deviceAlertRefreshButton");
+const deviceAlertSaveButton = $("#deviceAlertSaveButton");
+const deviceAlertsEnabled = $("#deviceAlertsEnabled");
+const deviceAlertsQuietEnabled = $("#deviceAlertsQuietEnabled");
+const deviceAlertsQuietStart = $("#deviceAlertsQuietStart");
+const deviceAlertsQuietEnd = $("#deviceAlertsQuietEnd");
+const deviceAlertKinds = $("#deviceAlertKinds");
+const deviceAlertLog = $("#deviceAlertLog");
 
 const telegramUser = tg?.initDataUnsafe?.user;
 const profileName = telegramUser?.first_name || telegramUser?.username || "Я";
@@ -97,6 +106,22 @@ const remoteCommandMessages = {
   key_delete: "Delete отправлен.",
 };
 
+const deviceAlertKindLabels = {
+  online: "Online",
+  offline: "Offline",
+  battery: "Батарея",
+  charging: "Зарядка",
+  network: "Сеть",
+  lost_mode: "Lost Mode",
+  blackout: "Черный экран",
+  accessibility: "Жесты",
+  screen: "Экран",
+  agent_error: "Ошибка агента",
+  screen_error: "Ошибка экрана",
+  command_queue: "Очередь команд",
+  health: "Здоровье",
+};
+
 let devices = [];
 let currentPairLinks = null;
 let currentPairExpiresAt = 0;
@@ -106,6 +131,9 @@ let refreshInFlight = false;
 let refreshTimer = null;
 let remoteCommandBusy = false;
 let remoteLogItems = [];
+let deviceAlertSettings = null;
+let deviceAlertEvents = [];
+let deviceAlertKindList = [];
 const screenPollers = new Map();
 const pendingScreenRequests = new Set();
 window.currentDeviceScope = "own";
@@ -329,6 +357,100 @@ function apiAuthParams(extra = {}) {
     params.set("init_data", tg.initData);
   }
   return params;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[char]));
+}
+
+function formatAlertTime(timestamp) {
+  if (!timestamp) return "";
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp * 1000));
+}
+
+async function loadDeviceAlerts() {
+  if (!tg?.initData || !deviceAlertPanel) return;
+  const params = apiAuthParams({ limit: "30" });
+  try {
+    const payload = await apiJson(`${apiBaseUrl}/api/alerts/device?${params.toString()}`);
+    deviceAlertSettings = payload.settings || null;
+    deviceAlertEvents = payload.events || [];
+    deviceAlertKindList = payload.kinds || [];
+    renderDeviceAlerts();
+  } catch (_) {
+    deviceAlertPanel.classList.add("hidden");
+  }
+}
+
+function currentDeviceAlertSettingsFromForm() {
+  const checkedKinds = $$(".alert-kind-grid input:checked", deviceAlertPanel).map((input) => input.value);
+  return {
+    enabled: Boolean(deviceAlertsEnabled?.checked),
+    quiet_hours_enabled: Boolean(deviceAlertsQuietEnabled?.checked),
+    quiet_hours_start: Number(deviceAlertsQuietStart?.value || 23),
+    quiet_hours_end: Number(deviceAlertsQuietEnd?.value || 8),
+    enabled_kinds: checkedKinds,
+  };
+}
+
+async function saveDeviceAlertSettings() {
+  if (!deviceAlertSettings) return;
+  deviceAlertSaveButton.disabled = true;
+  try {
+    const payload = await apiJson(`${apiBaseUrl}/api/alerts/device/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(apiAuthPayload({ settings: currentDeviceAlertSettingsFromForm() })),
+    });
+    deviceAlertSettings = payload.settings;
+    deviceAlertKindList = payload.kinds || deviceAlertKindList;
+    renderDeviceAlerts();
+  } catch (error) {
+    deviceAlertLog.innerHTML = `<li data-status="error"><p>${escapeHtml(error.message)}</p></li>`;
+  } finally {
+    deviceAlertSaveButton.disabled = false;
+  }
+}
+
+function renderDeviceAlerts() {
+  if (!deviceAlertSettings || !deviceAlertPanel) return;
+  deviceAlertPanel.classList.remove("hidden");
+  deviceAlertsEnabled.checked = Boolean(deviceAlertSettings.enabled);
+  deviceAlertsQuietEnabled.checked = Boolean(deviceAlertSettings.quiet_hours_enabled);
+  deviceAlertsQuietStart.value = deviceAlertSettings.quiet_hours_start ?? 23;
+  deviceAlertsQuietEnd.value = deviceAlertSettings.quiet_hours_end ?? 8;
+
+  const enabledKinds = new Set(deviceAlertSettings.enabled_kinds || []);
+  deviceAlertKinds.innerHTML = deviceAlertKindList.map((kind) => `
+    <label class="alert-kind">
+      <input type="checkbox" value="${escapeHtml(kind)}" ${enabledKinds.has(kind) ? "checked" : ""}>
+      <span>${escapeHtml(deviceAlertKindLabels[kind] || kind)}</span>
+    </label>
+  `).join("");
+
+  deviceAlertLog.innerHTML = deviceAlertEvents.length
+    ? deviceAlertEvents.map((event) => {
+      const metadata = event.metadata || {};
+      const kind = metadata.kind || event.action;
+      const deviceName = metadata.name || metadata.device_id || "Устройство";
+      return `<li data-status="${escapeHtml(kind)}">
+        <span>${escapeHtml(formatAlertTime(event.created_at))} · ${escapeHtml(deviceAlertKindLabels[kind] || kind)}</span>
+        <strong>${escapeHtml(deviceName)}</strong>
+        <p>${escapeHtml(event.detail)}</p>
+      </li>`;
+    }).join("")
+    : '<li class="muted-log"><p>Пока нет уведомлений по устройствам.</p></li>';
 }
 
 function deviceOwnerId(device) {
@@ -768,6 +890,7 @@ async function refreshDevices() {
   try {
     await loadDevicesFromApi();
     render();
+    loadDeviceAlerts();
   } catch (error) {
     if (!devices.length) {
       deviceList.innerHTML = `<p class="empty-state">${error.message}</p>`;
@@ -914,6 +1037,9 @@ refreshButton.addEventListener("click", async () => {
   setupText.textContent = "Обновляю список устройств...";
   await refreshDevices();
 });
+
+deviceAlertRefreshButton?.addEventListener("click", loadDeviceAlerts);
+deviceAlertSaveButton?.addEventListener("click", saveDeviceAlertSettings);
 
 themeButton.addEventListener("click", () => {
   const dark = !document.documentElement.classList.contains("dark");
