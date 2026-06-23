@@ -54,6 +54,10 @@ WEBAPP_HOST = os.getenv("WEBAPP_HOST", "0.0.0.0")
 WEBAPP_PORT = int(os.getenv("PORT", os.getenv("WEBAPP_PORT", "8080")))
 DEVICE_TTL_SECONDS = int(os.getenv("DEVICE_TTL_SECONDS", "300"))
 DEVICE_MONITOR_INTERVAL_SECONDS = int(os.getenv("DEVICE_MONITOR_INTERVAL_SECONDS", "60"))
+COMMAND_PENDING_TIMEOUT_SECONDS = int(os.getenv("COMMAND_PENDING_TIMEOUT_SECONDS", "120"))
+COMMAND_DELIVERED_TIMEOUT_SECONDS = int(os.getenv("COMMAND_DELIVERED_TIMEOUT_SECONDS", "180"))
+COMMAND_HISTORY_TTL_SECONDS = int(os.getenv("COMMAND_HISTORY_TTL_SECONDS", "86400"))
+AUTO_REPAIR_COOLDOWN_SECONDS = int(os.getenv("AUTO_REPAIR_COOLDOWN_SECONDS", "300"))
 BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
 STORAGE_DIR.mkdir(exist_ok=True)
@@ -72,7 +76,9 @@ PAIRING_DB_PATH = STORAGE_DIR / "pairing_codes.json"
 COMMAND_DB_PATH = STORAGE_DIR / "device_commands.json"
 DEVICE_NOTIFY_STATE_PATH = STORAGE_DIR / "device_notify_state.json"
 DEVICE_NOTIFY_SETTINGS_PATH = STORAGE_DIR / "device_notify_settings.json"
+DEVICE_MAINTENANCE_STATE_PATH = STORAGE_DIR / "device_maintenance_state.json"
 DEVICE_NOTIFY_LOCK = threading.Lock()
+DEVICE_MAINTENANCE_LOCK = threading.Lock()
 SCREEN_DIR = STORAGE_DIR / "screens"
 SCREEN_DIR.mkdir(exist_ok=True)
 BUILD_ASSET_DIR = STORAGE_DIR / "build_assets"
@@ -660,6 +666,7 @@ def device_notify_snapshot(device: dict) -> dict:
         "last_error": str(telemetry.get("last_error") or "")[:180],
         "screen_error": str(telemetry.get("screen_error") or "")[:180],
         "pending_commands": int(diagnostics.get("pending_commands") or 0),
+        "delivered_commands": int(diagnostics.get("delivered_commands") or 0),
     }
 
 
@@ -723,6 +730,8 @@ def process_device_notifications(device: dict, force: bool = False) -> None:
                 alerts.append((f"ошибка экрана: {snapshot['screen_error']}", {"kind": "screen_error"}))
             if int(previous.get("pending_commands") or 0) < 3 <= snapshot["pending_commands"]:
                 alerts.append((f"очередь команд растет: {snapshot['pending_commands']} pending", {"kind": "command_queue"}))
+            if int(previous.get("delivered_commands") or 0) < 2 <= snapshot["delivered_commands"]:
+                alerts.append((f"агент получил {snapshot['delivered_commands']} команд, но не завершил их", {"kind": "command_queue"}))
             if previous.get("health_state") not in {"degraded", "warning", "revoked"} and snapshot["health_state"] in {"degraded", "warning", "revoked"}:
                 alerts.append((f"состояние требует внимания: {snapshot['health_state']}", {"kind": "health"}))
         elif force:
@@ -841,6 +850,9 @@ def root_settings_text() -> str:
             f"DB: {DB_PATH}",
             f"Device TTL: {DEVICE_TTL_SECONDS}s",
             f"Device monitor: every {DEVICE_MONITOR_INTERVAL_SECONDS}s",
+            f"Command timeout: pending={COMMAND_PENDING_TIMEOUT_SECONDS}s, delivered={COMMAND_DELIVERED_TIMEOUT_SECONDS}s",
+            f"Command history TTL: {COMMAND_HISTORY_TTL_SECONDS}s",
+            f"Auto repair cooldown: {AUTO_REPAIR_COOLDOWN_SECONDS}s",
             f"Device alerts: {'on' if notify_settings.get('enabled') else 'off'}",
             f"Alert kinds: {len(notify_settings.get('enabled_kinds') or [])}/{len(DEVICE_ALERT_KINDS)}",
             f"Quiet hours: {'on' if notify_settings.get('quiet_hours_enabled') else 'off'} "
@@ -1926,12 +1938,179 @@ def get_device_command(owner_id: str, device_id: str, command_id: str) -> dict |
     return command
 
 
+def has_active_device_command(owner_id: str, device_id: str, command_type: str) -> bool:
+    with db_connect() as connection:
+        row = connection.execute(
+            """
+            SELECT 1 FROM commands
+            WHERE owner_id = ? AND device_id = ? AND type = ? AND status IN ('pending', 'delivered')
+            LIMIT 1
+            """,
+            (str(owner_id), str(device_id), str(command_type)),
+        ).fetchone()
+    return row is not None
+
+
+def load_device_maintenance_state() -> dict:
+    try:
+        data = json.loads(DEVICE_MAINTENANCE_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("devices", {})
+    return data
+
+
+def save_device_maintenance_state(data: dict) -> None:
+    DEVICE_MAINTENANCE_STATE_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def expire_stale_commands() -> dict:
+    now = now_ts()
+    pending_before = max(0, now - COMMAND_PENDING_TIMEOUT_SECONDS)
+    delivered_before = max(0, now - COMMAND_DELIVERED_TIMEOUT_SECONDS)
+    history_before = max(0, now - COMMAND_HISTORY_TTL_SECONDS)
+    with db_connect() as connection:
+        pending_result = connection.execute(
+            """
+            UPDATE commands
+            SET status = 'timeout', result = ?, updated_at = ?
+            WHERE status = 'pending' AND created_at < ?
+            """,
+            ("Команда устарела до доставки агенту.", now, pending_before),
+        )
+        delivered_result = connection.execute(
+            """
+            UPDATE commands
+            SET status = 'timeout', result = ?, updated_at = ?
+            WHERE status = 'delivered' AND updated_at < ?
+            """,
+            ("Агент не завершил команду после доставки.", now, delivered_before),
+        )
+        cleanup_result = connection.execute(
+            """
+            DELETE FROM commands
+            WHERE status NOT IN ('pending', 'delivered') AND updated_at < ?
+            """,
+            (history_before,),
+        )
+    return {
+        "pending_timeout": max(0, pending_result.rowcount or 0),
+        "delivered_timeout": max(0, delivered_result.rowcount or 0),
+        "deleted_history": max(0, cleanup_result.rowcount or 0),
+    }
+
+
+def device_supports_agent_repair(device: dict) -> bool:
+    platform = str(device.get("platform") or "").lower()
+    agent = str(device.get("agent") or "").lower()
+    return "android" in platform or "apk" in agent or "android" in agent
+
+
+def device_needs_auto_repair(device: dict) -> tuple[bool, str]:
+    if not device.get("online") or not device_supports_agent_repair(device):
+        return False, ""
+
+    diagnostics = device.get("diagnostics") or {}
+    health = device.get("health") or {}
+    telemetry = device.get("telemetry") or {}
+    issues = set(health.get("issues") or [])
+    pending_commands = int(diagnostics.get("pending_commands") or 0)
+    oldest_pending_age = int(diagnostics.get("oldest_pending_age") or 0)
+    delivered_commands = int(diagnostics.get("delivered_commands") or 0)
+    oldest_delivered_age = int(diagnostics.get("oldest_delivered_age") or 0)
+    try:
+        error_count = int(telemetry.get("error_count") or 0)
+    except (TypeError, ValueError):
+        error_count = 0
+
+    if "pairing_revoked" in issues:
+        return False, ""
+    if pending_commands >= 3 or oldest_pending_age > 60:
+        return True, "command_queue_stuck"
+    if delivered_commands >= 2 and oldest_delivered_age > COMMAND_DELIVERED_TIMEOUT_SECONDS:
+        return True, "delivered_commands_stuck"
+    if telemetry.get("last_error") or telemetry.get("screen_error") or error_count >= 2:
+        return True, "agent_error"
+    if str(health.get("state") or "") in {"degraded", "warning"}:
+        return True, "health_warning"
+    return False, ""
+
+
+def maybe_enqueue_auto_repair(device: dict) -> dict | None:
+    owner_id = str(device.get("owner_id") or "")
+    device_id = str(device.get("device_id") or "")
+    if not owner_id or not device_id:
+        return None
+
+    needed, reason = device_needs_auto_repair(device)
+    if not needed:
+        return None
+    if has_active_device_command(owner_id, device_id, "repair_agent"):
+        return None
+
+    with DEVICE_MAINTENANCE_LOCK:
+        state = load_device_maintenance_state()
+        devices_state = state.setdefault("devices", {})
+        key = device_notify_key(owner_id, device_id)
+        previous = devices_state.get(key) or {}
+        now = now_ts()
+        if now - int(previous.get("last_repair_at") or 0) < AUTO_REPAIR_COOLDOWN_SECONDS:
+            return None
+
+        command = create_device_command(
+            owner_id,
+            device_id,
+            "repair_agent",
+            {"auto": True, "reason": reason, "created_by": "server_watchdog"},
+        )
+        devices_state[key] = {
+            **previous,
+            "last_repair_at": now,
+            "last_repair_reason": reason,
+            "last_command_id": command["command_id"],
+        }
+        save_device_maintenance_state(state)
+
+    audit_event(
+        "device_monitor",
+        "device_command",
+        f"Автовосстановление поставлено для {device.get('name', 'Unknown device')}: {reason}",
+        {
+            "owner_id": owner_id,
+            "device_id": device_id,
+            "command_id": command["command_id"],
+            "reason": reason,
+            "auto": True,
+        },
+        actor_name="Device monitor",
+        notify=True,
+    )
+    return command
+
+
+def run_device_maintenance() -> dict:
+    devices = list_all_devices()
+    repairs = 0
+    for device in devices:
+        if maybe_enqueue_auto_repair(device):
+            repairs += 1
+    summary = expire_stale_commands()
+    summary["auto_repairs"] = repairs
+    return summary
+
+
 def device_diagnostics(owner_id: str, device_id: str) -> dict:
     now = int(time.time())
     diagnostics: dict = {
         "pending_commands": 0,
         "delivered_commands": 0,
         "oldest_pending_age": 0,
+        "oldest_delivered_age": 0,
         "last_command": None,
         "frame_age": None,
     }
@@ -1951,6 +2130,7 @@ def device_diagnostics(owner_id: str, device_id: str) -> dict:
                 diagnostics["oldest_pending_age"] = max(0, now - int(row["oldest"] or now))
             elif row["status"] == "delivered":
                 diagnostics["delivered_commands"] = int(row["count"])
+                diagnostics["oldest_delivered_age"] = max(0, now - int(row["oldest"] or now))
 
         last = connection.execute(
             """
@@ -1991,6 +2171,8 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     online = bool(device.get("online"))
     pending_commands = int(diagnostics.get("pending_commands") or 0)
     oldest_pending_age = int(diagnostics.get("oldest_pending_age") or 0)
+    delivered_commands = int(diagnostics.get("delivered_commands") or 0)
+    oldest_delivered_age = int(diagnostics.get("oldest_delivered_age") or 0)
 
     issues: list[str] = []
     hints: list[str] = []
@@ -2007,6 +2189,9 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     if pending_commands >= 3 or oldest_pending_age > 60:
         issues.append("command_queue_stuck")
         hints.append("Есть зависшие команды. Если агент online, попробуй перезапустить его.")
+    if delivered_commands >= 2 and oldest_delivered_age > COMMAND_DELIVERED_TIMEOUT_SECONDS:
+        issues.append("command_delivery_stuck")
+        hints.append("Агент получил команды, но не завершил их. Watchdog попробует repair_agent.")
     if telemetry.get("last_error"):
         issues.append("agent_error")
         hints.append(str(telemetry.get("last_error"))[:160])
@@ -2024,7 +2209,7 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     elif "heartbeat_stale" in issues or "never_seen" in issues:
         state = "offline"
         label = "Offline"
-    elif "command_queue_stuck" in issues:
+    elif "command_queue_stuck" in issues or "command_delivery_stuck" in issues:
         state = "degraded"
         label = "Команды ждут агент"
     else:
@@ -3272,6 +3457,9 @@ def start_web_app() -> ThreadingHTTPServer:
 async def device_monitor_loop() -> None:
     while True:
         try:
+            maintenance = await asyncio.to_thread(run_device_maintenance)
+            if any(int(value or 0) for value in maintenance.values()):
+                print(f"Device maintenance: {maintenance}")
             for device in await asyncio.to_thread(list_all_devices):
                 process_device_notifications(device)
         except asyncio.CancelledError:
