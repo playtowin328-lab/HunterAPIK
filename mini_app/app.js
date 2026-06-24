@@ -764,6 +764,7 @@ function setRemoteBusy(value) {
   [
     ...$$(".remote-command-button", remotePanel),
     ...$$(".remote-manage-button", remotePanel),
+    ...$$(".remote-diagnose-button", remotePanel),
     $(".remote-screen-button", remotePanel),
     $(".remote-stop-screen-button", remotePanel),
     remotePanelSendText,
@@ -874,6 +875,58 @@ async function sendSimpleDeviceCommand(device, type, controlNote, successText, p
     if (controlNote === remoteControlNote) {
       setRemoteBusy(false);
     }
+  }
+}
+
+async function runDeviceDiagnostic() {
+  const device = selectedDevice();
+  if (!device) {
+    remoteControlNote.textContent = "Сначала выбери устройство.";
+    return;
+  }
+  if (remoteCommandBusy) {
+    remoteControlNote.textContent = "Предыдущая команда еще выполняется.";
+    return;
+  }
+
+  const diagnostics = device.diagnostics || {};
+  const pending = Number(diagnostics.pending_commands || 0);
+  const delivered = Number(diagnostics.delivered_commands || 0);
+
+  try {
+    setRemoteBusy(true);
+    addRemoteLog("diagnostic", "Запускаю проверку связи.", "pending");
+
+    if (pending || delivered) {
+      remoteControlNote.textContent = `В очереди ${pending + delivered} активных команд. Очищаю перед ping...`;
+      const cleared = await manageDevice(device, "clear_commands");
+      addRemoteLog("clear_commands", `Снято команд: ${Number(cleared.cleared || 0)}.`, "done");
+    }
+
+    if (!canControlDevice(device)) {
+      const message = formatHealthHint(device, "Устройство offline. Запусти агент на телефоне и повтори диагностику.");
+      remoteControlNote.textContent = message;
+      addRemoteLog("diagnostic", message, "warn");
+      await refreshDevices();
+      return;
+    }
+
+    remoteControlNote.textContent = "Проверяю ping агента...";
+    const ping = await sendCommandAndWait(device, "ping", {}, 5000);
+    const status = ping?.command?.status;
+    const message = commandResultText(ping, "Агент отвечает.");
+    remoteControlNote.textContent = message;
+    addRemoteLog("ping", message, status === "timeout" || status === "rejected" ? "warn" : "done");
+
+    if (status === "timeout" || status === "rejected") {
+      remoteControlNote.textContent = `${message} Очисти очередь или запусти ремонт связи.`;
+    }
+    await refreshDevices();
+  } catch (error) {
+    remoteControlNote.textContent = error.message;
+    addRemoteLog("diagnostic", error.message, "error");
+  } finally {
+    setRemoteBusy(false);
   }
 }
 
@@ -1276,6 +1329,10 @@ $$(".remote-manage-button", remotePanel).forEach((button) => {
       setRemoteBusy(false);
     }
   });
+});
+
+$$(".remote-diagnose-button", remotePanel).forEach((button) => {
+  button.addEventListener("click", runDeviceDiagnostic);
 });
 
 nextSetupStepButton?.addEventListener("click", () => {
