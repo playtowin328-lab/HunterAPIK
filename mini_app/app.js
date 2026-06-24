@@ -765,6 +765,7 @@ function setRemoteBusy(value) {
     ...$$(".remote-command-button", remotePanel),
     ...$$(".remote-manage-button", remotePanel),
     ...$$(".remote-diagnose-button", remotePanel),
+    ...$$(".remote-macro-button", remotePanel),
     $(".remote-screen-button", remotePanel),
     $(".remote-stop-screen-button", remotePanel),
     remotePanelSendText,
@@ -925,6 +926,47 @@ async function runDeviceDiagnostic() {
   } catch (error) {
     remoteControlNote.textContent = error.message;
     addRemoteLog("diagnostic", error.message, "error");
+  } finally {
+    setRemoteBusy(false);
+  }
+}
+
+async function runWakeUnlockMacro() {
+  const device = selectedDevice();
+  if (!device) {
+    remoteControlNote.textContent = "Сначала выбери устройство.";
+    return;
+  }
+  if (remoteCommandBusy) {
+    remoteControlNote.textContent = "Предыдущая команда еще выполняется.";
+    return;
+  }
+  if (!canControlDevice(device)) {
+    const message = formatHealthHint(device, "Устройство offline. Запусти агент и повтори.");
+    remoteControlNote.textContent = message;
+    addRemoteLog("wake_unlock", message, "warn");
+    return;
+  }
+
+  try {
+    setRemoteBusy(true);
+    addRemoteLog("wake_unlock", "Бужу экран и запрашиваю снятие keyguard.", "pending");
+    remoteControlNote.textContent = "Бужу экран...";
+    const wake = await sendCommandAndWait(device, "wake_screen", {}, 5000);
+    addRemoteLog("wake_screen", commandResultText(wake, "Экран пробужден."), wake?.command?.status === "timeout" ? "warn" : "done");
+
+    remoteControlNote.textContent = "Запрашиваю разблокировку. PIN/биометрию нужно подтвердить на телефоне.";
+    const unlock = await sendCommandAndWait(device, "dismiss_keyguard", {}, 7000);
+    const message = commandResultText(
+      unlock,
+      "Запрос разблокировки отправлен. Если стоит PIN/биометрия, подтверди на телефоне."
+    );
+    remoteControlNote.textContent = message;
+    addRemoteLog("dismiss_keyguard", message, unlock?.command?.status === "timeout" ? "warn" : "done");
+    await refreshDevices();
+  } catch (error) {
+    remoteControlNote.textContent = error.message;
+    addRemoteLog("wake_unlock", error.message, "error");
   } finally {
     setRemoteBusy(false);
   }
@@ -1333,6 +1375,14 @@ $$(".remote-manage-button", remotePanel).forEach((button) => {
 
 $$(".remote-diagnose-button", remotePanel).forEach((button) => {
   button.addEventListener("click", runDeviceDiagnostic);
+});
+
+$$(".remote-macro-button", remotePanel).forEach((button) => {
+  button.addEventListener("click", () => {
+    if (button.dataset.macro === "wake_unlock") {
+      runWakeUnlockMacro();
+    }
+  });
 });
 
 nextSetupStepButton?.addEventListener("click", () => {
