@@ -15,7 +15,10 @@
           <h1>Пульт устройств</h1>
           <p class="topbar-subtitle" id="setupText">Загружаю устройства и проверяю подключение...</p>
         </div>
-        <button class="icon-button" id="themeButton" type="button" aria-label="Сменить тему">◐</button>
+        <div class="topbar-actions">
+          <button class="icon-button" id="fullscreenButton" type="button" aria-label="Во весь экран" title="Во весь экран">⛶</button>
+          <button class="icon-button" id="themeButton" type="button" aria-label="Сменить тему" title="Сменить тему">◐</button>
+        </div>
       </header>
 
       <section class="summary" aria-label="Сводка">
@@ -143,7 +146,10 @@
             <h2 id="remoteDeviceTitle">Устройство</h2>
             <p id="remoteDeviceMeta">Выбери устройство из списка</p>
           </div>
-          <button class="ghost-button neutral" id="closeRemotePanel" type="button">Скрыть</button>
+          <div class="remote-head-actions">
+            <button class="secondary-button" id="copyRemoteStatusButton" type="button">Отчет</button>
+            <button class="ghost-button neutral" id="closeRemotePanel" type="button">Скрыть</button>
+          </div>
         </div>
         <div class="remote-status-grid" aria-label="Быстрый статус пульта">
           <div>

@@ -3,12 +3,14 @@ const tg = window.Telegram?.WebApp;
 if (tg) {
   tg.ready();
   tg.expand();
+  tg.disableVerticalSwipes?.();
 }
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 const themeButton = $("#themeButton");
+const fullscreenButton = $("#fullscreenButton");
 const deviceForm = $("#deviceForm");
 const deviceName = $("#deviceName");
 const deviceType = $("#deviceType");
@@ -40,6 +42,7 @@ const remotePanel = $("#remotePanel");
 const remoteDeviceTitle = $("#remoteDeviceTitle");
 const remoteDeviceMeta = $("#remoteDeviceMeta");
 const closeRemotePanel = $("#closeRemotePanel");
+const copyRemoteStatusButton = $("#copyRemoteStatusButton");
 const remoteScreenPreview = $("#remoteScreenPreview");
 const remoteScreenImage = $("#remoteScreenImage");
 const remoteControlNote = $("#remoteControlNote");
@@ -360,6 +363,65 @@ function formatRemoteStatus(device) {
   };
 }
 
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return true;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  return copied;
+}
+
+async function copySelectedDeviceReport() {
+  const device = selectedDevice();
+  if (!device) {
+    remoteControlNote.textContent = "Сначала выбери устройство.";
+    return;
+  }
+
+  const status = formatRemoteStatus(device);
+  const telemetry = formatTelemetry(device).join(", ") || "нет телеметрии";
+  const diagnostics = formatDiagnostics(device) || "нет диагностики";
+  const recentLog = remoteLogItems.length
+    ? remoteLogItems.map((item) => `${item.time} ${item.title}: ${item.detail}`).join("\n")
+    : "нет действий в этой сессии";
+  const report = [
+    `Hunter Agent report`,
+    `Устройство: ${device.name}`,
+    `ID: ${device.device_id}`,
+    `Платформа: ${device.platform || "unknown"}`,
+    `Agent: ${device.agent || "unknown"}`,
+    `Связь: ${status.connection}`,
+    `Батарея: ${status.battery}`,
+    `Защита: ${status.security}`,
+    `Очередь: ${status.commands}`,
+    `Последний сигнал: ${formatLastSeen(device.last_seen)}`,
+    `Подсказка: ${formatHealthHint(device)}`,
+    `Телеметрия: ${telemetry}`,
+    `Диагностика: ${diagnostics}`,
+    "",
+    "Последние действия:",
+    recentLog,
+  ].join("\n");
+
+  try {
+    await copyTextToClipboard(report);
+    remoteControlNote.textContent = "Отчет по устройству скопирован.";
+    addRemoteLog("report", "Статус устройства скопирован в буфер.", "done");
+  } catch (error) {
+    remoteControlNote.textContent = `Не удалось скопировать отчет: ${error.message}`;
+  }
+}
+
 function setupSteps(device) {
   const telemetry = device?.telemetry || {};
   const isOnline = Boolean(device?.online);
@@ -472,6 +534,36 @@ function setTelegramTheme() {
   const savedTheme = localStorage.getItem("apk_converter_theme");
   const dark = savedTheme ? savedTheme === "dark" : tg?.colorScheme === "dark";
   document.documentElement.classList.toggle("dark", dark);
+}
+
+function syncFullscreenState() {
+  const isFullscreen = Boolean(document.fullscreenElement || tg?.isFullscreen);
+  document.documentElement.classList.toggle("is-fullscreen", isFullscreen);
+  document.documentElement.classList.toggle("telegram-viewport", Boolean(tg));
+  if (fullscreenButton) {
+    fullscreenButton.textContent = isFullscreen ? "↙" : "⛶";
+    fullscreenButton.setAttribute("aria-label", isFullscreen ? "Выйти из полноэкранного режима" : "Во весь экран");
+    fullscreenButton.title = isFullscreen ? "Выйти из полноэкранного режима" : "Во весь экран";
+  }
+}
+
+async function toggleFullscreenMode() {
+  tg?.expand?.();
+  tg?.disableVerticalSwipes?.();
+
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+    } else if (document.documentElement.requestFullscreen) {
+      await document.documentElement.requestFullscreen();
+    } else if (tg?.requestFullscreen) {
+      tg.requestFullscreen();
+    }
+  } catch (_) {
+    document.documentElement.classList.add("is-fullscreen");
+  } finally {
+    syncFullscreenState();
+  }
 }
 
 async function apiJson(url, options = {}) {
@@ -1308,6 +1400,8 @@ closeRemotePanel.addEventListener("click", () => {
   remotePanel.classList.add("hidden");
 });
 
+copyRemoteStatusButton?.addEventListener("click", copySelectedDeviceReport);
+
 remoteTabs.forEach((button) => {
   button.addEventListener("click", () => setRemoteTab(button.dataset.remoteTab));
 });
@@ -1406,6 +1500,12 @@ remotePanelSendText.addEventListener("click", async () => {
   remotePanelTextInput.value = "";
 });
 
+remotePanelTextInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey) return;
+  event.preventDefault();
+  remotePanelSendText.click();
+});
+
 bindScreenGestures(remoteScreenImage, selectedDevice, remoteControlNote);
 
 refreshButton.addEventListener("click", async () => {
@@ -1423,6 +1523,10 @@ themeButton.addEventListener("click", () => {
   localStorage.setItem("apk_converter_theme", dark ? "dark" : "light");
 });
 
+fullscreenButton?.addEventListener("click", toggleFullscreenMode);
+
+document.addEventListener("fullscreenchange", syncFullscreenState);
+
 function startRefreshLoop() {
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(() => {
@@ -1435,6 +1539,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 setTelegramTheme();
+syncFullscreenState();
 renderRemoteLog();
 renderCurrentDevice();
 renderSetupStatus();
