@@ -99,6 +99,12 @@ Expected:
 {"ok": true, "service": "apk-converter-bot"}
 ```
 
+For machine-readable setup diagnostics, open:
+
+```text
+https://YOUR_APP.up.railway.app/setup-status
+```
+
 ## 6. Android Agent
 
 After deploy:

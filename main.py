@@ -1228,72 +1228,87 @@ def setup_check_line(name: str, ok: bool, detail: str, fix: str = "") -> str:
     return line
 
 
-def setup_text() -> str:
-    public_url = public_server_url()
-    checks = [
-        setup_check_line(
-            "BOT_TOKEN",
-            bool(BOT_TOKEN),
-            "задан" if BOT_TOKEN else "не задан",
-            "добавь токен Telegram-бота в Railway variables",
-        ),
-        setup_check_line(
-            "ADMIN_IDS",
-            bool(ADMIN_IDS),
-            ", ".join(sorted(ADMIN_IDS)) if ADMIN_IDS else "публичный режим",
-            "укажи свой Telegram ID, чтобы закрыть управление ботом",
-        ),
-        setup_check_line(
-            "PUBLIC_BASE_URL",
-            PUBLIC_BASE_URL.startswith("https://"),
-            PUBLIC_BASE_URL or "не задан",
-            "укажи HTTPS-домен Railway, например https://project.up.railway.app",
-        ),
-        setup_check_line(
-            "MINI_APP_URL",
-            MINI_APP_URL.startswith("https://"),
-            MINI_APP_URL or "не задан",
-            "обычно ставится таким же, как PUBLIC_BASE_URL",
-        ),
-        setup_check_line(
-            "DEVICE_API_TOKEN",
-            bool(DEVICE_API_TOKEN),
-            "задан" if DEVICE_API_TOKEN else "не задан",
-            "добавь длинный секрет для Android/PC agent API",
-        ),
-        setup_check_line(
-            "GITHUB_REPO",
-            bool(GITHUB_REPO),
-            GITHUB_REPO or "не задан",
-            "укажи playtowin328-lab/HunterAPIK или свой fork",
-        ),
-        setup_check_line(
-            "GITHUB_WORKFLOW",
-            bool(GITHUB_WORKFLOW),
-            GITHUB_WORKFLOW or "не задан",
-            "обычно android-agent-apk.yml",
-        ),
-        setup_check_line(
-            "GITHUB_TOKEN",
-            bool(GITHUB_TOKEN),
-            "задан" if GITHUB_TOKEN else "не задан",
-            "нужен fine-grained token с Actions read/write и Contents read/write",
-        ),
-        setup_check_line(
-            "STORAGE_DIR",
-            STORAGE_DIR.exists(),
-            str(STORAGE_DIR),
-            "подключи Railway Volume и укажи STORAGE_DIR=/data",
-        ),
-        setup_check_line(
-            "DB_PATH",
-            DB_PATH.parent.exists(),
-            str(DB_PATH),
-            "для Railway Volume обычно DB_PATH=/data/app.db",
-        ),
+def setup_checks() -> list[dict]:
+    return [
+        {
+            "name": "BOT_TOKEN",
+            "ok": bool(BOT_TOKEN),
+            "detail": "задан" if BOT_TOKEN else "не задан",
+            "fix": "добавь токен Telegram-бота в Railway variables",
+            "required": True,
+        },
+        {
+            "name": "ADMIN_IDS",
+            "ok": bool(ADMIN_IDS),
+            "detail": ", ".join(sorted(ADMIN_IDS)) if ADMIN_IDS else "публичный режим",
+            "fix": "укажи свой Telegram ID, чтобы закрыть управление ботом",
+            "required": False,
+        },
+        {
+            "name": "PUBLIC_BASE_URL",
+            "ok": PUBLIC_BASE_URL.startswith("https://"),
+            "detail": PUBLIC_BASE_URL or "не задан",
+            "fix": "укажи HTTPS-домен Railway, например https://project.up.railway.app",
+            "required": True,
+        },
+        {
+            "name": "MINI_APP_URL",
+            "ok": MINI_APP_URL.startswith("https://"),
+            "detail": MINI_APP_URL or "не задан",
+            "fix": "обычно ставится таким же, как PUBLIC_BASE_URL",
+            "required": True,
+        },
+        {
+            "name": "DEVICE_API_TOKEN",
+            "ok": bool(DEVICE_API_TOKEN),
+            "detail": "задан" if DEVICE_API_TOKEN else "не задан",
+            "fix": "добавь длинный секрет для Android/PC agent API",
+            "required": True,
+        },
+        {
+            "name": "GITHUB_REPO",
+            "ok": bool(GITHUB_REPO),
+            "detail": GITHUB_REPO or "не задан",
+            "fix": "укажи playtowin328-lab/HunterAPIK или свой fork",
+            "required": True,
+        },
+        {
+            "name": "GITHUB_WORKFLOW",
+            "ok": bool(GITHUB_WORKFLOW),
+            "detail": GITHUB_WORKFLOW or "не задан",
+            "fix": "обычно android-agent-apk.yml",
+            "required": True,
+        },
+        {
+            "name": "GITHUB_TOKEN",
+            "ok": bool(GITHUB_TOKEN),
+            "detail": "задан" if GITHUB_TOKEN else "не задан",
+            "fix": "нужен fine-grained token с Actions read/write и Contents read/write",
+            "required": True,
+        },
+        {
+            "name": "STORAGE_DIR",
+            "ok": STORAGE_DIR.exists(),
+            "detail": str(STORAGE_DIR),
+            "fix": "подключи Railway Volume и укажи STORAGE_DIR=/data",
+            "required": True,
+        },
+        {
+            "name": "DB_PATH",
+            "ok": DB_PATH.parent.exists(),
+            "detail": str(DB_PATH),
+            "fix": "для Railway Volume обычно DB_PATH=/data/app.db",
+            "required": True,
+        },
     ]
 
-    missing = [line for line in checks if line.startswith("FIX:")]
+
+def setup_status_payload() -> dict:
+    checks = setup_checks()
+    required_checks = [item for item in checks if item["required"]]
+    failed = [item for item in checks if not item["ok"]]
+    required_failed = [item for item in required_checks if not item["ok"]]
+    ready = not required_failed
     next_steps = [
         "1. Исправь пункты FIX в Railway variables.",
         "2. Сделай redeploy Railway service.",
@@ -1301,17 +1316,36 @@ def setup_text() -> str:
         "4. Собери APK: /build_apk Hunter Agent или /build_apk_full Hunter Agent Full.",
         "5. Подключи телефон через /pair или /connect.",
     ]
-    if not missing:
+    if ready:
         next_steps.insert(0, "Базовая настройка выглядит готовой.")
+    return {
+        "ok": ready,
+        "service": "hunterapik-setup",
+        "public_url": public_server_url(),
+        "mini_app_url": MINI_APP_URL or "",
+        "checks": checks,
+        "failed_count": len(failed),
+        "required_failed_count": len(required_failed),
+        "next_steps": next_steps,
+    }
+
+
+def setup_text() -> str:
+    status = setup_status_payload()
+    checks = [
+        setup_check_line(item["name"], item["ok"], item["detail"], item["fix"])
+        for item in status["checks"]
+    ]
 
     return (
         "Мастер настройки HunterAPIK\n\n"
-        f"Public URL сейчас: {public_url}\n"
-        f"Mini App URL сейчас: {MINI_APP_URL or 'missing'}\n\n"
+        f"Public URL сейчас: {status['public_url']}\n"
+        f"Mini App URL сейчас: {status['mini_app_url'] or 'missing'}\n"
+        f"Готовность: {'готово' if status['ok'] else 'нужно исправить'}\n\n"
         "Проверка переменных:\n"
         + "\n".join(checks)
         + "\n\nСледующие шаги:\n"
-        + "\n".join(next_steps)
+        + "\n".join(status["next_steps"])
     )
 
 
@@ -3199,6 +3233,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed_url = urlparse(self.path)
         if parsed_url.path == "/health":
+            setup_status = setup_status_payload()
             self.send_json(
                 {
                     "ok": True,
@@ -3209,8 +3244,14 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                     "bot_polling_status": BOT_POLLING_STATUS,
                     "instance_id": INSTANCE_ID,
                     "mini_app": True,
+                    "setup_ready": setup_status["ok"],
+                    "setup_required_failed_count": setup_status["required_failed_count"],
                 }
             )
+            return
+
+        if parsed_url.path == "/setup-status":
+            self.send_json(setup_status_payload())
             return
 
         if parsed_url.path == "/pair":
