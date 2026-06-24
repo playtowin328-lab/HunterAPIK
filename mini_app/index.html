@@ -139,6 +139,22 @@
           </div>
         </div>
 
+        <div class="setup-automation" id="remoteSetupAutomation" aria-label="Автонастройка устройства">
+          <div class="setup-automation-head">
+            <div>
+              <p class="eyebrow">Автонастройка</p>
+              <h3 id="remoteSetupProgress">Проверяю разрешения</h3>
+            </div>
+            <button class="primary-button" id="nextSetupStepButton" type="button">Следующий шаг</button>
+          </div>
+          <div class="setup-checklist" id="remoteSetupChecklist"></div>
+          <div class="setup-automation-actions">
+            <button class="secondary-button remote-command-button" data-command="setup_wizard" type="button">Мастер на телефоне</button>
+            <button class="ghost-button neutral remote-command-button" data-command="repair_agent" type="button">Ремонт связи</button>
+            <button class="ghost-button neutral remote-command-button" data-command="request_actions" type="button">Проверить жесты</button>
+          </div>
+        </div>
+
         <div class="remote-screen" id="remoteScreenPreview" hidden>
           <img id="remoteScreenImage" alt="Экран выбранного устройства">
         </div>

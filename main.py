@@ -60,7 +60,7 @@ COMMAND_HISTORY_TTL_SECONDS = int(os.getenv("COMMAND_HISTORY_TTL_SECONDS", "8640
 AUTO_REPAIR_COOLDOWN_SECONDS = int(os.getenv("AUTO_REPAIR_COOLDOWN_SECONDS", "300"))
 BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
-STORAGE_DIR.mkdir(exist_ok=True)
+STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 MINI_APP_DIR = BASE_DIR / "mini_app"
 AGENT_APK_NAME = "apk-agent.apk"
 AGENT_LITE_APK_NAME = "apk-agent-lite.apk"
@@ -142,8 +142,6 @@ async def ensure_message_admin(message: Message) -> bool:
         "Отправь этот ID владельцу бота, чтобы он выдал доступ.",
         parse_mode="Markdown",
     )
-    return False
-    await message.answer("Доступ закрыт. Этот бот доступен только администраторам.")
     return False
 
 
@@ -3019,10 +3017,10 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         if pairing_code:
             pair_box = f"""
       <div class="pairbox">
-        <strong>Р“РѕС‚РѕРІС‹Р№ РєРѕРґ РїРѕРґРєР»СЋС‡РµРЅРёСЏ</strong>
+        <strong>Готовый код подключения</strong>
         <code>{escape(pairing_code)}</code>
-        <a class="primary" href="{escape(agent_open_link, quote=True)}">РћС‚РєСЂС‹С‚СЊ Agent Рё РїРѕРґРєР»СЋС‡РёС‚СЊ</a>
-        <button class="ghost" onclick="navigator.clipboard.writeText('{escape(agent_open_link, quote=True)}')">РЎРєРѕРїРёСЂРѕРІР°С‚СЊ deep link</button>
+        <a class="primary" href="{escape(agent_open_link, quote=True)}">Открыть Agent и подключить</a>
+        <button class="ghost" onclick="navigator.clipboard.writeText('{escape(agent_open_link, quote=True)}')">Скопировать deep link</button>
       </div>"""
         if apk_path:
             source_text = "APK готов на этом сервере."

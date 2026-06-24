@@ -42,6 +42,10 @@ const remoteConnectionStatus = $("#remoteConnectionStatus");
 const remoteBatteryStatus = $("#remoteBatteryStatus");
 const remoteSecurityStatus = $("#remoteSecurityStatus");
 const remoteCommandStatus = $("#remoteCommandStatus");
+const remoteSetupAutomation = $("#remoteSetupAutomation");
+const remoteSetupProgress = $("#remoteSetupProgress");
+const remoteSetupChecklist = $("#remoteSetupChecklist");
+const nextSetupStepButton = $("#nextSetupStepButton");
 const remoteActionLog = $("#remoteActionLog");
 const remoteLogClearButton = $("#remoteLogClearButton");
 const deviceAlertPanel = $("#deviceAlertPanel");
@@ -248,6 +252,8 @@ function formatTelemetry(device) {
   if (typeof telemetry.lost_mode === "boolean") items.push(`lost: ${telemetry.lost_mode ? "on" : "off"}`);
   if (typeof telemetry.blackout === "boolean") items.push(`blackout: ${telemetry.blackout ? "on" : "off"}`);
   if (telemetry.setup_wizard) items.push(`setup: ${telemetry.setup_waiting_for || "active"}`);
+  if (typeof telemetry.notifications_ready === "boolean") items.push(`уведомления: ${telemetry.notifications_ready ? "on" : "off"}`);
+  if (typeof telemetry.battery_ready === "boolean") items.push(`фон: ${telemetry.battery_ready ? "on" : "off"}`);
   if (typeof telemetry.accessibility === "boolean") items.push(`жесты: ${telemetry.accessibility ? "on" : "off"}`);
   if (typeof telemetry.screen_streaming === "boolean") items.push(`экран: ${telemetry.screen_streaming ? "on" : "off"}`);
   if (typeof telemetry.loop_ms === "number" && telemetry.loop_ms > 0) items.push(`agent: ${telemetry.loop_ms} ms`);
@@ -324,6 +330,111 @@ function formatRemoteStatus(device) {
     commands: pending ? `ждет ${pending}${last}` : (delivered ? `дост. ${delivered}${last}` : `чисто${last}`),
   };
 }
+
+function setupSteps(device) {
+  const telemetry = device?.telemetry || {};
+  const isOnline = Boolean(device?.online);
+  const isAndroid = /android/i.test(`${device?.platform || ""} ${device?.name || ""} ${telemetry.android || ""}`);
+  const isFull = telemetry.full_control === true;
+  const isLite = telemetry.full_control === false;
+  const agentReady = isOnline && telemetry.agent_enabled !== false;
+  const notificationsKnown = typeof telemetry.notifications_ready === "boolean";
+  const batteryKnown = typeof telemetry.battery_ready === "boolean";
+
+  return [
+    {
+      key: "agent",
+      title: "Связь с агентом",
+      detail: agentReady ? "Heartbeat приходит, команды можно отправлять." : "Открой Agent или запусти ремонт связи.",
+      status: agentReady ? "ready" : "blocked",
+      command: "repair_agent",
+    },
+    {
+      key: "notifications",
+      title: "Уведомления",
+      detail: notificationsKnown
+        ? (telemetry.notifications_ready ? "Foreground-сервис не будет тихо выключен Android." : "Нужно подтвердить уведомления на телефоне.")
+        : "Обнови APK, чтобы видеть точный статус уведомлений.",
+      status: !isAndroid ? "skipped" : (telemetry.notifications_ready === true ? "ready" : "todo"),
+      command: "request_notification_permission",
+    },
+    {
+      key: "battery",
+      title: "Работа в фоне",
+      detail: isLite
+        ? "Lite APK не просит отключать оптимизацию батареи."
+        : (batteryKnown && telemetry.battery_ready ? "Оптимизация батареи отключена для агента." : "Нужно разрешить работу в фоне."),
+      status: !isAndroid || isLite ? "skipped" : (telemetry.battery_ready === true ? "ready" : "todo"),
+      command: "request_battery_permission",
+    },
+    {
+      key: "accessibility",
+      title: "Жесты и ввод",
+      detail: isLite
+        ? "Жесты доступны только в Full APK."
+        : (telemetry.accessibility ? "Accessibility включен, тапы и свайпы готовы." : "Включи Hunter Agent в Accessibility."),
+      status: !isAndroid || isLite ? "skipped" : (telemetry.accessibility ? "ready" : "todo"),
+      command: "request_accessibility_permission",
+    },
+    {
+      key: "screen",
+      title: "Экран",
+      detail: isLite
+        ? "Трансляция экрана доступна только в Full APK."
+        : (telemetry.screen_streaming ? "Трансляция активна." : "Запусти запрос экрана и подтверди системное окно."),
+      status: !isAndroid || isLite ? "skipped" : (telemetry.screen_streaming ? "ready" : "todo"),
+      command: "request_screen_permission",
+    },
+    {
+      key: "wizard",
+      title: "Мастер",
+      detail: telemetry.setup_wizard
+        ? `Ожидает шаг: ${telemetry.setup_waiting_for || "следующее подтверждение"}.`
+        : "Может провести по разрешениям на телефоне.",
+      status: telemetry.setup_wizard ? "todo" : (isFull || isLite ? "ready" : "skipped"),
+      command: "setup_wizard",
+    },
+  ];
+}
+
+function setupStatusLabel(status) {
+  if (status === "ready") return "готово";
+  if (status === "skipped") return "не нужно";
+  if (status === "blocked") return "нет связи";
+  return "нужно действие";
+}
+
+function nextSetupStep(device) {
+  const steps = setupSteps(device);
+  return steps.find((step) => step.status === "blocked") || steps.find((step) => step.status === "todo") || null;
+}
+
+function renderSetupAutomation(device) {
+  if (!remoteSetupAutomation || !remoteSetupChecklist || !remoteSetupProgress) return;
+  const steps = setupSteps(device);
+  const actionableSteps = steps.filter((step) => step.status !== "skipped");
+  const readyCount = actionableSteps.filter((step) => step.status === "ready").length;
+  const nextStep = nextSetupStep(device);
+
+  remoteSetupProgress.textContent = nextStep
+    ? `${readyCount}/${actionableSteps.length} готово · дальше: ${nextStep.title}`
+    : `${readyCount}/${actionableSteps.length} готово · настройка завершена`;
+
+  remoteSetupChecklist.innerHTML = steps.map((step) => `
+    <div class="setup-check" data-status="${step.status}">
+      <span>${setupStatusLabel(step.status)}</span>
+      <strong>${escapeHtml(step.title)}</strong>
+      <small>${escapeHtml(step.detail)}</small>
+    </div>
+  `).join("");
+
+  if (nextSetupStepButton) {
+    nextSetupStepButton.disabled = !nextStep || remoteCommandBusy || !device?.online;
+    nextSetupStepButton.dataset.command = nextStep?.command || "";
+    nextSetupStepButton.textContent = nextStep ? `Открыть: ${nextStep.title}` : "Все готово";
+  }
+}
+
 function canControlDevice(device) {
   return Boolean(device?.online && device?.health?.state !== "revoked");
 }
@@ -558,9 +669,14 @@ function setRemoteBusy(value) {
     $(".remote-screen-button", remotePanel),
     $(".remote-stop-screen-button", remotePanel),
     remotePanelSendText,
+    nextSetupStepButton,
   ].filter(Boolean).forEach((button) => {
     button.disabled = value;
   });
+
+  if (!value) {
+    renderSetupAutomation(selectedDevice());
+  }
 }
 function manageDevice(device, action, payload = {}) {
   return apiJson(`${apiBaseUrl}/api/devices/manage`, {
@@ -684,6 +800,7 @@ function renderRemotePanel(restartScreen = false) {
   remoteCommandStatus.textContent = remoteStatus.commands;
   remoteDeviceMeta.textContent = `${device.platform || "unknown"} · ${device.agent || "agent"} · ${device.health?.label || (device.online ? "Online" : "Offline")}`;
   updateQualityButtons(device, remotePanel, ".remote-quality-button");
+  renderSetupAutomation(device);
   remoteControlNote.textContent = formatDeviceNote(device);
 
   if (restartScreen && device.online) {
@@ -1031,6 +1148,17 @@ $$(".remote-command-button", remotePanel).forEach((button) => {
     const successText = remoteCommandMessages[command] || "Команда отправлена.";
     sendSimpleDeviceCommand(selectedDevice(), command, remoteControlNote, successText, textPayload);
   });
+});
+
+nextSetupStepButton?.addEventListener("click", () => {
+  const device = selectedDevice();
+  const step = nextSetupStep(device);
+  if (!step) {
+    remoteControlNote.textContent = "Автонастройка уже выглядит готовой.";
+    return;
+  }
+  const successText = remoteCommandMessages[step.command] || `Открываю шаг: ${step.title}.`;
+  sendSimpleDeviceCommand(device, step.command, remoteControlNote, successText);
 });
 
 remotePanelSendText.addEventListener("click", async () => {

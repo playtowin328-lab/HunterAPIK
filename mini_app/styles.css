@@ -426,6 +426,106 @@ h2 {
   opacity: 0.58;
 }
 
+.setup-automation {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.setup-automation-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.setup-automation h3 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.setup-automation-head button {
+  flex: 0 0 auto;
+}
+
+.setup-checklist {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.setup-check {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.setup-check span,
+.setup-check strong,
+.setup-check small {
+  display: block;
+}
+
+.setup-check span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.setup-check strong {
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.setup-check small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.setup-check[data-status="ready"] {
+  border-color: rgba(35, 134, 79, 0.42);
+}
+
+.setup-check[data-status="ready"] span {
+  color: var(--success);
+}
+
+.setup-check[data-status="todo"] {
+  border-color: rgba(154, 106, 0, 0.45);
+}
+
+.setup-check[data-status="todo"] span {
+  color: var(--warn);
+}
+
+.setup-check[data-status="blocked"] {
+  border-color: rgba(179, 52, 69, 0.45);
+}
+
+.setup-check[data-status="blocked"] span {
+  color: var(--danger);
+}
+
+.setup-check[data-status="skipped"] {
+  opacity: 0.74;
+}
+
+.setup-automation-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .remote-log {
   display: grid;
   gap: 8px;
@@ -705,6 +805,8 @@ select:focus {
 
   .setup-steps,
   .remote-status-grid,
+  .setup-checklist,
+  .setup-automation-actions,
   .alert-settings-grid,
   .alert-kind-grid,
   .primary-controls,
@@ -721,7 +823,8 @@ select:focus {
   }
 
   .setup-actions,
-  .actions {
+  .actions,
+  .setup-automation-head {
     display: grid;
     grid-template-columns: 1fr;
   }

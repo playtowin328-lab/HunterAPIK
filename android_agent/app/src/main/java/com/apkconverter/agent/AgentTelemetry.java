@@ -1,13 +1,16 @@
 package com.apkconverter.agent;
 
+import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.os.BatteryManager;
 import android.os.Build;
+import android.os.PowerManager;
 
 import org.json.JSONObject;
 
@@ -28,6 +31,8 @@ final class AgentTelemetry {
                     .put("manufacturer", Build.MANUFACTURER)
                     .put("model", Build.MODEL)
                     .put("full_control", BuildConfig.FULL_CONTROL)
+                    .put("notifications_ready", notificationsReady(context))
+                    .put("battery_ready", batteryReady(context))
                     .put("accessibility", BuildConfig.FULL_CONTROL && TouchControlService.isReady())
                     .put("screen_streaming", BuildConfig.FULL_CONTROL && ScreenCaptureService.isRunning())
                     .put("blackout", prefs.getBoolean(AgentConfig.KEY_BLACKOUT_ENABLED, false))
@@ -50,6 +55,19 @@ final class AgentTelemetry {
         } catch (Exception exc) {
             return "{}";
         }
+    }
+
+    private static boolean notificationsReady(Context context) {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+                || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private static boolean batteryReady(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true;
+        }
+        PowerManager manager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+        return manager == null || manager.isIgnoringBatteryOptimizations(context.getPackageName());
     }
 
     private static BatteryStatus batteryStatus(Context context) {
