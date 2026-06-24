@@ -977,6 +977,30 @@ select:focus {
   max-width: none;
 }
 
+:root.is-fullscreen,
+:root.is-fullscreen body {
+  width: 100%;
+  min-height: 100%;
+  overflow: hidden;
+}
+
+:root.is-fullscreen .app-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  overflow: auto;
+  background: var(--bg);
+}
+
+:root.is-fullscreen .remote-panel {
+  top: 10px;
+  max-height: calc(100vh - 20px);
+  max-height: calc(100dvh - 20px);
+}
+
 @media (max-width: 940px) {
   .app-shell {
     grid-template-columns: 1fr;

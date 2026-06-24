@@ -156,6 +156,7 @@ let activeRemoteTab = localStorage.getItem("hunter_remote_tab") || "setup";
 let deviceAlertSettings = null;
 let deviceAlertEvents = [];
 let deviceAlertKindList = [];
+let fullscreenFallbackActive = false;
 const screenPollers = new Map();
 const pendingScreenRequests = new Set();
 window.currentDeviceScope = "own";
@@ -537,7 +538,8 @@ function setTelegramTheme() {
 }
 
 function syncFullscreenState() {
-  const isFullscreen = Boolean(document.fullscreenElement || tg?.isFullscreen);
+  const browserFullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
+  const isFullscreen = Boolean(browserFullscreenElement || fullscreenFallbackActive || tg?.isFullscreen);
   document.documentElement.classList.toggle("is-fullscreen", isFullscreen);
   document.documentElement.classList.toggle("telegram-viewport", Boolean(tg));
   if (fullscreenButton) {
@@ -552,15 +554,30 @@ async function toggleFullscreenMode() {
   tg?.disableVerticalSwipes?.();
 
   try {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen();
-    } else if (document.documentElement.requestFullscreen) {
-      await document.documentElement.requestFullscreen();
-    } else if (tg?.requestFullscreen) {
-      tg.requestFullscreen();
+    const browserFullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
+    if (browserFullscreenElement || fullscreenFallbackActive || tg?.isFullscreen) {
+      fullscreenFallbackActive = false;
+      if (document.exitFullscreen && browserFullscreenElement) {
+        await document.exitFullscreen();
+      } else if (document.webkitExitFullscreen && browserFullscreenElement) {
+        document.webkitExitFullscreen();
+      }
+      tg?.exitFullscreen?.();
+    } else {
+      fullscreenFallbackActive = true;
+      syncFullscreenState();
+      if (document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen();
+        fullscreenFallbackActive = false;
+      } else if (document.documentElement.webkitRequestFullscreen) {
+        document.documentElement.webkitRequestFullscreen();
+        fullscreenFallbackActive = false;
+      } else if (tg?.requestFullscreen) {
+        tg.requestFullscreen();
+      }
     }
   } catch (_) {
-    document.documentElement.classList.add("is-fullscreen");
+    fullscreenFallbackActive = true;
   } finally {
     syncFullscreenState();
   }
@@ -1597,6 +1614,7 @@ themeButton.addEventListener("click", () => {
 fullscreenButton?.addEventListener("click", toggleFullscreenMode);
 
 document.addEventListener("fullscreenchange", syncFullscreenState);
+document.addEventListener("webkitfullscreenchange", syncFullscreenState);
 
 function startRefreshLoop() {
   if (refreshTimer) clearInterval(refreshTimer);
