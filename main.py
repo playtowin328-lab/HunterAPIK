@@ -883,6 +883,7 @@ HELP_TEXT = (
     "/pair — QR и код привязки\n"
     "/devices — список устройств\n"
     "/apk — Lite/Full APK и ссылки\n"
+    "/apk_status — последний запуск APK workflow\n"
     "/build_apk Название — собрать Lite APK\n"
     "/build_apk_full Название — собрать Full APK\n"
     "/build_pc_agent — собрать Windows EXE\n"
@@ -1272,6 +1273,14 @@ async def send_apk_list(message: Message) -> None:
     await message.answer(apk_list_text(), reply_markup=apk_list_keyboard())
 
 
+async def send_apk_status(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    audit_message(message, "command_apk_status", "Checked APK build status")
+    result = await asyncio.to_thread(apk_build_status_text)
+    await message.answer(result, reply_markup=apk_list_keyboard())
+
+
 def probe_url(url: str, method: str = "GET") -> tuple[bool, str]:
     if not url:
         return False, "missing"
@@ -1419,6 +1428,12 @@ def run_deploy_checks(owner_id: int) -> str:
             workflow = github_api_json(f"/repos/{GITHUB_REPO}/actions/workflows/{quote(GITHUB_WORKFLOW, safe='')}")
             workflow_state = workflow.get("state", "unknown")
             lines.append(check_line("GitHub workflow", workflow_state == "active", workflow_state))
+            latest_run = latest_workflow_run(GITHUB_WORKFLOW)
+            if latest_run:
+                run_status = latest_run.get("status", "unknown")
+                run_conclusion = latest_run.get("conclusion") or "running"
+                run_url = latest_run.get("html_url") or github_workflow_url()
+                lines.append(check_line("Latest APK workflow run", run_conclusion == "success", f"{run_status}/{run_conclusion} - {run_url}"))
         except Exception as exc:
             lines.append(check_line("GitHub workflow", False, str(exc)[:120]))
 
@@ -2578,12 +2593,114 @@ def format_github_build_error(exc: Exception) -> str:
     return f"GitHub APK build did not start: {text}"
 
 
+def github_workflow_url(workflow_file: str = GITHUB_WORKFLOW) -> str:
+    return f"https://github.com/{GITHUB_REPO}/actions/workflows/{workflow_file}"
+
+
+def latest_workflow_run(workflow_file: str) -> dict | None:
+    workflow = quote(workflow_file, safe="")
+    data = github_api_json(
+        f"/repos/{GITHUB_REPO}/actions/workflows/{workflow}/runs",
+        {
+            "branch": "main",
+            "per_page": "1",
+        },
+    )
+    runs = data.get("workflow_runs", [])
+    return runs[0] if runs else None
+
+
+def apk_build_status_text() -> str:
+    apk_ready, apk_url, apk_detail = apk_download_status()
+    lines = [
+        "Статус Android APK",
+        "",
+        f"APK download: {'готов' if apk_ready else 'не готов'}",
+        f"Детали: {apk_detail}",
+        f"Latest APK: {apk_url}",
+        f"Lite APK: {release_apk_url('lite')}",
+        f"Full APK: {release_apk_url('full')}",
+        f"Release: {apk_release_page_url()}",
+        f"Workflow: {github_workflow_url()}",
+    ]
+
+    if not GITHUB_TOKEN:
+        lines.extend(
+            [
+                "",
+                "GitHub Actions: нет GITHUB_TOKEN в Railway.",
+                "Добавь токен с правами repo/actions, сделай redeploy и повтори /build_apk.",
+            ]
+        )
+        return "\n".join(lines)
+
+    try:
+        workflow = github_api_json(f"/repos/{GITHUB_REPO}/actions/workflows/{quote(GITHUB_WORKFLOW, safe='')}")
+        lines.append(f"Workflow state: {workflow.get('state', 'unknown')}")
+        run = latest_workflow_run(GITHUB_WORKFLOW)
+    except Exception as exc:
+        lines.extend(["", f"GitHub Actions check failed: {format_github_build_error(exc)}"])
+        return "\n".join(lines)
+
+    if not run:
+        lines.extend(
+            [
+                "",
+                "Последних запусков APK workflow пока нет.",
+                "Запусти сборку кнопкой «Собрать Lite/Full» или командой /build_apk Моё название.",
+            ]
+        )
+        return "\n".join(lines)
+
+    status = run.get("status", "unknown")
+    conclusion = run.get("conclusion") or "running"
+    run_url = run.get("html_url") or github_workflow_url()
+    created_at = run.get("created_at", "unknown")
+    updated_at = run.get("updated_at", "unknown")
+    lines.extend(
+        [
+            "",
+            "Последний запуск:",
+            f"Run: {run.get('name', 'APK workflow')}",
+            f"Status: {status}",
+            f"Result: {conclusion}",
+            f"Created: {created_at}",
+            f"Updated: {updated_at}",
+            f"Logs: {run_url}",
+        ]
+    )
+
+    if status == "completed" and conclusion != "success":
+        try:
+            jobs = workflow_run_jobs(int(run["id"]))
+            failed_jobs = [job for job in jobs if job.get("conclusion") not in {None, "success", "skipped"}]
+            if failed_jobs:
+                lines.append("")
+                lines.append("Проблемные jobs:")
+                for job in failed_jobs[:5]:
+                    lines.append(f"- {job.get('name')}: {job.get('conclusion')} ({job.get('html_url')})")
+        except Exception as exc:
+            lines.append(f"Jobs check failed: {exc}")
+
+    if status == "completed" and conclusion == "success" and not apk_ready:
+        lines.extend(
+            [
+                "",
+                "Workflow успешный, но APK еще не скачивается.",
+                "Обычно GitHub Release обновляется через 1-2 минуты. Если не появится, открой Logs и проверь шаг Publish latest APK release.",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
 def apk_list_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Скачать Lite APK", url=release_apk_url("lite"))],
             [InlineKeyboardButton(text="Скачать Full APK", url=release_apk_url("full"))],
             [InlineKeyboardButton(text="Открыть страницу установки", url=f"{public_server_url()}/agent")],
+            [InlineKeyboardButton(text="Статус сборки APK", callback_data="apk_build_status")],
             [InlineKeyboardButton(text="Своё APK: название + иконка", callback_data="custom_apk_help")],
             [
                 InlineKeyboardButton(text="Собрать Lite", callback_data="connect_build_now"),
@@ -3948,6 +4065,12 @@ async def callbacks(callback: CallbackQuery) -> None:
         await show_bot_screen(callback, custom_apk_text(), reply_markup=apk_list_keyboard(), parse_mode="Markdown")
         return
 
+    if action == "apk_build_status":
+        await callback.answer("Checking APK build...")
+        result = await asyncio.to_thread(apk_build_status_text)
+        await show_bot_screen(callback, result, reply_markup=apk_list_keyboard())
+        return
+
     if action == "apk_list":
         await callback.answer()
         await show_bot_screen(callback, apk_list_text(), reply_markup=apk_list_keyboard())
@@ -4088,6 +4211,12 @@ async def callbacks(callback: CallbackQuery) -> None:
         await callback.message.answer(custom_apk_text(), reply_markup=apk_list_keyboard(), parse_mode="Markdown")
         return
 
+    if action == "apk_build_status":
+        await callback.answer("Checking APK build...")
+        result = await asyncio.to_thread(apk_build_status_text)
+        await callback.message.answer(result, reply_markup=apk_list_keyboard())
+        return
+
     if action == "connect_build_now":
         await callback.answer("Starting APK build...")
         await start_apk_build(callback.message, callback.from_user.id, "Hunter Agent Lite", "lite")
@@ -4223,6 +4352,7 @@ async def run_bot() -> None:
     dp.message.register(send_connect, Command("connect"))
     dp.message.register(send_devices, Command("devices"))
     dp.message.register(send_apk_list, Command("apk"))
+    dp.message.register(send_apk_status, Command("apk_status"))
     dp.message.register(send_build_apk, Command("build_apk"))
     dp.message.register(send_build_apk_full, Command("build_apk_full"))
     dp.message.register(send_build_pc_agent, Command("build_pc_agent"))
