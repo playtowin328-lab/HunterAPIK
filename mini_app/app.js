@@ -54,6 +54,11 @@ const remoteBatteryStatus = $("#remoteBatteryStatus");
 const remoteSecurityStatus = $("#remoteSecurityStatus");
 const remoteCommandStatus = $("#remoteCommandStatus");
 const quickActionButtons = $$(".quick-action-button");
+const remoteHealthCard = $("#remoteHealthCard");
+const remoteHealthStatus = $("#remoteHealthStatus");
+const remoteHealthTitle = $("#remoteHealthTitle");
+const remoteHealthDetail = $("#remoteHealthDetail");
+const remoteHealthActionButton = $("#remoteHealthActionButton");
 const remoteTabs = $$(".remote-tabs button");
 const remoteTabPanels = $$(".remote-tab-panel");
 const remoteSetupAutomation = $("#remoteSetupAutomation");
@@ -364,6 +369,128 @@ function formatRemoteStatus(device) {
     security,
     commands: pending ? `ждет ${pending}${last}` : (delivered ? `дост. ${delivered}${last}` : `чисто${last}`),
   };
+}
+
+function primaryDeviceIssue(device) {
+  if (!device) {
+    return {
+      status: "info",
+      label: "Статус",
+      title: "Устройство не выбрано",
+      detail: "Выбери устройство из списка, чтобы увидеть подсказку.",
+      action: "",
+      actionLabel: "Действие",
+    };
+  }
+
+  const telemetry = device.telemetry || {};
+  const diagnostics = device.diagnostics || {};
+  const health = device.health || {};
+  const issues = new Set(health.issues || []);
+  const pending = Number(diagnostics.pending_commands || 0);
+  const delivered = Number(diagnostics.delivered_commands || 0);
+
+  if (issues.has("pairing_revoked")) {
+    return {
+      status: "danger",
+      label: "Привязка",
+      title: "Нужен новый QR",
+      detail: "Привязка сброшена. Получи новый код и открой его на телефоне.",
+      action: "pair",
+      actionLabel: "Получить QR",
+    };
+  }
+  if (!device.online) {
+    return {
+      status: "danger",
+      label: "Связь",
+      title: "Агент offline",
+      detail: formatHealthHint(device, "Открой Android Agent на телефоне и проверь интернет."),
+      action: "stabilize",
+      actionLabel: "Стабилизировать",
+    };
+  }
+  if (pending >= 3 || delivered >= 2 || issues.has("command_queue_stuck") || issues.has("command_delivery_stuck")) {
+    return {
+      status: "warn",
+      label: "Очередь",
+      title: "Команды зависают",
+      detail: `Активных команд: ${pending + delivered}. Очисти очередь и проверь ping агента.`,
+      action: "stabilize",
+      actionLabel: "Стабилизировать",
+    };
+  }
+  if (telemetry.last_error) {
+    return {
+      status: "warn",
+      label: "Агент",
+      title: "Ошибка агента",
+      detail: String(telemetry.last_error).slice(0, 160),
+      action: "stabilize",
+      actionLabel: "Ремонт связи",
+    };
+  }
+  if (telemetry.screen_error) {
+    return {
+      status: "warn",
+      label: "Экран",
+      title: "Ошибка трансляции",
+      detail: String(telemetry.screen_error).slice(0, 160),
+      action: "screen",
+      actionLabel: "Запустить экран",
+    };
+  }
+  if (telemetry.full_control === false) {
+    return {
+      status: "info",
+      label: "APK",
+      title: "Lite режим",
+      detail: "Жесты и live-экран доступны только в Full APK. Для статуса и базовых команд Lite подходит.",
+      action: "setup",
+      actionLabel: "Проверить setup",
+    };
+  }
+  if (telemetry.full_control === true && telemetry.accessibility !== true) {
+    return {
+      status: "warn",
+      label: "Жесты",
+      title: "Accessibility не включен",
+      detail: "Тапы, свайпы и ввод заработают после включения Hunter Agent в Accessibility.",
+      action: "setup",
+      actionLabel: "Открыть шаг",
+    };
+  }
+  if (telemetry.full_control === true && telemetry.screen_streaming !== true) {
+    return {
+      status: "info",
+      label: "Экран",
+      title: "Live-экран не запущен",
+      detail: "Можно запросить трансляцию и подтвердить системное окно на телефоне.",
+      action: "screen",
+      actionLabel: "Запустить live",
+    };
+  }
+
+  return {
+    status: "ready",
+    label: "Готово",
+    title: "Управление выглядит стабильным",
+    detail: formatHealthHint(device, "Связь, очередь и базовые разрешения выглядят нормально."),
+    action: "report",
+    actionLabel: "Скопировать статус",
+  };
+}
+
+function renderRemoteHealth(device) {
+  if (!remoteHealthCard || !remoteHealthStatus || !remoteHealthTitle || !remoteHealthDetail || !remoteHealthActionButton) return;
+  const issue = primaryDeviceIssue(device);
+  remoteHealthCard.dataset.status = issue.status;
+  remoteHealthStatus.textContent = issue.label;
+  remoteHealthTitle.textContent = issue.title;
+  remoteHealthDetail.textContent = issue.detail;
+  remoteHealthActionButton.textContent = issue.actionLabel;
+  remoteHealthActionButton.dataset.action = issue.action;
+  remoteHealthActionButton.disabled = !issue.action || remoteCommandBusy;
 }
 
 async function copyTextToClipboard(text) {
@@ -915,12 +1042,14 @@ function setRemoteBusy(value) {
     $(".remote-stop-screen-button", remotePanel),
     remotePanelSendText,
     nextSetupStepButton,
+    remoteHealthActionButton,
   ].filter(Boolean).forEach((button) => {
     button.disabled = value;
   });
 
   if (!value) {
     renderSetupAutomation(selectedDevice());
+    renderRemoteHealth(selectedDevice());
   }
 }
 function manageDevice(device, action, payload = {}) {
@@ -1212,6 +1341,10 @@ function runQuickAction(action) {
   }
   if (action === "report") {
     copySelectedDeviceReport();
+    return;
+  }
+  if (action === "pair") {
+    requestPairButton.click();
   }
 }
 
@@ -1233,6 +1366,7 @@ function renderRemotePanel(restartScreen = false) {
   updateQualityButtons(device, remotePanel, ".remote-quality-button");
   setRemoteTab(activeRemoteTab);
   renderSetupAutomation(device);
+  renderRemoteHealth(device);
   remoteControlNote.textContent = formatDeviceNote(device);
 
   if (restartScreen && device.online) {
@@ -1557,6 +1691,8 @@ remoteTabs.forEach((button) => {
 quickActionButtons.forEach((button) => {
   button.addEventListener("click", () => runQuickAction(button.dataset.action));
 });
+
+remoteHealthActionButton?.addEventListener("click", () => runQuickAction(remoteHealthActionButton.dataset.action));
 
 remoteLogClearButton?.addEventListener("click", () => {
   remoteLogItems = [];

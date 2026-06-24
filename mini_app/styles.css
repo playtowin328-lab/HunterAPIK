@@ -588,6 +588,59 @@ h2 {
   border-color: var(--accent);
 }
 
+.remote-health-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.remote-health-card[data-status="ready"] {
+  border-left-color: var(--success);
+}
+
+.remote-health-card[data-status="warn"] {
+  border-left-color: var(--warn);
+}
+
+.remote-health-card[data-status="danger"] {
+  border-left-color: var(--danger);
+}
+
+.remote-health-card span,
+.remote-health-card strong {
+  display: block;
+}
+
+.remote-health-card span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.remote-health-card strong {
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.remote-health-card p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.remote-health-card button {
+  min-width: 132px;
+}
+
 .remote-panel.busy button:disabled {
   cursor: wait;
   opacity: 0.58;
@@ -1094,9 +1147,15 @@ select:focus {
 
   .setup-actions,
   .actions,
-  .setup-automation-head {
+  .setup-automation-head,
+  .remote-health-card {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .remote-health-card button {
+    min-width: 0;
+    width: 100%;
   }
 
   .pair-result {
