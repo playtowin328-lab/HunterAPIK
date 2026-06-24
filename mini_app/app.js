@@ -53,6 +53,7 @@ const remoteConnectionStatus = $("#remoteConnectionStatus");
 const remoteBatteryStatus = $("#remoteBatteryStatus");
 const remoteSecurityStatus = $("#remoteSecurityStatus");
 const remoteCommandStatus = $("#remoteCommandStatus");
+const quickActionButtons = $$(".quick-action-button");
 const remoteTabs = $$(".remote-tabs button");
 const remoteTabPanels = $$(".remote-tab-panel");
 const remoteSetupAutomation = $("#remoteSetupAutomation");
@@ -909,6 +910,7 @@ function setRemoteBusy(value) {
     ...$$(".remote-manage-button", remotePanel),
     ...$$(".remote-diagnose-button", remotePanel),
     ...$$(".remote-macro-button", remotePanel),
+    ...quickActionButtons,
     $(".remote-screen-button", remotePanel),
     $(".remote-stop-screen-button", remotePanel),
     remotePanelSendText,
@@ -1185,6 +1187,32 @@ async function runStabilizeMacro() {
 function updateQualityButtons(device, root, selector) {
   const quality = device ? getDeviceQuality(device) : "balanced";
   $$(selector, root).forEach((button) => button.classList.toggle("active", button.dataset.quality === quality));
+}
+
+function runQuickAction(action) {
+  if (action === "screen") {
+    setRemoteTab("screen");
+    startRemoteScreen();
+    return;
+  }
+  if (action === "stabilize") {
+    setRemoteTab("system");
+    runStabilizeMacro();
+    return;
+  }
+  if (action === "setup") {
+    setRemoteTab("setup");
+    nextSetupStepButton?.click();
+    return;
+  }
+  if (action === "wake_unlock") {
+    setRemoteTab("screen");
+    runWakeUnlockMacro();
+    return;
+  }
+  if (action === "report") {
+    copySelectedDeviceReport();
+  }
 }
 
 function renderRemotePanel(restartScreen = false) {
@@ -1524,6 +1552,10 @@ copyRemoteStatusButton?.addEventListener("click", copySelectedDeviceReport);
 
 remoteTabs.forEach((button) => {
   button.addEventListener("click", () => setRemoteTab(button.dataset.remoteTab));
+});
+
+quickActionButtons.forEach((button) => {
+  button.addEventListener("click", () => runQuickAction(button.dataset.action));
 });
 
 remoteLogClearButton?.addEventListener("click", () => {

@@ -544,6 +544,50 @@ h2 {
   font-size: 14px;
 }
 
+.quick-action-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.quick-action-button {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  min-height: 64px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.quick-action-button span,
+.quick-action-button strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-action-button span {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.quick-action-button strong {
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.quick-action-button:hover {
+  border-color: var(--accent);
+}
+
 .remote-panel.busy button:disabled {
   cursor: wait;
   opacity: 0.58;
@@ -1030,6 +1074,7 @@ select:focus {
   .deploy-status-grid,
   .deploy-checklist,
   .remote-status-grid,
+  .quick-action-grid,
   .setup-checklist,
   .setup-automation-actions,
   .alert-settings-grid,
