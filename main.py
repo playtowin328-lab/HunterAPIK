@@ -1231,6 +1231,10 @@ def connect_text(owner_id: int) -> str:
     apk_source = "готов" if apk_ready else f"не готов ({apk_detail})"
     devices = list_devices_for_user(str(owner_id))
     online_count = sum(1 for device in devices if device.get("online"))
+    setup_hint = ""
+    if devices:
+        selected = next((device for device in devices if device.get("online")), devices[0])
+        setup_hint = f"\n\nБлижайший шаг: {selected.get('name', 'устройство')} — {format_device_setup_line(selected)}"
     return (
         "Мастер подключения телефона\n\n"
         "1. Если APK ещё не готов, собери Lite или Full.\n"
@@ -1241,6 +1245,7 @@ def connect_text(owner_id: int) -> str:
         "6. Вернись в мини‑апп: телефон должен стать Online.\n\n"
         f"APK: {apk_source}\n"
         f"Устройства: {len(devices)} всего, {online_count} online"
+        f"{setup_hint}"
     )
 
 async def send_connect(message: Message) -> None:
@@ -1285,6 +1290,106 @@ def check_line(label: str, ok: bool, detail: str = "") -> str:
     return f"{marker}: {label}{suffix}"
 
 
+def is_android_device(device: dict) -> bool:
+    marker = f"{device.get('platform', '')} {device.get('agent', '')} {device.get('name', '')}".lower()
+    return "android" in marker or "apk" in marker
+
+
+def setup_step(status: str, title: str, detail: str) -> dict:
+    return {"status": status, "title": title, "detail": detail}
+
+
+def device_setup_steps(device: dict) -> list[dict]:
+    telemetry = device.get("telemetry") or {}
+    if not is_android_device(device):
+        return []
+
+    online = bool(device.get("online"))
+    full_control = telemetry.get("full_control") is True
+    lite_mode = telemetry.get("full_control") is False
+    agent_ready = online and telemetry.get("agent_enabled") is not False
+
+    steps = [
+        setup_step(
+            "ready" if agent_ready else "todo",
+            "Связь",
+            "heartbeat идет" if agent_ready else "открой Agent или запусти ремонт связи",
+        ),
+        setup_step(
+            "ready" if telemetry.get("notifications_ready") is True else "todo",
+            "Уведомления",
+            "разрешены" if telemetry.get("notifications_ready") is True else "нужно подтвердить на телефоне",
+        ),
+    ]
+
+    if lite_mode:
+        steps.extend(
+            [
+                setup_step("skip", "Фон", "Lite не просит отключать оптимизацию батареи"),
+                setup_step("skip", "Жесты", "доступны только в Full APK"),
+                setup_step("skip", "Экран", "доступен только в Full APK"),
+            ]
+        )
+        return steps
+
+    if full_control:
+        steps.extend(
+            [
+                setup_step(
+                    "ready" if telemetry.get("battery_ready") is True else "todo",
+                    "Фон",
+                    "оптимизация батареи отключена" if telemetry.get("battery_ready") is True else "нужно разрешить работу в фоне",
+                ),
+                setup_step(
+                    "ready" if telemetry.get("accessibility") else "todo",
+                    "Жесты",
+                    "Accessibility включен" if telemetry.get("accessibility") else "включи Hunter Agent в Accessibility",
+                ),
+                setup_step(
+                    "ready" if telemetry.get("screen_streaming") else "todo",
+                    "Экран",
+                    "трансляция активна" if telemetry.get("screen_streaming") else "запусти экран и подтверди системное окно",
+                ),
+            ]
+        )
+        return steps
+
+    steps.extend(
+        [
+            setup_step("todo", "Режим APK", "обнови агент, чтобы видеть Lite/Full и статусы разрешений"),
+            setup_step("todo", "Фон", "статус недоступен в старой версии агента"),
+            setup_step("todo", "Жесты/экран", "статус недоступен в старой версии агента"),
+        ]
+    )
+    return steps
+
+
+def device_setup_progress(device: dict) -> tuple[int, int, list[dict]]:
+    steps = device_setup_steps(device)
+    required = [step for step in steps if step["status"] != "skip"]
+    ready = sum(1 for step in required if step["status"] == "ready")
+    return ready, len(required), steps
+
+
+def format_device_setup_line(device: dict) -> str:
+    ready, total, steps = device_setup_progress(device)
+    if not steps:
+        return "Setup: не Android agent"
+    pending = [step["title"] for step in steps if step["status"] == "todo"]
+    if pending:
+        return f"Setup: {ready}/{total} готово; дальше: {', '.join(pending[:3])}"
+    return f"Setup: {ready}/{total} готово"
+
+
+def format_device_setup_details(device: dict) -> list[str]:
+    _, _, steps = device_setup_progress(device)
+    details = []
+    for step in steps:
+        marker = {"ready": "OK", "todo": "WAIT", "skip": "SKIP"}.get(step["status"], "INFO")
+        details.append(f"{marker}: {step['title']} - {step['detail']}")
+    return details
+
+
 def run_deploy_checks(owner_id: int) -> str:
     lines = ["Deployment check"]
     health_url = f"{public_server_url()}/health"
@@ -1319,6 +1424,15 @@ def run_deploy_checks(owner_id: int) -> str:
     devices = list_devices_for_user(str(owner_id))
     online_count = sum(1 for device in devices if device.get("online"))
     lines.append(check_line("Devices", True, f"{len(devices)} total, {online_count} online"))
+    if devices:
+        lines.append("")
+        lines.append("Device setup")
+        for device in devices[:5]:
+            name = device.get("name", "Unknown")
+            status = "online" if device.get("online") else "offline"
+            lines.append(f"- {name} ({status}): {format_device_setup_line(device)}")
+            for detail in format_device_setup_details(device)[:5]:
+                lines.append(f"  {detail}")
     return "\n".join(lines)
 
 
@@ -1719,12 +1833,16 @@ def format_device_lines(devices: list[dict], include_owner: bool = False) -> lis
         owner_line = f"Owner: {device.get('owner_id', 'unknown')}\n" if include_owner else ""
         health = device.get("health") or {}
         health_line = f"Состояние: {health.get('label')}\n" if health.get("label") else ""
+        setup_line = format_device_setup_line(device)
+        setup_details = "\n".join(format_device_setup_details(device)[:4])
+        setup_block = f"{setup_line}\n{setup_details}\n" if setup_details else f"{setup_line}\n"
         lines.append(
             f"\n{status} — {device.get('name', 'Unknown')}\n"
             f"{owner_line}"
             f"Платформа: {device.get('platform', 'unknown')}\n"
             f"Агент: {device.get('agent', 'unknown')}\n"
             f"{health_line}"
+            f"{setup_block}"
             f"Device ID: {device.get('device_id', 'unknown')}"
         )
     return lines
