@@ -6,7 +6,7 @@ on:
       app_name:
         description: "Launcher app name"
         required: false
-        default: "APK Agent"
+        default: "Hunter Agent"
       icon_url:
         description: "Public PNG/JPG icon URL"
         required: false
@@ -53,26 +53,35 @@ jobs:
         env:
           APP_NAME: ${{ github.event.inputs.app_name }}
           ICON_URL: ${{ github.event.inputs.icon_url }}
+          BUILD_MODE: ${{ github.event.inputs.build_mode }}
         run: |
           python - <<'PY'
           import os
           import xml.etree.ElementTree as ET
 
-          app_name = (os.environ.get("APP_NAME") or "APK Agent").strip()[:40]
+          app_name = " ".join((os.environ.get("APP_NAME") or "Hunter Agent").split())[:40] or "Hunter Agent"
           path = "android_agent/app/src/main/res/values/strings.xml"
           tree = ET.parse(path)
           root = tree.getroot()
           for item in root.findall("string"):
               if item.attrib.get("name") == "app_name":
                   item.text = app_name
+              elif item.attrib.get("name") == "notification_title":
+                  item.text = f"{app_name} активен"
           tree.write(path, encoding="utf-8", xml_declaration=False)
+
+          mode = (os.environ.get("BUILD_MODE") or "lite").strip().lower()
+          with open("android_agent/app/src/main/assets-build-info.txt", "w", encoding="utf-8") as fh:
+              fh.write(f"App name: {app_name}\n")
+              fh.write(f"Requested mode: {mode if mode in {'lite', 'full'} else 'lite'}\n")
+              fh.write(f"Custom icon: {'yes' if os.environ.get('ICON_URL') else 'no'}\n")
           PY
 
           if [ -n "$ICON_URL" ]; then
             mkdir -p android_agent/app/src/main/res/drawable
             rm -f android_agent/app/src/main/res/drawable/app_icon.xml
-              curl -L --fail "$ICON_URL" -o android_agent/app/src/main/res/drawable/app_icon.png
-            fi
+            curl -L --fail --retry 2 --max-time 30 "$ICON_URL" -o android_agent/app/src/main/res/drawable/app_icon.png
+          fi
 
       - name: Build debug APKs
         shell: bash
@@ -84,6 +93,8 @@ jobs:
       - name: Prepare APK files
         shell: bash
         env:
+          APP_NAME: ${{ github.event.inputs.app_name }}
+          ICON_URL: ${{ github.event.inputs.icon_url }}
           BUILD_MODE: ${{ github.event.inputs.build_mode }}
         run: |
           mode="${BUILD_MODE:-lite}"
@@ -101,10 +112,18 @@ jobs:
           fi
           sha256sum dist/apk-agent.apk dist/apk-agent-lite.apk dist/apk-agent-full.apk > dist/apk-agent.sha256
           {
+            echo "App name: ${APP_NAME:-Hunter Agent}"
             echo "Build mode: $mode"
             echo "APK: dist/apk-agent.apk"
             echo "Lite APK: dist/apk-agent-lite.apk"
             echo "Full APK: dist/apk-agent-full.apk"
+            if [ -n "$ICON_URL" ]; then
+              echo "Custom icon: yes"
+            else
+              echo "Custom icon: no"
+            fi
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           } > dist/build-info.txt
 
       - name: Upload APKs
@@ -122,7 +141,11 @@ jobs:
         with:
           tag_name: android-agent-latest
           name: Android Agent Latest
-          body: Lite debug build by default. Install only on your own devices.
+          body: |
+            Latest Android Agent APK build.
+
+            Includes Lite and Full APK variants plus build-info and checksums.
+            Install only on your own devices and keep Android permissions visible to the user.
           files: |
             dist/apk-agent.apk
             dist/apk-agent-lite.apk

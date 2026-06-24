@@ -1211,6 +1211,7 @@ def connect_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📥 Скачать / установить APK", url=f"{public_server_url()}/agent")],
             [InlineKeyboardButton(text="🔑 Получить QR и код", callback_data="pair_device")],
             [InlineKeyboardButton(text="📦 Lite / Full APK", callback_data="apk_list")],
+            [InlineKeyboardButton(text="🎨 Своё APK: название + иконка", callback_data="custom_apk_help")],
             [
                 InlineKeyboardButton(text="🛠 Собрать Lite", callback_data="connect_build_now"),
                 InlineKeyboardButton(text="🎛 Собрать Full", callback_data="connect_build_full"),
@@ -1577,7 +1578,7 @@ async def start_apk_build(message: Message, owner_id: int, app_name: str = "Hunt
     try:
         await asyncio.to_thread(trigger_github_apk_build, app_name, icon_url, build_mode)
     except Exception as exc:
-        await message.answer(f"GitHub APK build did not start: {exc}")
+        await message.answer(format_github_build_error(exc), reply_markup=apk_list_keyboard())
         return
 
     release_url = f"https://github.com/{GITHUB_REPO}/releases/tag/android-agent-latest"
@@ -2535,12 +2536,55 @@ def apk_list_text() -> str:
     )
 
 
+def custom_apk_text() -> str:
+    token_status = "готов" if GITHUB_TOKEN else "не задан в Railway"
+    public_url_status = "готов" if PUBLIC_BASE_URL else "не задан, своя иконка не будет доступна GitHub Actions"
+    return (
+        "*Своё Android APK*\n\n"
+        "Бот умеет собрать APK с твоим названием и, если перед сборкой отправить картинку, со своей иконкой.\n\n"
+        "Как собрать:\n"
+        "1. Отправь боту PNG/JPG картинку для иконки, если нужна своя.\n"
+        "2. Отправь `/build_apk Моё название` для Lite APK.\n"
+        "3. Отправь `/build_apk_full Моё название` для Full APK.\n\n"
+        "Lite подходит для подключения, статуса, батареи и сети. Full добавляет экран, тапы, свайпы и ввод текста, поэтому Android попросит больше разрешений.\n\n"
+        "Диагностика сборки:\n"
+        f"• `GITHUB_TOKEN`: {token_status}\n"
+        f"• `GITHUB_REPO`: {GITHUB_REPO or 'не задан'}\n"
+        f"• `GITHUB_WORKFLOW`: {GITHUB_WORKFLOW or 'не задан'}\n"
+        f"• `PUBLIC_BASE_URL`: {public_url_status}\n\n"
+        "Если сборка не стартует, почти всегда причина в Railway variables: нужен `GITHUB_TOKEN` с правами на repo/actions и redeploy сервиса после добавления переменной."
+    )
+
+
+def format_github_build_error(exc: Exception) -> str:
+    text = str(exc)
+    lower = text.lower()
+    if "github_token is missing" in lower:
+        return (
+            "Не могу запустить сборку: в Railway не задан GITHUB_TOKEN.\n\n"
+            "Добавь переменную GITHUB_TOKEN, выдай токену права repo/actions для репозитория, затем сделай redeploy."
+        )
+    if "http 401" in lower:
+        return "GitHub отклонил токен: проверь GITHUB_TOKEN в Railway и сделай redeploy."
+    if "http 403" in lower:
+        return "GitHub не дал доступ к workflow: токену нужны права на Actions/contents для этого репозитория."
+    if "http 404" in lower:
+        return (
+            "GitHub не нашел workflow или репозиторий.\n\n"
+            f"Проверь GITHUB_REPO={GITHUB_REPO or 'missing'} и GITHUB_WORKFLOW={GITHUB_WORKFLOW or 'missing'}."
+        )
+    if "http 422" in lower:
+        return "GitHub принял запрос, но не смог запустить workflow: проверь, что ветка main существует и inputs workflow совпадают."
+    return f"GitHub APK build did not start: {text}"
+
+
 def apk_list_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Скачать Lite APK", url=release_apk_url("lite"))],
             [InlineKeyboardButton(text="Скачать Full APK", url=release_apk_url("full"))],
             [InlineKeyboardButton(text="Открыть страницу установки", url=f"{public_server_url()}/agent")],
+            [InlineKeyboardButton(text="Своё APK: название + иконка", callback_data="custom_apk_help")],
             [
                 InlineKeyboardButton(text="Собрать Lite", callback_data="connect_build_now"),
                 InlineKeyboardButton(text="Собрать Full", callback_data="connect_build_full"),
@@ -3899,6 +3943,11 @@ async def callbacks(callback: CallbackQuery) -> None:
         )
         return
 
+    if action == "custom_apk_help":
+        await callback.answer()
+        await show_bot_screen(callback, custom_apk_text(), reply_markup=apk_list_keyboard(), parse_mode="Markdown")
+        return
+
     if action == "apk_list":
         await callback.answer()
         await show_bot_screen(callback, apk_list_text(), reply_markup=apk_list_keyboard())
@@ -4032,6 +4081,11 @@ async def callbacks(callback: CallbackQuery) -> None:
             "APK собирается для Android 10+.",
             parse_mode="Markdown",
         )
+        return
+
+    if action == "custom_apk_help":
+        await callback.answer()
+        await callback.message.answer(custom_apk_text(), reply_markup=apk_list_keyboard(), parse_mode="Markdown")
         return
 
     if action == "connect_build_now":
