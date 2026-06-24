@@ -1064,6 +1064,73 @@ async function runWakeUnlockMacro() {
   }
 }
 
+async function runStabilizeMacro() {
+  const device = selectedDevice();
+  if (!device) {
+    remoteControlNote.textContent = "Сначала выбери устройство.";
+    return;
+  }
+  if (remoteCommandBusy) {
+    remoteControlNote.textContent = "Предыдущая команда еще выполняется.";
+    return;
+  }
+
+  try {
+    setRemoteBusy(true);
+    addRemoteLog("stabilize", "Запускаю стабилизацию связи.", "pending");
+
+    const diagnostics = device.diagnostics || {};
+    const activeCommands = Number(diagnostics.pending_commands || 0) + Number(diagnostics.delivered_commands || 0);
+    if (activeCommands) {
+      remoteControlNote.textContent = `Снимаю зависшую очередь: ${activeCommands} активных команд.`;
+      const cleared = await manageDevice(device, "clear_commands");
+      addRemoteLog("clear_commands", `Снято команд: ${Number(cleared.cleared || 0)}.`, "done");
+      await refreshDevices();
+    }
+
+    const freshDevice = selectedDevice() || device;
+    if (!canControlDevice(freshDevice)) {
+      const message = formatHealthHint(freshDevice, "Устройство offline. Очередь очищена, теперь открой Agent на телефоне.");
+      remoteControlNote.textContent = message;
+      addRemoteLog("stabilize", message, "warn");
+      return;
+    }
+
+    remoteControlNote.textContent = "Проверяю связь ping...";
+    const firstPing = await sendCommandAndWait(freshDevice, "ping", {}, 5000);
+    const firstStatus = firstPing?.command?.status;
+    const firstMessage = commandResultText(firstPing, "Агент отвечает.");
+    addRemoteLog("ping", firstMessage, firstStatus === "timeout" || firstStatus === "rejected" ? "warn" : "done");
+
+    if (firstStatus !== "timeout" && firstStatus !== "rejected") {
+      remoteControlNote.textContent = `${firstMessage} Связь стабильна.`;
+      await refreshDevices();
+      return;
+    }
+
+    remoteControlNote.textContent = "Ping нестабилен. Запускаю ремонт связи...";
+    const repair = await sendCommandAndWait(freshDevice, "repair_agent", {}, 8000);
+    const repairStatus = repair?.command?.status;
+    const repairMessage = commandResultText(repair, "Ремонт связи запущен.");
+    addRemoteLog("repair_agent", repairMessage, repairStatus === "timeout" || repairStatus === "rejected" ? "warn" : "done");
+
+    remoteControlNote.textContent = "Повторно проверяю ping...";
+    const secondPing = await sendCommandAndWait(freshDevice, "ping", {}, 6000);
+    const secondStatus = secondPing?.command?.status;
+    const secondMessage = commandResultText(secondPing, "Агент отвечает после ремонта.");
+    remoteControlNote.textContent = secondStatus === "timeout" || secondStatus === "rejected"
+      ? `${secondMessage} Если не ожило, открой Agent на телефоне вручную.`
+      : `${secondMessage} Связь восстановлена.`;
+    addRemoteLog("ping_after_repair", secondMessage, secondStatus === "timeout" || secondStatus === "rejected" ? "warn" : "done");
+    await refreshDevices();
+  } catch (error) {
+    remoteControlNote.textContent = error.message;
+    addRemoteLog("stabilize", error.message, "error");
+  } finally {
+    setRemoteBusy(false);
+  }
+}
+
 function updateQualityButtons(device, root, selector) {
   const quality = device ? getDeviceQuality(device) : "balanced";
   $$(selector, root).forEach((button) => button.classList.toggle("active", button.dataset.quality === quality));
@@ -1475,6 +1542,10 @@ $$(".remote-macro-button", remotePanel).forEach((button) => {
   button.addEventListener("click", () => {
     if (button.dataset.macro === "wake_unlock") {
       runWakeUnlockMacro();
+      return;
+    }
+    if (button.dataset.macro === "stabilize") {
+      runStabilizeMacro();
     }
   });
 });
