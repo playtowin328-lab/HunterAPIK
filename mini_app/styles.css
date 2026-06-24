@@ -426,6 +426,44 @@ h2 {
   opacity: 0.58;
 }
 
+.remote-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  scrollbar-width: thin;
+}
+
+.remote-tabs button {
+  flex: 0 0 auto;
+  min-height: 36px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 850;
+  padding: 0 11px;
+}
+
+.remote-tabs button.active {
+  background: var(--surface);
+  color: var(--accent-strong);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.08);
+}
+
+.remote-tab-panel {
+  display: none;
+}
+
+.remote-tab-panel.active {
+  display: grid;
+  gap: 10px;
+}
+
 .setup-automation {
   display: grid;
   gap: 10px;
@@ -600,6 +638,15 @@ h2 {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
+}
+
+.remote-panel .remote-tab-panel {
+  display: none;
+}
+
+.remote-panel .remote-tab-panel.active {
+  display: grid;
+  gap: 10px;
 }
 
 .remote-section-head {

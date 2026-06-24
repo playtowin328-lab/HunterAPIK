@@ -139,7 +139,16 @@
           </div>
         </div>
 
-        <div class="setup-automation" id="remoteSetupAutomation" aria-label="Автонастройка устройства">
+        <div class="remote-tabs" role="tablist" aria-label="Разделы пульта">
+          <button class="active" data-remote-tab="setup" type="button">Настройка</button>
+          <button data-remote-tab="screen" type="button">Экран</button>
+          <button data-remote-tab="nav" type="button">Навигация</button>
+          <button data-remote-tab="protect" type="button">Защита</button>
+          <button data-remote-tab="system" type="button">Система</button>
+          <button data-remote-tab="logs" type="button">Логи</button>
+        </div>
+
+        <div class="setup-automation remote-tab-panel active" data-tab-panel="setup" id="remoteSetupAutomation" aria-label="Автонастройка устройства">
           <div class="setup-automation-head">
             <div>
               <p class="eyebrow">Автонастройка</p>
@@ -155,28 +164,30 @@
           </div>
         </div>
 
-        <div class="remote-screen" id="remoteScreenPreview" hidden>
-          <img id="remoteScreenImage" alt="Экран выбранного устройства">
-        </div>
+        <div class="remote-tab-panel" data-tab-panel="screen">
+          <div class="remote-screen" id="remoteScreenPreview" hidden>
+            <img id="remoteScreenImage" alt="Экран выбранного устройства">
+          </div>
 
-        <div class="remote-section">
-          <div class="remote-section-head">
-            <p class="eyebrow">Экран</p>
-            <div class="segmented compact-segmented" role="group" aria-label="Качество экрана">
-              <button class="remote-quality-button" data-quality="fast" type="button">Быстро</button>
-              <button class="remote-quality-button" data-quality="balanced" type="button">Баланс</button>
-              <button class="remote-quality-button" data-quality="quality" type="button">Качество</button>
+          <div class="remote-section">
+            <div class="remote-section-head">
+              <p class="eyebrow">Экран</p>
+              <div class="segmented compact-segmented" role="group" aria-label="Качество экрана">
+                <button class="remote-quality-button" data-quality="fast" type="button">Быстро</button>
+                <button class="remote-quality-button" data-quality="balanced" type="button">Баланс</button>
+                <button class="remote-quality-button" data-quality="quality" type="button">Качество</button>
+              </div>
+            </div>
+            <div class="remote-grid primary-controls">
+              <button class="secondary-button remote-screen-button" type="button">Запустить экран</button>
+              <button class="secondary-button danger-soft remote-stop-screen-button" type="button">Остановить экран</button>
+              <button class="ghost-button neutral remote-command-button" data-command="wake_screen" type="button">Разбудить</button>
+              <button class="ghost-button neutral remote-command-button" data-command="dismiss_keyguard" type="button">Разблокировать</button>
             </div>
           </div>
-          <div class="remote-grid primary-controls">
-            <button class="secondary-button remote-screen-button" type="button">Запустить экран</button>
-            <button class="secondary-button danger-soft remote-stop-screen-button" type="button">Остановить экран</button>
-            <button class="ghost-button neutral remote-command-button" data-command="wake_screen" type="button">Разбудить</button>
-            <button class="ghost-button neutral remote-command-button" data-command="dismiss_keyguard" type="button">Разблокировать</button>
-          </div>
         </div>
 
-        <div class="remote-section">
+        <div class="remote-section remote-tab-panel" data-tab-panel="nav">
           <p class="eyebrow">Навигация</p>
           <div class="remote-grid nav-remote-controls">
             <button class="ghost-button neutral remote-command-button" data-command="back" type="button">Назад</button>
@@ -191,7 +202,7 @@
           </div>
         </div>
 
-        <div class="remote-section">
+        <div class="remote-section remote-tab-panel" data-tab-panel="protect">
           <p class="eyebrow">Защита</p>
           <div class="remote-grid protection-controls">
             <button class="secondary-button danger-soft remote-command-button" data-command="lost_mode_on" type="button">Режим кражи</button>
@@ -204,31 +215,33 @@
           </div>
         </div>
 
-        <div class="remote-section">
-          <p class="eyebrow">Система и разрешения</p>
-          <div class="remote-grid system-remote-controls">
-            <button class="secondary-button remote-command-button" data-command="setup_wizard" type="button">Автонастройка</button>
-            <button class="secondary-button remote-command-button" data-command="repair_agent" type="button">Ремонт связи</button>
-            <button class="ghost-button neutral remote-command-button" data-command="request_notification_permission" type="button">Разрешить уведомления</button>
-            <button class="ghost-button neutral remote-command-button" data-command="request_battery_permission" type="button">Работа в фоне</button>
-            <button class="ghost-button neutral remote-command-button" data-command="request_accessibility_permission" type="button">Жесты</button>
-            <button class="ghost-button neutral remote-command-button" data-command="request_screen_permission" type="button">Доступ к экрану</button>
-            <button class="ghost-button neutral remote-command-button" data-command="open_settings" type="button">Настройки</button>
-            <button class="ghost-button neutral remote-command-button" data-command="open_wifi_settings" type="button">Wi-Fi</button>
-            <button class="ghost-button neutral remote-command-button" data-command="open_battery_settings" type="button">Батарея</button>
-            <button class="ghost-button neutral remote-command-button" data-command="request_actions" type="button">Проверка</button>
-            <button class="ghost-button neutral remote-command-button" data-command="request_files" type="button">Файлы</button>
+        <div class="remote-tab-panel" data-tab-panel="system">
+          <div class="remote-section">
+            <p class="eyebrow">Система и разрешения</p>
+            <div class="remote-grid system-remote-controls">
+              <button class="secondary-button remote-command-button" data-command="setup_wizard" type="button">Автонастройка</button>
+              <button class="secondary-button remote-command-button" data-command="repair_agent" type="button">Ремонт связи</button>
+              <button class="ghost-button neutral remote-command-button" data-command="request_notification_permission" type="button">Разрешить уведомления</button>
+              <button class="ghost-button neutral remote-command-button" data-command="request_battery_permission" type="button">Работа в фоне</button>
+              <button class="ghost-button neutral remote-command-button" data-command="request_accessibility_permission" type="button">Жесты</button>
+              <button class="ghost-button neutral remote-command-button" data-command="request_screen_permission" type="button">Доступ к экрану</button>
+              <button class="ghost-button neutral remote-command-button" data-command="open_settings" type="button">Настройки</button>
+              <button class="ghost-button neutral remote-command-button" data-command="open_wifi_settings" type="button">Wi-Fi</button>
+              <button class="ghost-button neutral remote-command-button" data-command="open_battery_settings" type="button">Батарея</button>
+              <button class="ghost-button neutral remote-command-button" data-command="request_actions" type="button">Проверка</button>
+              <button class="ghost-button neutral remote-command-button" data-command="request_files" type="button">Файлы</button>
+            </div>
           </div>
-        </div>
-        <div class="text-actions">
-          <input id="remotePanelTextInput" type="text" placeholder="Текст на телефон" maxlength="240">
-          <button class="secondary-button" id="remotePanelSendText" type="button">Отправить</button>
-          <button class="ghost-button neutral remote-command-button" data-command="key_enter" type="button">Ввод</button>
-          <button class="ghost-button neutral remote-command-button" data-command="key_delete" type="button">Удалить</button>
+          <div class="text-actions">
+            <input id="remotePanelTextInput" type="text" placeholder="Текст на телефон" maxlength="240">
+            <button class="secondary-button" id="remotePanelSendText" type="button">Отправить</button>
+            <button class="ghost-button neutral remote-command-button" data-command="key_enter" type="button">Ввод</button>
+            <button class="ghost-button neutral remote-command-button" data-command="key_delete" type="button">Удалить</button>
+          </div>
         </div>
 
         <p class="control-note" id="remoteControlNote">Выбери устройство из списка.</p>
-        <div class="remote-log" aria-label="Журнал действий пульта">
+        <div class="remote-log remote-tab-panel" data-tab-panel="logs" aria-label="Журнал действий пульта">
           <div class="remote-log-head">
             <span>Журнал действий</span>
             <button class="ghost-button neutral" id="remoteLogClearButton" type="button">Очистить</button>

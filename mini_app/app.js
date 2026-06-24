@@ -42,6 +42,8 @@ const remoteConnectionStatus = $("#remoteConnectionStatus");
 const remoteBatteryStatus = $("#remoteBatteryStatus");
 const remoteSecurityStatus = $("#remoteSecurityStatus");
 const remoteCommandStatus = $("#remoteCommandStatus");
+const remoteTabs = $$(".remote-tabs button");
+const remoteTabPanels = $$(".remote-tab-panel");
 const remoteSetupAutomation = $("#remoteSetupAutomation");
 const remoteSetupProgress = $("#remoteSetupProgress");
 const remoteSetupChecklist = $("#remoteSetupChecklist");
@@ -137,6 +139,7 @@ let refreshInFlight = false;
 let refreshTimer = null;
 let remoteCommandBusy = false;
 let remoteLogItems = [];
+let activeRemoteTab = localStorage.getItem("hunter_remote_tab") || "setup";
 let deviceAlertSettings = null;
 let deviceAlertEvents = [];
 let deviceAlertKindList = [];
@@ -207,6 +210,22 @@ function selectDevice(device) {
   remotePanelCollapsed = false;
   localStorage.setItem("hunter_selected_device_id", selectedDeviceId);
   renderRemotePanel(false);
+}
+
+function setRemoteTab(tabName) {
+  const availableTabs = new Set(remoteTabs.map((button) => button.dataset.remoteTab));
+  activeRemoteTab = availableTabs.has(tabName) ? tabName : "setup";
+  localStorage.setItem("hunter_remote_tab", activeRemoteTab);
+
+  remoteTabs.forEach((button) => {
+    const active = button.dataset.remoteTab === activeRemoteTab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+
+  remoteTabPanels.forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.tabPanel === activeRemoteTab);
+  });
 }
 
 function detectCurrentDevice() {
@@ -800,6 +819,7 @@ function renderRemotePanel(restartScreen = false) {
   remoteCommandStatus.textContent = remoteStatus.commands;
   remoteDeviceMeta.textContent = `${device.platform || "unknown"} · ${device.agent || "agent"} · ${device.health?.label || (device.online ? "Online" : "Offline")}`;
   updateQualityButtons(device, remotePanel, ".remote-quality-button");
+  setRemoteTab(activeRemoteTab);
   renderSetupAutomation(device);
   remoteControlNote.textContent = formatDeviceNote(device);
 
@@ -1112,6 +1132,10 @@ closeRemotePanel.addEventListener("click", () => {
   if (device) stopScreenPolling(device.device_id);
   remotePanelCollapsed = true;
   remotePanel.classList.add("hidden");
+});
+
+remoteTabs.forEach((button) => {
+  button.addEventListener("click", () => setRemoteTab(button.dataset.remoteTab));
 });
 
 remoteLogClearButton?.addEventListener("click", () => {
