@@ -879,6 +879,7 @@ HELP_TEXT = (
     "• `Полная проверка` — Railway, мини‑апп, APK и workflow.\n\n"
     "*Команды:*\n"
     "/start — главное меню\n"
+    "/setup — мастер настройки Railway/GitHub\n"
     "/connect — мастер подключения\n"
     "/pair — QR и код привязки\n"
     "/devices — список устройств\n"
@@ -943,6 +944,7 @@ def main_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🛠 Собрать APK", callback_data="connect_build_now"),
                 InlineKeyboardButton(text="✅ Полная проверка", callback_data="connect_check"),
             ],
+            [InlineKeyboardButton(text="🚦 Мастер настройки", callback_data="setup_wizard")],
             [
                 InlineKeyboardButton(text="📄 PDF", callback_data="make_pdf"),
                 InlineKeyboardButton(text="🖼 PNG", callback_data="make_png"),
@@ -988,6 +990,18 @@ def nav_keyboard(back: str | None = "main_menu") -> InlineKeyboardMarkup:
 
 def with_nav(markup: InlineKeyboardMarkup, back: str | None = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[*markup.inline_keyboard, nav_row(back)])
+
+
+def setup_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Полная проверка", callback_data="connect_check")],
+            [InlineKeyboardButton(text="Статус APK-сборки", callback_data="apk_build_status")],
+            [InlineKeyboardButton(text="Мастер подключения", callback_data="connect_wizard")],
+            [InlineKeyboardButton(text="Railway variables", callback_data="railway_env_help")],
+            nav_row(None),
+        ]
+    )
 
 
 async def show_bot_screen(
@@ -1204,6 +1218,130 @@ async def send_status(message: Message) -> None:
         f"DB: {DB_PATH}",
     ]
     await message.answer("\n".join(lines))
+
+
+def setup_check_line(name: str, ok: bool, detail: str, fix: str = "") -> str:
+    marker = "OK" if ok else "FIX"
+    line = f"{marker}: {name} - {detail}"
+    if fix and not ok:
+        line += f"\n  -> {fix}"
+    return line
+
+
+def setup_text() -> str:
+    public_url = public_server_url()
+    checks = [
+        setup_check_line(
+            "BOT_TOKEN",
+            bool(BOT_TOKEN),
+            "задан" if BOT_TOKEN else "не задан",
+            "добавь токен Telegram-бота в Railway variables",
+        ),
+        setup_check_line(
+            "ADMIN_IDS",
+            bool(ADMIN_IDS),
+            ", ".join(sorted(ADMIN_IDS)) if ADMIN_IDS else "публичный режим",
+            "укажи свой Telegram ID, чтобы закрыть управление ботом",
+        ),
+        setup_check_line(
+            "PUBLIC_BASE_URL",
+            PUBLIC_BASE_URL.startswith("https://"),
+            PUBLIC_BASE_URL or "не задан",
+            "укажи HTTPS-домен Railway, например https://project.up.railway.app",
+        ),
+        setup_check_line(
+            "MINI_APP_URL",
+            MINI_APP_URL.startswith("https://"),
+            MINI_APP_URL or "не задан",
+            "обычно ставится таким же, как PUBLIC_BASE_URL",
+        ),
+        setup_check_line(
+            "DEVICE_API_TOKEN",
+            bool(DEVICE_API_TOKEN),
+            "задан" if DEVICE_API_TOKEN else "не задан",
+            "добавь длинный секрет для Android/PC agent API",
+        ),
+        setup_check_line(
+            "GITHUB_REPO",
+            bool(GITHUB_REPO),
+            GITHUB_REPO or "не задан",
+            "укажи playtowin328-lab/HunterAPIK или свой fork",
+        ),
+        setup_check_line(
+            "GITHUB_WORKFLOW",
+            bool(GITHUB_WORKFLOW),
+            GITHUB_WORKFLOW or "не задан",
+            "обычно android-agent-apk.yml",
+        ),
+        setup_check_line(
+            "GITHUB_TOKEN",
+            bool(GITHUB_TOKEN),
+            "задан" if GITHUB_TOKEN else "не задан",
+            "нужен fine-grained token с Actions read/write и Contents read/write",
+        ),
+        setup_check_line(
+            "STORAGE_DIR",
+            STORAGE_DIR.exists(),
+            str(STORAGE_DIR),
+            "подключи Railway Volume и укажи STORAGE_DIR=/data",
+        ),
+        setup_check_line(
+            "DB_PATH",
+            DB_PATH.parent.exists(),
+            str(DB_PATH),
+            "для Railway Volume обычно DB_PATH=/data/app.db",
+        ),
+    ]
+
+    missing = [line for line in checks if line.startswith("FIX:")]
+    next_steps = [
+        "1. Исправь пункты FIX в Railway variables.",
+        "2. Сделай redeploy Railway service.",
+        "3. Отправь /check и /apk_status.",
+        "4. Собери APK: /build_apk Hunter Agent или /build_apk_full Hunter Agent Full.",
+        "5. Подключи телефон через /pair или /connect.",
+    ]
+    if not missing:
+        next_steps.insert(0, "Базовая настройка выглядит готовой.")
+
+    return (
+        "Мастер настройки HunterAPIK\n\n"
+        f"Public URL сейчас: {public_url}\n"
+        f"Mini App URL сейчас: {MINI_APP_URL or 'missing'}\n\n"
+        "Проверка переменных:\n"
+        + "\n".join(checks)
+        + "\n\nСледующие шаги:\n"
+        + "\n".join(next_steps)
+    )
+
+
+def railway_env_template_text() -> str:
+    public_url = PUBLIC_BASE_URL or "https://YOUR_APP.up.railway.app"
+    return (
+        "Railway variables template\n\n"
+        "BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN\n"
+        "BOT_POLLING_ENABLED=true\n"
+        "ADMIN_IDS=YOUR_TELEGRAM_ID\n"
+        f"PUBLIC_BASE_URL={public_url}\n"
+        f"MINI_APP_URL={public_url}\n"
+        "GITHUB_REPO=playtowin328-lab/HunterAPIK\n"
+        "GITHUB_WORKFLOW=android-agent-apk.yml\n"
+        "GITHUB_TOKEN=YOUR_GITHUB_TOKEN_WITH_ACTIONS_AND_CONTENTS_RW\n"
+        "DEVICE_API_TOKEN=GENERATE_LONG_RANDOM_SECRET\n"
+        "STORAGE_DIR=/data\n"
+        "DB_PATH=/data/app.db\n"
+        "DEVICE_TTL_SECONDS=90\n"
+        "PAIRING_TTL_SECONDS=600\n"
+        "MAX_IMAGE_SIZE_MB=20\n\n"
+        "После изменения переменных обязательно сделай redeploy."
+    )
+
+
+async def send_setup(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    audit_message(message, "command_setup", "Opened setup wizard")
+    await message.answer(setup_text(), reply_markup=setup_keyboard())
 
 
 def connect_keyboard() -> InlineKeyboardMarkup:
@@ -3963,6 +4101,16 @@ async def callbacks(callback: CallbackQuery) -> None:
         await show_bot_screen(callback, SETTINGS_TEXT, reply_markup=nav_keyboard(None))
         return
 
+    if action == "setup_wizard":
+        await callback.answer()
+        await show_bot_screen(callback, setup_text(), reply_markup=setup_keyboard())
+        return
+
+    if action == "railway_env_help":
+        await callback.answer()
+        await show_bot_screen(callback, railway_env_template_text(), reply_markup=setup_keyboard())
+        return
+
     if action == "access_info":
         if not is_root_admin_user(callback.from_user):
             await callback.answer("Только владелец из ADMIN_IDS может управлять доступом.", show_alert=True)
@@ -4153,6 +4301,16 @@ async def callbacks(callback: CallbackQuery) -> None:
     if action == "settings":
         await callback.message.answer(SETTINGS_TEXT)
         await callback.answer()
+        return
+
+    if action == "setup_wizard":
+        await callback.answer()
+        await callback.message.answer(setup_text(), reply_markup=setup_keyboard())
+        return
+
+    if action == "railway_env_help":
+        await callback.answer()
+        await callback.message.answer(railway_env_template_text(), reply_markup=setup_keyboard())
         return
 
     if action == "guide":
@@ -4348,6 +4506,7 @@ async def run_bot() -> None:
     dp.message.register(send_set_role, Command("role"))
     dp.message.register(send_revoke_access, Command("revoke"))
     dp.message.register(send_status, Command("status"))
+    dp.message.register(send_setup, Command("setup"))
     dp.message.register(send_check, Command("check"))
     dp.message.register(send_connect, Command("connect"))
     dp.message.register(send_devices, Command("devices"))

@@ -137,8 +137,10 @@ After that release exists, `/agent` will show a working download button and
 From Telegram:
 
 ```text
+/setup
 /connect
 /check
+/apk_status
 /devices
 /build_apk My Agent
 ```
@@ -147,8 +149,12 @@ If you send an image to the bot before `/build_apk`, that image becomes the APK 
 The bot starts GitHub Actions, watches the workflow run, and sends the APK
 download link or failed run logs when the build finishes.
 
+Use `/setup` first after Railway deploy. It prints the live status of required
+Railway/GitHub variables and gives a copy-ready variables template.
 Use `/connect` as the main phone setup wizard. It includes buttons for APK
 install, QR pairing, build help, device status, and diagnostics.
 Use `/devices` after pairing to check whether the Android Agent is online.
 Use `/check` when something does not react: it verifies Railway URLs, APK link,
 GitHub workflow access, storage, database path, and connected devices.
+Use `/apk_status` to inspect the last Android APK workflow run, release links,
+and failed GitHub Actions jobs.
