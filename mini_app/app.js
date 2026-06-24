@@ -25,6 +25,13 @@ const pairQrImage = $("#pairQrImage");
 const pairCode = $("#pairCode");
 const openPairPageButton = $("#openPairPageButton");
 const openAgentDeepLinkButton = $("#openAgentDeepLinkButton");
+const deployPanel = $("#deployPanel");
+const deployRefreshButton = $("#deployRefreshButton");
+const deployStatusTitle = $("#deployStatusTitle");
+const deployReadyStatus = $("#deployReadyStatus");
+const deployFixCount = $("#deployFixCount");
+const deployPublicUrl = $("#deployPublicUrl");
+const deployChecklist = $("#deployChecklist");
 const totalDevices = $("#totalDevices");
 const onlineDevices = $("#onlineDevices");
 const userName = $("#userName");
@@ -137,6 +144,8 @@ let selectedDeviceId = localStorage.getItem("hunter_selected_device_id") || "";
 let remotePanelCollapsed = false;
 let refreshInFlight = false;
 let refreshTimer = null;
+let setupStatus = null;
+let setupStatusLoading = false;
 let remoteCommandBusy = false;
 let remoteLogItems = [];
 let activeRemoteTab = localStorage.getItem("hunter_remote_tab") || "setup";
@@ -473,6 +482,74 @@ async function apiJson(url, options = {}) {
     throw new Error(payload.error || `HTTP ${response.status}`);
   }
   return payload;
+}
+
+function renderSetupStatus() {
+  if (!deployPanel || !deployStatusTitle || !deployChecklist) return;
+  const status = setupStatus;
+  deployPanel.dataset.ready = status?.ok ? "ready" : "fix";
+
+  if (setupStatusLoading && !status) {
+    deployStatusTitle.textContent = "Проверяю настройку";
+    deployReadyStatus.textContent = "-";
+    deployFixCount.textContent = "-";
+    deployPublicUrl.textContent = "-";
+    deployChecklist.innerHTML = `<div class="deploy-check" data-status="pending"><span>WAIT</span><strong>Загрузка</strong><small>Получаю /setup-status...</small></div>`;
+    return;
+  }
+
+  if (!status) {
+    deployStatusTitle.textContent = "Статус недоступен";
+    deployReadyStatus.textContent = "нет данных";
+    deployFixCount.textContent = "-";
+    deployPublicUrl.textContent = apiBaseUrl;
+    deployChecklist.innerHTML = `<div class="deploy-check" data-status="fix"><span>FIX</span><strong>Setup API</strong><small>Нажми «Проверить» или обнови мини-апп.</small></div>`;
+    return;
+  }
+
+  const checks = Array.isArray(status.checks) ? status.checks : [];
+  const failed = checks.filter((item) => !item.ok);
+  const importantChecks = failed.length ? failed : checks.filter((item) => item.required).slice(0, 4);
+  deployStatusTitle.textContent = status.ok ? "Настройка готова" : "Нужна настройка";
+  deployReadyStatus.textContent = status.ok ? "готово" : "исправить";
+  deployFixCount.textContent = String(status.required_failed_count ?? failed.length);
+  deployPublicUrl.textContent = status.public_url || apiBaseUrl;
+  deployChecklist.innerHTML = importantChecks.length
+    ? importantChecks.map((item) => `
+      <div class="deploy-check" data-status="${item.ok ? "ready" : "fix"}">
+        <span>${item.ok ? "OK" : "FIX"}</span>
+        <strong>${escapeHtml(item.name || "check")}</strong>
+        <small>${escapeHtml(item.ok ? item.detail : (item.fix || item.detail || "Проверь Railway variables"))}</small>
+      </div>
+    `).join("")
+    : `<div class="deploy-check" data-status="ready"><span>OK</span><strong>Railway</strong><small>Базовые переменные готовы.</small></div>`;
+}
+
+async function loadSetupStatus() {
+  if (setupStatusLoading) return;
+  setupStatusLoading = true;
+  renderSetupStatus();
+  try {
+    setupStatus = await apiJson(`${apiBaseUrl}/setup-status`, { timeoutMs: 8000 });
+  } catch (error) {
+    setupStatus = {
+      ok: false,
+      public_url: apiBaseUrl,
+      required_failed_count: 1,
+      checks: [
+        {
+          name: "setup-status",
+          ok: false,
+          detail: error.message,
+          fix: "Проверь деплой Railway и endpoint /setup-status",
+          required: true,
+        },
+      ],
+    };
+  } finally {
+    setupStatusLoading = false;
+    renderSetupStatus();
+  }
 }
 
 async function loadDevicesFromApi() {
@@ -1199,9 +1276,10 @@ bindScreenGestures(remoteScreenImage, selectedDevice, remoteControlNote);
 
 refreshButton.addEventListener("click", async () => {
   setupText.textContent = "Обновляю список устройств...";
-  await refreshDevices();
+  await Promise.all([refreshDevices(), loadSetupStatus()]);
 });
 
+deployRefreshButton?.addEventListener("click", loadSetupStatus);
 deviceAlertRefreshButton?.addEventListener("click", loadDeviceAlerts);
 deviceAlertSaveButton?.addEventListener("click", saveDeviceAlertSettings);
 
@@ -1225,5 +1303,7 @@ document.addEventListener("visibilitychange", () => {
 setTelegramTheme();
 renderRemoteLog();
 renderCurrentDevice();
+renderSetupStatus();
+loadSetupStatus();
 refreshDevices();
 startRefreshLoop();

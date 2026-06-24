@@ -72,6 +72,31 @@
         </div>
       </section>
 
+      <section class="deploy-panel" id="deployPanel" aria-label="Статус Railway и GitHub">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Railway / GitHub</p>
+            <h2 id="deployStatusTitle">Проверяю настройку</h2>
+          </div>
+          <button class="ghost-button neutral" id="deployRefreshButton" type="button">Проверить</button>
+        </div>
+        <div class="deploy-status-grid" aria-label="Сводка настройки">
+          <div>
+            <span>Setup</span>
+            <strong id="deployReadyStatus">-</strong>
+          </div>
+          <div>
+            <span>Fix</span>
+            <strong id="deployFixCount">-</strong>
+          </div>
+          <div>
+            <span>URL</span>
+            <strong id="deployPublicUrl">-</strong>
+          </div>
+        </div>
+        <div class="deploy-checklist" id="deployChecklist"></div>
+      </section>
+
       <section class="alert-panel hidden" id="deviceAlertPanel" aria-label="Уведомления устройств">
         <div class="section-head">
           <div>
