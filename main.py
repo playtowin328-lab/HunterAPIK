@@ -3114,10 +3114,6 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         release_url = release_apk_url()
         lite_url = release_apk_url("lite")
         full_url = release_apk_url("full")
-        mode_download_buttons = (
-            f'<a class="ghost" href="{escape(lite_url, quote=True)}">Скачать Lite APK</a>'
-            f'<a class="ghost" href="{escape(full_url, quote=True)}">Скачать Full APK</a>'
-        )
         actions_url = f"https://github.com/{GITHUB_REPO}/actions/workflows/{GITHUB_WORKFLOW}"
         mini_app_url = MINI_APP_URL or public_server_url()
         if owner_id:
@@ -3142,15 +3138,35 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
       </div>"""
         if apk_path:
             source_text = "APK готов на этом сервере."
+            status_kind = "ready"
+            next_action_text = "Скачай APK, установи его на Android, затем нажми «Открыть Agent и подключить»."
         elif remote_ok:
             source_text = "APK готов в GitHub Release."
+            status_kind = "ready"
+            next_action_text = "Скачай APK из релиза, установи его на Android и вернись сюда для подключения."
         else:
             source_text = f"APK еще не собран ({remote_detail})."
+            status_kind = "pending"
+            next_action_text = "Открой Telegram-бота и запусти /build_apk или /build_apk_full. После сборки обнови эту страницу."
 
         if apk_path or remote_ok:
             download_button = f'<a class="primary" href="{escape(download_href, quote=True)}">Скачать APK</a>'
         else:
             download_button = '<button class="primary" disabled>APK еще не готов</button>'
+
+        mode_cards = f"""
+      <div class="mode-grid">
+        <a class="mode-card" href="{escape(lite_url, quote=True)}">
+          <span>Lite APK</span>
+          <strong>Подключение и статус</strong>
+          <small>QR, Online/Offline, батарея, сеть, меньше разрешений.</small>
+        </a>
+        <a class="mode-card strong" href="{escape(full_url, quote=True)}">
+          <span>Full APK</span>
+          <strong>Экран и управление</strong>
+          <small>Тапы, свайпы, ввод текста, Accessibility и запись экрана.</small>
+        </a>
+      </div>"""
 
         html = f"""<!doctype html>
 <html lang="ru">
@@ -3159,7 +3175,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Установка Android Agent</title>
   <style>
-    :root {{ color-scheme: dark; --bg:#0f141a; --card:#17212b; --soft:#202d38; --text:#f4f8fb; --muted:#aebdcc; --line:#314252; --accent:#15a98f; --warn:#ffd166; }}
+    :root {{ color-scheme: dark; --bg:#0f141a; --card:#17212b; --soft:#202d38; --text:#f4f8fb; --muted:#aebdcc; --line:#314252; --accent:#15a98f; --warn:#ffd166; --danger:#ff7b8a; }}
     * {{ box-sizing:border-box; }}
     body {{ margin:0; min-height:100vh; background:var(--bg); color:var(--text); font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
     main {{ width:min(94vw,760px); margin:0 auto; padding:22px 0 36px; }}
@@ -3175,6 +3191,19 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     .primary {{ background:linear-gradient(135deg,var(--accent),#187aee); }}
     .ghost {{ background:var(--soft); }}
     .status {{ display:inline-block; margin-bottom:10px; padding:7px 10px; border-radius:999px; background:#0b1117; color:#7ee0d3; font-size:13px; font-weight:800; }}
+    .status[data-kind="pending"] {{ color:var(--warn); }}
+    .hero-actions {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px; }}
+    .mode-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px; }}
+    .mode-card {{ display:grid; gap:4px; align-content:start; min-height:132px; margin:0; padding:13px; border:1px solid var(--line); border-radius:8px; background:var(--soft); text-align:left; }}
+    .mode-card.strong {{ border-color:#2f8f85; background:#122d2b; }}
+    .mode-card span {{ color:var(--warn); font-size:12px; font-weight:900; text-transform:uppercase; }}
+    .mode-card strong {{ color:var(--text); font-size:17px; }}
+    .mode-card small {{ color:var(--muted); font-size:13px; line-height:1.35; }}
+    .diag-grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-top:12px; }}
+    .diag {{ padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--soft); }}
+    .diag span {{ display:block; color:var(--muted); font-size:11px; font-weight:900; text-transform:uppercase; }}
+    .diag strong {{ display:block; margin-top:4px; overflow-wrap:anywhere; color:var(--text); font-size:13px; }}
+    .next {{ margin-top:12px; padding:12px; border-left:3px solid var(--warn); border-radius:8px; background:#221f15; color:#dce8f2; }}
     .grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }}
     .step {{ padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--soft); }}
     .step strong {{ display:block; margin-bottom:4px; color:var(--warn); }}
@@ -3182,18 +3211,27 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     .pairbox strong {{ display:block; margin-bottom:8px; color:#7ee0d3; }}
     .pairbox code {{ margin-bottom:4px; font-size:22px; text-align:center; }}
     .note {{ border-color:#655326; background:#241f13; }}
-    @media (max-width:640px) {{ .grid {{ grid-template-columns:1fr; }} h1 {{ font-size:26px; }} }}
+    @media (max-width:640px) {{ .grid, .mode-grid, .hero-actions, .diag-grid {{ grid-template-columns:1fr; }} h1 {{ font-size:26px; }} }}
   </style>
 </head>
 <body>
   <main>
     <section>
       <h1>Установка Android Agent</h1>
-      <span class="status">{escape(source_text)}</span>
-      <p>Android Agent Lite подключает твой Android-телефон к Telegram-боту и мини-апу без доступа к экрану и жестам. Сборка рассчитана на Android 10+ и сделана так, чтобы меньше раздражать Play Protect.</p>
-      <a class="ghost" href="{escape(agent_open_link, quote=True)}">Открыть установленный Agent</a>
-      {download_button}
-      {mode_download_buttons}
+      <span class="status" data-kind="{status_kind}">{escape(source_text)}</span>
+      <p>Android Agent подключает твой Android-телефон к Telegram-боту и мини-аппу. Lite подходит для статуса и связи, Full нужен для экрана, жестов и ввода текста после явных разрешений Android.</p>
+      <div class="hero-actions">
+        {download_button}
+        <a class="ghost" href="{escape(agent_open_link, quote=True)}">Открыть установленный Agent</a>
+      </div>
+      <p class="next">{escape(next_action_text)}</p>
+      <div class="diag-grid">
+        <div class="diag"><span>Источник</span><strong>{escape('server' if apk_path else 'GitHub Release')}</strong></div>
+        <div class="diag"><span>Статус APK</span><strong>{escape('готов' if apk_path or remote_ok else 'нужна сборка')}</strong></div>
+        <div class="diag"><span>Режим для связи</span><strong>Lite</strong></div>
+        <div class="diag"><span>Режим управления</span><strong>Full</strong></div>
+      </div>
+      {mode_cards}
       {pair_box}
       <a class="ghost" href="{escape(actions_url, quote=True)}">Статус сборки APK</a>
       <a class="ghost" href="{escape(mini_app_url, quote=True)}">Открыть мини-ап</a>
