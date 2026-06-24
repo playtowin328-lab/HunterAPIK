@@ -112,6 +112,7 @@ const remoteCommandMessages = {
   request_screen_permission: "Запрос доступа к экрану открыт на телефоне.",
   setup_wizard: "Мастер автонастройки открыт на телефоне.",
   repair_agent: "Ремонт связи запущен на телефоне.",
+  ping: "Агент отвечает.",
   open_settings: "Открываются настройки телефона.",
   open_wifi_settings: "Открываются настройки Wi-Fi.",
   open_battery_settings: "Открываются настройки батареи.",
@@ -835,7 +836,7 @@ function startScreenPolling(device, screenPreview, screenImage, controlNote) {
   screenPollers.set(device.device_id, { frameTimer, requestTimer });
 }
 
-async function sendSimpleDeviceCommand(device, type, controlNote, successText, payload = {}) {
+async function sendSimpleDeviceCommand(device, type, controlNote, successText, payload = {}, timeoutMs = 9000) {
   if (!device) {
     controlNote.textContent = "Сначала выбери устройство.";
     return;
@@ -858,7 +859,7 @@ async function sendSimpleDeviceCommand(device, type, controlNote, successText, p
       addRemoteLog(type, "Команда отправлена, жду ответ агента.", "pending");
     }
     controlNote.textContent = "Команда отправлена, жду ответ агента...";
-    const result = await sendCommandAndWait(device, type, payload);
+    const result = await sendCommandAndWait(device, type, payload, timeoutMs);
     const message = commandResultText(result, successText);
     controlNote.textContent = message;
     if (controlNote === remoteControlNote) {
@@ -1248,7 +1249,8 @@ $$(".remote-command-button", remotePanel).forEach((button) => {
     const command = button.dataset.command;
     const textPayload = command === "input_text" ? { text: remotePanelTextInput.value.trim() } : {};
     const successText = remoteCommandMessages[command] || "Команда отправлена.";
-    sendSimpleDeviceCommand(selectedDevice(), command, remoteControlNote, successText, textPayload);
+    const timeoutMs = Number(button.dataset.timeout || 9000);
+    sendSimpleDeviceCommand(selectedDevice(), command, remoteControlNote, successText, textPayload, timeoutMs);
   });
 });
 
