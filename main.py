@@ -2230,11 +2230,30 @@ def complete_device_command(owner_id: str, device_id: str, command_id: str, stat
 
 
 def get_device_command(owner_id: str, device_id: str, command_id: str) -> dict | None:
+    now = now_ts()
     with db_connect() as connection:
         row = connection.execute(
             "SELECT * FROM commands WHERE owner_id = ? AND device_id = ? AND command_id = ?",
             (str(owner_id), str(device_id), str(command_id)),
         ).fetchone()
+        if row and row["status"] == "pending" and now - int(row["created_at"] or now) > COMMAND_PENDING_TIMEOUT_SECONDS:
+            connection.execute(
+                "UPDATE commands SET status = 'timeout', result = ?, updated_at = ? WHERE command_id = ?",
+                ("Команда устарела до доставки агенту.", now, str(command_id)),
+            )
+            row = connection.execute(
+                "SELECT * FROM commands WHERE owner_id = ? AND device_id = ? AND command_id = ?",
+                (str(owner_id), str(device_id), str(command_id)),
+            ).fetchone()
+        elif row and row["status"] == "delivered" and now - int(row["updated_at"] or now) > COMMAND_DELIVERED_TIMEOUT_SECONDS:
+            connection.execute(
+                "UPDATE commands SET status = 'timeout', result = ?, updated_at = ? WHERE command_id = ?",
+                ("Агент не завершил команду после доставки.", now, str(command_id)),
+            )
+            row = connection.execute(
+                "SELECT * FROM commands WHERE owner_id = ? AND device_id = ? AND command_id = ?",
+                (str(owner_id), str(device_id), str(command_id)),
+            ).fetchone()
     if not row:
         return None
     command = dict(row)
@@ -3185,6 +3204,25 @@ def revoke_device(owner_id: str, device_id: str) -> bool:
         return cursor.rowcount > 0
 
 
+def clear_device_command_queue(owner_id: str, device_id: str) -> int:
+    now = now_ts()
+    with db_connect() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE commands
+            SET status = 'cancelled', result = ?, updated_at = ?
+            WHERE owner_id = ? AND device_id = ? AND status IN ('pending', 'delivered')
+            """,
+            (
+                "Команда отменена пользователем из пульта.",
+                now,
+                str(owner_id),
+                str(device_id),
+            ),
+        )
+    return max(0, cursor.rowcount or 0)
+
+
 def is_authorized_device_request(headers, payload: dict) -> bool:
     if DEVICE_API_TOKEN and headers.get("Authorization") == f"Bearer {DEVICE_API_TOKEN}":
         return True
@@ -3858,10 +3896,16 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
 
             if action == "rename":
                 ok = rename_device(owner_id, device_id, str(payload.get("name", "")))
+                result_payload = {}
             elif action == "delete":
                 ok = delete_device(owner_id, device_id)
+                result_payload = {}
             elif action == "revoke":
                 ok = revoke_device(owner_id, device_id)
+                result_payload = {}
+            elif action == "clear_commands":
+                ok = device_exists(owner_id, device_id)
+                result_payload = {"cleared": clear_device_command_queue(owner_id, device_id) if ok else 0}
             else:
                 raise ValueError("unsupported action")
             if ok:
@@ -3874,6 +3918,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                         "device_id": device_id,
                         "action": action,
                         "name": str(payload.get("name", ""))[:80],
+                        **result_payload,
                     },
                 )
         except (json.JSONDecodeError, ValueError) as exc:
@@ -3884,7 +3929,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
             return
 
-        self.send_json({"ok": True})
+        self.send_json({"ok": True, **result_payload})
 
     def handle_screen_upload(self) -> None:
         try:

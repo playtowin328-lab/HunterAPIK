@@ -762,6 +762,7 @@ function setRemoteBusy(value) {
   remotePanel.classList.toggle("busy", value);
   [
     ...$$(".remote-command-button", remotePanel),
+    ...$$(".remote-manage-button", remotePanel),
     $(".remote-screen-button", remotePanel),
     $(".remote-stop-screen-button", remotePanel),
     remotePanelSendText,
@@ -1248,6 +1249,30 @@ $$(".remote-command-button", remotePanel).forEach((button) => {
     const textPayload = command === "input_text" ? { text: remotePanelTextInput.value.trim() } : {};
     const successText = remoteCommandMessages[command] || "Команда отправлена.";
     sendSimpleDeviceCommand(selectedDevice(), command, remoteControlNote, successText, textPayload);
+  });
+});
+
+$$(".remote-manage-button", remotePanel).forEach((button) => {
+  button.addEventListener("click", async () => {
+    const device = selectedDevice();
+    if (!device) return;
+    const action = button.dataset.action;
+    if (action !== "clear_commands") return;
+    try {
+      setRemoteBusy(true);
+      remoteControlNote.textContent = "Очищаю зависшие команды...";
+      const result = await manageDevice(device, "clear_commands");
+      const cleared = Number(result.cleared || 0);
+      const message = cleared ? `Очередь очищена: ${cleared} команд.` : "Очередь уже чистая.";
+      remoteControlNote.textContent = message;
+      addRemoteLog("clear_commands", message, cleared ? "done" : "info");
+      await refreshDevices();
+    } catch (error) {
+      remoteControlNote.textContent = error.message;
+      addRemoteLog("clear_commands", error.message, "error");
+    } finally {
+      setRemoteBusy(false);
+    }
   });
 });
 
