@@ -20,6 +20,7 @@ const connectCurrentDevice = $("#connectCurrentDevice");
 const setupText = $("#setupText");
 const installAgentButton = $("#installAgentButton");
 const openInstalledAgentButton = $("#openInstalledAgentButton");
+const openDesktopAppButton = $("#openDesktopAppButton");
 const requestPairButton = $("#requestPairButton");
 const refreshButton = $("#refreshButton");
 const pairResult = $("#pairResult");
@@ -543,15 +544,48 @@ function syncFullscreenState() {
   document.documentElement.classList.toggle("is-fullscreen", isFullscreen);
   document.documentElement.classList.toggle("telegram-viewport", Boolean(tg));
   if (fullscreenButton) {
+    if (isTelegramDesktopMiniApp()) {
+      fullscreenButton.textContent = "↗";
+      fullscreenButton.setAttribute("aria-label", "Открыть во внешнем браузере");
+      fullscreenButton.title = "Открыть во внешнем браузере на весь экран";
+      return;
+    }
     fullscreenButton.textContent = isFullscreen ? "↙" : "⛶";
     fullscreenButton.setAttribute("aria-label", isFullscreen ? "Выйти из полноэкранного режима" : "Во весь экран");
     fullscreenButton.title = isFullscreen ? "Выйти из полноэкранного режима" : "Во весь экран";
   }
 }
 
+function isTelegramDesktopMiniApp() {
+  const platform = String(tg?.platform || "").toLowerCase();
+  return Boolean(tg && /tdesktop|desktop|windows|macos|linux/.test(platform));
+}
+
+function miniAppExternalUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.set("owner_id", ownerId);
+  url.searchParams.set("desktop", "1");
+  return url.toString();
+}
+
+function openMiniAppInExternalBrowser() {
+  const url = miniAppExternalUrl();
+  setupText.textContent = "Открываю mini app во внешнем браузере. Там можно развернуть на весь экран.";
+  if (tg?.openLink) {
+    tg.openLink(url);
+    return;
+  }
+  window.open(url, "_blank", "noopener");
+}
+
 async function toggleFullscreenMode() {
   tg?.expand?.();
   tg?.disableVerticalSwipes?.();
+
+  if (isTelegramDesktopMiniApp()) {
+    openMiniAppInExternalBrowser();
+    return;
+  }
 
   try {
     const browserFullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
@@ -1433,6 +1467,8 @@ openInstalledAgentButton.addEventListener("click", () => {
   setupText.textContent = "Готовлю автономное подключение Agent...";
   openAgentWithPairing();
 });
+
+openDesktopAppButton?.addEventListener("click", openMiniAppInExternalBrowser);
 
 requestPairButton.addEventListener("click", async () => {
   setupText.textContent = "Создаю QR и код подключения...";
