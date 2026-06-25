@@ -386,7 +386,7 @@ AUDIT_FILTERS = {
         "device_alert_settings",
         "pairing_code_created",
     ],
-    "commands": ["device_command"],
+    "commands": ["device_command", "device_command_result"],
     "access": ["grant_access", "revoke_access", "command_admins", "command_roles", "command_root_settings", "command_audit"],
     "builds": ["build_apk_lite", "build_apk_full", "build_pc_agent"],
     "bot": ["command_start", "command_settings", "command_guide", "callback", "mini_app_event"],
@@ -486,6 +486,49 @@ def audit_event_text(event: dict | sqlite3.Row) -> str:
     created = datetime.fromtimestamp(created_at).strftime("%d.%m %H:%M:%S")
     actor = f"{actor_name} ({actor_id})" if actor_name else str(actor_id)
     return f"{created}\n{actor}\n{action}: {detail}".strip()
+
+
+def safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def command_payload_summary(command_type: str, payload: dict | None) -> str:
+    payload = payload or {}
+    if command_type in {"tap", "long_tap"}:
+        return f"x={safe_float(payload.get('x')):.2f}, y={safe_float(payload.get('y')):.2f}"
+    if command_type == "swipe":
+        return (
+            f"from {safe_float(payload.get('x')):.2f},{safe_float(payload.get('y')):.2f} "
+            f"to {safe_float(payload.get('end_x')):.2f},{safe_float(payload.get('end_y')):.2f}"
+        )
+    if command_type == "input_text":
+        return f"text_length={len(str(payload.get('text', '')))}"
+    if command_type == "request_screen":
+        quality = str(payload.get("quality") or "default")
+        max_size = str(payload.get("max_size") or "")
+        return f"quality={quality}{f', max_size={max_size}' if max_size else ''}"
+    if command_type == "open_url":
+        return f"url={str(payload.get('url', ''))[:120]}"
+    if command_type == "open_app_details":
+        return f"package={str(payload.get('package', ''))[:120]}"
+    return ""
+
+
+def command_audit_detail(prefix: str, command_type: str, device_id: str, command_id: str = "", payload: dict | None = None, result: str = "", status: str = "") -> str:
+    parts = [prefix, command_type, f"device={device_id}"]
+    if command_id:
+        parts.append(f"id={command_id}")
+    if status:
+        parts.append(f"status={status}")
+    summary = command_payload_summary(command_type, payload)
+    if summary:
+        parts.append(summary)
+    if result:
+        parts.append(f"result={result[:220]}")
+    return " · ".join(parts)
 
 
 async def notify_root_admins(event: dict) -> None:
@@ -3860,7 +3903,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             audit_event(
                 actor_id or owner_id,
                 "device_command",
-                f"Command {command_type} sent to {device_id}",
+                command_audit_detail("sent", command_type, device_id, command["command_id"], command_payload),
                 {
                     "owner_id": owner_id,
                     "device_id": device_id,
@@ -3970,6 +4013,28 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             if not command:
                 self.send_json({"error": "command not found"}, HTTPStatus.NOT_FOUND)
                 return
+            audit_event(
+                str(command.get("owner_id") or payload.get("owner_id") or "device"),
+                "device_command_result",
+                command_audit_detail(
+                    "completed",
+                    str(command.get("type") or ""),
+                    str(command.get("device_id") or payload.get("device_id") or ""),
+                    str(command.get("command_id") or payload.get("command_id") or ""),
+                    command.get("payload") or {},
+                    str(command.get("result") or ""),
+                    str(command.get("status") or ""),
+                ),
+                {
+                    "owner_id": command.get("owner_id"),
+                    "device_id": command.get("device_id"),
+                    "command_id": command.get("command_id"),
+                    "type": command.get("type"),
+                    "status": command.get("status"),
+                    "result": command.get("result", ""),
+                },
+                notify=False,
+            )
         except (json.JSONDecodeError, ValueError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return

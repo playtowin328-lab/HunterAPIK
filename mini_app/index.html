@@ -314,7 +314,10 @@
         <div class="remote-log remote-tab-panel" data-tab-panel="logs" aria-label="Журнал действий пульта">
           <div class="remote-log-head">
             <span>Журнал действий</span>
-            <button class="ghost-button neutral" id="remoteLogClearButton" type="button">Очистить</button>
+            <div class="remote-log-actions">
+              <button class="secondary-button" id="remoteLogCopyButton" type="button">Копировать</button>
+              <button class="ghost-button neutral" id="remoteLogClearButton" type="button">Очистить</button>
+            </div>
           </div>
           <ul id="remoteActionLog"></ul>
         </div>

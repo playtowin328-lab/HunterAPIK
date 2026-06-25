@@ -800,13 +800,20 @@ h2 {
   gap: 8px;
 }
 
+.remote-log-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
 .remote-log-head span {
   color: var(--text);
   font-size: 13px;
   font-weight: 850;
 }
 
-.remote-log-head button {
+.remote-log-head button,
+.remote-log-actions button {
   min-height: 32px;
   padding: 0 9px;
   font-size: 12px;

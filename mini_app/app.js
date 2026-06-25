@@ -67,6 +67,7 @@ const remoteSetupChecklist = $("#remoteSetupChecklist");
 const nextSetupStepButton = $("#nextSetupStepButton");
 const remoteActionLog = $("#remoteActionLog");
 const remoteLogClearButton = $("#remoteLogClearButton");
+const remoteLogCopyButton = $("#remoteLogCopyButton");
 const deviceAlertPanel = $("#deviceAlertPanel");
 const deviceAlertRefreshButton = $("#deviceAlertRefreshButton");
 const deviceAlertSaveButton = $("#deviceAlertSaveButton");
@@ -82,6 +83,7 @@ const profileName = telegramUser?.first_name || telegramUser?.username || "Я";
 const urlParams = new URLSearchParams(window.location.search);
 const ownerId = String(telegramUser?.id || urlParams.get("owner_id") || localStorage.getItem("apk_owner_id") || crypto.randomUUID());
 localStorage.setItem("apk_owner_id", ownerId);
+const remoteLogStorageKey = `hunter_remote_log_${ownerId}`;
 
 const apiBaseUrl = window.location.origin;
 const agentOpenLink = `apkagent://open?server=${encodeURIComponent(apiBaseUrl)}&owner_id=${encodeURIComponent(ownerId)}&setup=1`;
@@ -132,6 +134,16 @@ const remoteCommandMessages = {
   key_delete: "Delete отправлен.",
 };
 
+const remoteCommandLabels = {
+  ...remoteCommandMessages,
+  tap: "Тап по экрану",
+  long_tap: "Long tap по экрану",
+  swipe: "Свайп по экрану",
+  input_text: "Ввод текста",
+  request_screen: "Запрос live-экрана",
+  stop_screen: "Остановка live-экрана",
+};
+
 const deviceAlertKindLabels = {
   online: "Online",
   offline: "Offline",
@@ -158,7 +170,7 @@ let refreshTimer = null;
 let setupStatus = null;
 let setupStatusLoading = false;
 let remoteCommandBusy = false;
-let remoteLogItems = [];
+let remoteLogItems = loadRemoteLogItems();
 let activeRemoteTab = localStorage.getItem("hunter_remote_tab") || "setup";
 let deviceAlertSettings = null;
 let deviceAlertEvents = [];
@@ -1016,17 +1028,81 @@ function commandResultText(payload, fallback) {
   return `${command.status || "Статус"}:${result}`;
 }
 
+function loadRemoteLogItems() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(remoteLogStorageKey) || "[]");
+    return Array.isArray(parsed) ? parsed.slice(0, 50) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveRemoteLogItems() {
+  localStorage.setItem(remoteLogStorageKey, JSON.stringify(remoteLogItems.slice(0, 50)));
+}
+
+function percent(value) {
+  return `${Math.round(Number(value || 0) * 100)}%`;
+}
+
+function commandPayloadSummary(type, payload = {}) {
+  if (type === "tap" || type === "long_tap") return `координаты: ${percent(payload.x)}, ${percent(payload.y)}`;
+  if (type === "swipe") return `свайп: ${percent(payload.x)}, ${percent(payload.y)} -> ${percent(payload.end_x)}, ${percent(payload.end_y)}`;
+  if (type === "input_text") return `текст: ${String(payload.text || "").length} символов`;
+  if (type === "request_screen") return `качество: ${payload.quality || getDeviceQuality(selectedDevice() || {})}`;
+  return "";
+}
+
+function commandLogTitle(type) {
+  const label = remoteCommandLabels[type] || type || "Команда";
+  return String(label).replace(/\.$/, "");
+}
+
+function commandLogDetail(device, type, payload = {}, result = null) {
+  const deviceName = device?.name || "устройство";
+  const parts = [`${deviceName}`, `действие: ${commandLogTitle(type)}`];
+  const payloadSummary = commandPayloadSummary(type, payload);
+  if (payloadSummary) parts.push(payloadSummary);
+  if (result?.command?.command_id) parts.push(`id: ${result.command.command_id}`);
+  if (result?.command?.status) parts.push(`статус: ${result.command.status}`);
+  if (result?.command?.client_latency_ms) parts.push(`${result.command.client_latency_ms} ms`);
+  if (result?.command?.result) parts.push(String(result.command.result).slice(0, 160));
+  return parts.join(" · ");
+}
+
 function renderRemoteLog() {
   if (!remoteActionLog) return;
   remoteActionLog.innerHTML = remoteLogItems.length
-    ? remoteLogItems.map((item) => `<li data-status="${item.status}"><span>${item.time}</span><strong>${item.title}</strong><p>${item.detail}</p></li>`).join("")
+    ? remoteLogItems.slice(0, 30).map((item) => `<li data-status="${escapeHtml(item.status)}"><span>${escapeHtml(item.time)}${item.device ? ` · ${escapeHtml(item.device)}` : ""}</span><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.detail)}</p></li>`).join("")
     : '<li class="muted-log"><p>Пока нет действий в этой сессии.</p></li>';
 }
 
-function addRemoteLog(title, detail, status = "info") {
+function addRemoteLog(title, detail, status = "info", meta = {}) {
   const time = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date());
-  remoteLogItems = [{ time, title, detail, status }, ...remoteLogItems].slice(0, 8);
+  const device = meta.device || selectedDevice();
+  remoteLogItems = [{
+    time,
+    title,
+    detail,
+    status,
+    device: device?.name || "",
+    device_id: device?.device_id || "",
+    command_id: meta.command_id || "",
+  }, ...remoteLogItems].slice(0, 50);
+  saveRemoteLogItems();
   renderRemoteLog();
+}
+
+function remoteLogText() {
+  if (!remoteLogItems.length) return "Журнал действий пуст.";
+  return remoteLogItems.map((item) => [
+    item.time,
+    item.device || "устройство",
+    item.status,
+    item.title,
+    item.detail,
+    item.command_id ? `command_id=${item.command_id}` : "",
+  ].filter(Boolean).join(" · ")).join("\n");
 }
 
 function setRemoteBusy(value) {
@@ -1132,14 +1208,19 @@ async function sendSimpleDeviceCommand(device, type, controlNote, successText, p
   try {
     if (controlNote === remoteControlNote) {
       setRemoteBusy(true);
-      addRemoteLog(type, "Команда отправлена, жду ответ агента.", "pending");
+      addRemoteLog(commandLogTitle(type), commandLogDetail(device, type, payload), "pending", { device });
     }
     controlNote.textContent = "Команда отправлена, жду ответ агента...";
     const result = await sendCommandAndWait(device, type, payload, timeoutMs);
     const message = commandResultText(result, successText);
     controlNote.textContent = message;
     if (controlNote === remoteControlNote) {
-      addRemoteLog(type, message, result?.command?.status === "rejected" ? "warn" : "done");
+      addRemoteLog(
+        commandLogTitle(type),
+        commandLogDetail(device, type, payload, result),
+        result?.command?.status === "rejected" ? "warn" : "done",
+        { device, command_id: result?.command?.command_id }
+      );
     }
   } catch (error) {
     controlNote.textContent = error.message;
@@ -1453,14 +1534,21 @@ function bindScreenGestures(image, getDevice, note) {
     pointerStart = null;
     try {
       if (distance > 0.06) {
-        const result = await sendCommandAndWait(device, "swipe", { x: start.x, y: start.y, end_x: end.x, end_y: end.y });
+        const payload = { x: start.x, y: start.y, end_x: end.x, end_y: end.y };
+        addRemoteLog("Свайп по экрану", commandLogDetail(device, "swipe", payload), "pending", { device });
+        const result = await sendCommandAndWait(device, "swipe", payload);
         note.textContent = commandResultText(result, "Свайп выполнен.");
+        addRemoteLog("Свайп по экрану", commandLogDetail(device, "swipe", payload, result), result?.command?.status === "rejected" ? "warn" : "done", { device, command_id: result?.command?.command_id });
         return;
       }
-      const result = await sendCommandAndWait(device, "tap", { x: end.x, y: end.y });
+      const payload = { x: end.x, y: end.y };
+      addRemoteLog("Тап по экрану", commandLogDetail(device, "tap", payload), "pending", { device });
+      const result = await sendCommandAndWait(device, "tap", payload);
       note.textContent = commandResultText(result, `Тап: ${Math.round(end.x * 100)}%, ${Math.round(end.y * 100)}%.`);
+      addRemoteLog("Тап по экрану", commandLogDetail(device, "tap", payload, result), result?.command?.status === "rejected" ? "warn" : "done", { device, command_id: result?.command?.command_id });
     } catch (error) {
       note.textContent = error.message;
+      addRemoteLog("Жест по экрану", error.message, "error", { device });
     }
   });
   image.addEventListener("dblclick", async (event) => {
@@ -1470,10 +1558,14 @@ function bindScreenGestures(image, getDevice, note) {
       return;
     }
     try {
-      const result = await sendCommandAndWait(device, "long_tap", normalizedPoint(event, image));
+      const payload = normalizedPoint(event, image);
+      addRemoteLog("Long tap по экрану", commandLogDetail(device, "long_tap", payload), "pending", { device });
+      const result = await sendCommandAndWait(device, "long_tap", payload);
       note.textContent = commandResultText(result, "Long tap выполнен.");
+      addRemoteLog("Long tap по экрану", commandLogDetail(device, "long_tap", payload, result), result?.command?.status === "rejected" ? "warn" : "done", { device, command_id: result?.command?.command_id });
     } catch (error) {
       note.textContent = error.message;
+      addRemoteLog("Long tap по экрану", error.message, "error", { device });
     }
   });
 }
@@ -1696,7 +1788,17 @@ remoteHealthActionButton?.addEventListener("click", () => runQuickAction(remoteH
 
 remoteLogClearButton?.addEventListener("click", () => {
   remoteLogItems = [];
+  saveRemoteLogItems();
   renderRemoteLog();
+});
+
+remoteLogCopyButton?.addEventListener("click", async () => {
+  try {
+    await copyTextToClipboard(remoteLogText());
+    remoteControlNote.textContent = "Журнал действий скопирован.";
+  } catch (error) {
+    remoteControlNote.textContent = `Не удалось скопировать журнал: ${error.message}`;
+  }
 });
 
 $(".remote-screen-button", remotePanel).addEventListener("click", startRemoteScreen);
