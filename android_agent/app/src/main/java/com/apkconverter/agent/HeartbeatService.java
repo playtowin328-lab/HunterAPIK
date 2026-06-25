@@ -34,6 +34,8 @@ public class HeartbeatService extends Service {
     private static final long COMMAND_POLL_INTERVAL_MS = 500L;
     private static final int MAX_COMMANDS_PER_TICK = 6;
     private static final long HEARTBEAT_INTERVAL_MS = 15_000L;
+    private static final int LOCAL_REPAIR_AFTER_ERRORS = 3;
+    private static final long LOCAL_REPAIR_COOLDOWN_MS = 120_000L;
 
     private ScheduledExecutorService executor;
     private PowerManager.WakeLock wakeLock;
@@ -103,16 +105,38 @@ public class HeartbeatService extends Service {
         String timestamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date());
         long now = System.currentTimeMillis();
         boolean shouldHeartbeat = lastHeartbeatAt == 0 || now - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS;
+        boolean heartbeatSent = false;
 
         try {
             editor.putString(AgentConfig.KEY_LAST_ERROR, "");
-            String commandStatus = handlePendingCommands();
+            String commandStatus = "";
+            Exception commandError = null;
+            try {
+                commandStatus = handlePendingCommands();
+            } catch (Exception exc) {
+                commandError = exc;
+                commandStatus = "\nCommand poll error: " + String.valueOf(exc.getMessage());
+            }
+
             if (shouldHeartbeat) {
                 DeviceApiClient.heartbeat(this);
                 lastHeartbeatAt = now;
+                heartbeatSent = true;
+            }
+
+            if (commandError == null) {
+                editor.putString(AgentConfig.KEY_LAST_COMMAND_ERROR, "");
+                editor.putInt(AgentConfig.KEY_COMMAND_ERROR_COUNT, 0);
+            } else {
+                int commandErrorCount = prefs.getInt(AgentConfig.KEY_COMMAND_ERROR_COUNT, 0) + 1;
+                editor.putString(AgentConfig.KEY_LAST_COMMAND_ERROR, String.valueOf(commandError.getMessage()));
+                editor.putInt(AgentConfig.KEY_COMMAND_ERROR_COUNT, commandErrorCount);
+                maybeRunLocalRepair(prefs, "command_poll_errors", commandErrorCount);
             }
             editor.putString(KEY_LAST_STATUS, "Online - " + timestamp + commandStatus);
-            editor.putLong(KEY_LAST_SUCCESS, now);
+            if (heartbeatSent) {
+                editor.putLong(KEY_LAST_SUCCESS, now);
+            }
             editor.putLong(AgentConfig.KEY_LAST_LOOP_MS, System.currentTimeMillis() - tickStarted);
             editor.putInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0);
             consecutiveErrors = 0;
@@ -124,6 +148,7 @@ public class HeartbeatService extends Service {
             editor.putLong(AgentConfig.KEY_LAST_LOOP_MS, System.currentTimeMillis() - tickStarted);
             editor.putInt(AgentConfig.KEY_LAST_ERROR_COUNT, errorCount);
             editor.putString(AgentConfig.KEY_LAST_ERROR, String.valueOf(exc.getMessage()));
+            maybeRunLocalRepair(prefs, "heartbeat_errors", errorCount);
             updateNotification("Connection error");
             applyErrorBackoff();
         }
@@ -142,6 +167,7 @@ public class HeartbeatService extends Service {
 
     private String handlePendingCommands() throws Exception {
         StringBuilder status = new StringBuilder();
+        status.append(flushPendingCompletion());
         for (int index = 0; index < MAX_COMMANDS_PER_TICK; index++) {
             DeviceApiClient.RemoteCommand command = DeviceApiClient.nextCommand(this);
             if (command == null) {
@@ -157,6 +183,7 @@ public class HeartbeatService extends Service {
         String result;
         String status = "acknowledged";
 
+        try {
         if ("request_screen".equals(command.type)) {
             if (!BuildConfig.FULL_CONTROL) {
                 result = "Screen preview is disabled in Lite build.";
@@ -290,13 +317,59 @@ public class HeartbeatService extends Service {
             result = "Unknown command: " + command.type;
             status = "rejected";
         }
+        } catch (Exception exc) {
+            status = "failed";
+            result = "Command failed: " + String.valueOf(exc.getMessage());
+        }
 
         AgentConfig.prefs(this)
                 .edit()
                 .putLong(AgentConfig.KEY_LAST_COMMAND_MS, System.currentTimeMillis() - started)
                 .apply();
+        savePendingCompletion(command, status, result);
         DeviceApiClient.completeCommand(this, command, status, result);
+        clearPendingCompletion(command.commandId);
         return "\nCommand: " + command.type + "\n" + result;
+    }
+
+    private String flushPendingCompletion() throws Exception {
+        SharedPreferences prefs = AgentConfig.prefs(this);
+        String commandId = prefs.getString(AgentConfig.KEY_PENDING_COMPLETION_ID, "");
+        if (commandId.isEmpty()) {
+            return "";
+        }
+
+        String commandType = prefs.getString(AgentConfig.KEY_PENDING_COMPLETION_TYPE, "command");
+        String status = prefs.getString(AgentConfig.KEY_PENDING_COMPLETION_STATUS, "acknowledged");
+        String result = prefs.getString(AgentConfig.KEY_PENDING_COMPLETION_RESULT, "");
+        DeviceApiClient.completeCommand(this, commandId, status, result);
+        clearPendingCompletion(commandId);
+        return "\nCompletion resent: " + commandType;
+    }
+
+    private void savePendingCompletion(DeviceApiClient.RemoteCommand command, String status, String result) {
+        AgentConfig.prefs(this).edit()
+                .putString(AgentConfig.KEY_PENDING_COMPLETION_ID, command.commandId)
+                .putString(AgentConfig.KEY_PENDING_COMPLETION_TYPE, command.type)
+                .putString(AgentConfig.KEY_PENDING_COMPLETION_STATUS, status)
+                .putString(AgentConfig.KEY_PENDING_COMPLETION_RESULT, result)
+                .putLong(AgentConfig.KEY_PENDING_COMPLETION_MS, System.currentTimeMillis())
+                .apply();
+    }
+
+    private void clearPendingCompletion(String commandId) {
+        SharedPreferences prefs = AgentConfig.prefs(this);
+        String pendingId = prefs.getString(AgentConfig.KEY_PENDING_COMPLETION_ID, "");
+        if (!pendingId.equals(commandId)) {
+            return;
+        }
+        prefs.edit()
+                .remove(AgentConfig.KEY_PENDING_COMPLETION_ID)
+                .remove(AgentConfig.KEY_PENDING_COMPLETION_TYPE)
+                .remove(AgentConfig.KEY_PENDING_COMPLETION_STATUS)
+                .remove(AgentConfig.KEY_PENDING_COMPLETION_RESULT)
+                .remove(AgentConfig.KEY_PENDING_COMPLETION_MS)
+                .apply();
     }
 
     private String dispatchTap(DeviceApiClient.RemoteCommand command) {
@@ -363,10 +436,13 @@ public class HeartbeatService extends Service {
 
     private String repairAgent() {
         long started = System.currentTimeMillis();
+        recordRepairAttempt("server_command");
         AgentConfig.prefs(this).edit()
                 .putBoolean(AgentConfig.KEY_ENABLED, true)
                 .putString(AgentConfig.KEY_LAST_ERROR, "")
                 .putInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0)
+                .putString(AgentConfig.KEY_LAST_COMMAND_ERROR, "")
+                .putInt(AgentConfig.KEY_COMMAND_ERROR_COUNT, 0)
                 .apply();
         consecutiveErrors = 0;
         acquireWakeLock();
@@ -390,6 +466,32 @@ public class HeartbeatService extends Service {
             updateNotification("Repair failed");
             return "Repair failed: " + exc.getMessage();
         }
+    }
+
+    private void maybeRunLocalRepair(SharedPreferences prefs, String reason, int errorCount) {
+        if (errorCount < LOCAL_REPAIR_AFTER_ERRORS) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        long lastRepair = prefs.getLong(AgentConfig.KEY_LAST_REPAIR_MS, 0);
+        if (lastRepair > 0 && now - lastRepair < LOCAL_REPAIR_COOLDOWN_MS) {
+            return;
+        }
+
+        recordRepairAttempt(reason);
+        acquireWakeLock();
+        lastHeartbeatAt = 0;
+        AgentStarter.scheduleRestart(this);
+        updateNotification("Self repair");
+    }
+
+    private void recordRepairAttempt(String reason) {
+        SharedPreferences prefs = AgentConfig.prefs(this);
+        prefs.edit()
+                .putLong(AgentConfig.KEY_LAST_REPAIR_MS, System.currentTimeMillis())
+                .putString(AgentConfig.KEY_LAST_REPAIR_REASON, reason)
+                .putInt(AgentConfig.KEY_SELF_REPAIR_COUNT, prefs.getInt(AgentConfig.KEY_SELF_REPAIR_COUNT, 0) + 1)
+                .apply();
     }
 
     private boolean openSystemActivity(String action) {

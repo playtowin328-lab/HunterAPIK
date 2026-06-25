@@ -252,15 +252,21 @@ function formatTelemetry(device) {
   if (typeof telemetry.screen_streaming === "boolean") items.push(`экран: ${telemetry.screen_streaming ? "on" : "off"}`);
   if (typeof telemetry.loop_ms === "number" && telemetry.loop_ms > 0) items.push(`agent: ${telemetry.loop_ms} ms`);
   if (typeof telemetry.command_ms === "number" && telemetry.command_ms > 0) items.push(`cmd: ${telemetry.command_ms} ms`);
+  if (typeof telemetry.command_error_count === "number" && telemetry.command_error_count > 0) items.push(`cmd errors: ${telemetry.command_error_count}`);
+  if (typeof telemetry.pending_completion_age === "number" && telemetry.pending_completion_age >= 0) items.push(`complete retry: ${telemetry.pending_completion_age} sec`);
+  if (telemetry.pending_completion_type) items.push(`complete: ${telemetry.pending_completion_type}`);
   if (typeof telemetry.gesture_ms === "number" && telemetry.gesture_ms > 0) items.push(`gesture: ${telemetry.gesture_ms} ms`);
   if (telemetry.gesture_result) items.push(`gesture: ${telemetry.gesture_result}`);
   if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) items.push(`screen: ${telemetry.screen_ms} ms`);
   if (typeof telemetry.screen_frames === "number" && telemetry.screen_frames > 0) items.push(`frames: ${telemetry.screen_frames}`);
   if (typeof telemetry.screen_dropped === "number" && telemetry.screen_dropped > 0) items.push(`drop: ${telemetry.screen_dropped}`);
   if (typeof telemetry.error_count === "number" && telemetry.error_count > 0) items.push(`errors: ${telemetry.error_count}`);
+  if (typeof telemetry.self_repair_count === "number" && telemetry.self_repair_count > 0) items.push(`repairs: ${telemetry.self_repair_count}`);
+  if (typeof telemetry.last_repair_age === "number" && telemetry.last_repair_age >= 0) items.push(`repair: ${telemetry.last_repair_age} sec`);
   if (diagnostics.pending_commands) items.push(`очередь: ${diagnostics.pending_commands}`);
   if (typeof diagnostics.frame_age === "number") items.push(`кадр: ${diagnostics.frame_age} сек`);
   if (telemetry.last_error) items.push(`ошибка: ${telemetry.last_error}`);
+  if (telemetry.last_command_error) items.push(`cmd error: ${telemetry.last_command_error}`);
   if (telemetry.screen_error) items.push(`screen error: ${telemetry.screen_error}`);
   return items;
 }

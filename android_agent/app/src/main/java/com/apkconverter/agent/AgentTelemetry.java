@@ -19,6 +19,8 @@ final class AgentTelemetry {
         BatteryStatus battery = batteryStatus(context);
         android.content.SharedPreferences prefs = AgentConfig.prefs(context);
         long lastSuccess = prefs.getLong(HeartbeatService.KEY_LAST_SUCCESS, 0);
+        long lastRepair = prefs.getLong(AgentConfig.KEY_LAST_REPAIR_MS, 0);
+        long pendingCompletion = prefs.getLong(AgentConfig.KEY_PENDING_COMPLETION_MS, 0);
         try {
             return new JSONObject()
                     .put("battery_percent", battery.percent)
@@ -38,10 +40,17 @@ final class AgentTelemetry {
                     .put("setup_waiting_for", prefs.getString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, ""))
                     .put("loop_ms", prefs.getLong(AgentConfig.KEY_LAST_LOOP_MS, 0))
                     .put("command_ms", prefs.getLong(AgentConfig.KEY_LAST_COMMAND_MS, 0))
+                    .put("command_error_count", prefs.getInt(AgentConfig.KEY_COMMAND_ERROR_COUNT, 0))
+                    .put("last_command_error", prefs.getString(AgentConfig.KEY_LAST_COMMAND_ERROR, ""))
+                    .put("pending_completion_age", pendingCompletion > 0 ? Math.max(0, (System.currentTimeMillis() - pendingCompletion) / 1000) : -1)
+                    .put("pending_completion_type", prefs.getString(AgentConfig.KEY_PENDING_COMPLETION_TYPE, ""))
                     .put("gesture_ms", prefs.getLong(AgentConfig.KEY_LAST_GESTURE_MS, 0))
                     .put("gesture_result", prefs.getString(AgentConfig.KEY_LAST_GESTURE_RESULT, ""))
                     .put("error_count", prefs.getInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0))
                     .put("last_error", prefs.getString(AgentConfig.KEY_LAST_ERROR, ""))
+                    .put("last_repair_age", lastRepair > 0 ? Math.max(0, (System.currentTimeMillis() - lastRepair) / 1000) : -1)
+                    .put("last_repair_reason", prefs.getString(AgentConfig.KEY_LAST_REPAIR_REASON, ""))
+                    .put("self_repair_count", prefs.getInt(AgentConfig.KEY_SELF_REPAIR_COUNT, 0))
                     .put("screen_ms", ScreenCaptureService.getLastUploadMs())
                     .put("screen_frames", ScreenCaptureService.getUploadedFrames())
                     .put("screen_dropped", ScreenCaptureService.getDroppedFrames())

@@ -108,6 +108,10 @@ final class DeviceApiClient {
     }
 
     static void completeCommand(Context context, RemoteCommand command, String status, String result) throws Exception {
+        completeCommand(context, command.commandId, status, result);
+    }
+
+    static void completeCommand(Context context, String commandId, String status, String result) throws Exception {
         SharedPreferences prefs = AgentConfig.prefs(context);
         String serverUrl = prefs.getString(AgentConfig.KEY_SERVER_URL, "").trim();
         String ownerId = prefs.getString(AgentConfig.KEY_OWNER_ID, "").trim();
@@ -116,7 +120,7 @@ final class DeviceApiClient {
             JSONObject payload = new JSONObject()
                     .put("owner_id", ownerId)
                     .put("device_id", AgentConfig.getDeviceId(context))
-                    .put("command_id", command.commandId)
+                    .put("command_id", commandId)
                     .put("status", status)
                     .put("result", truncate(result, MAX_COMMAND_RESULT_LENGTH));
 
