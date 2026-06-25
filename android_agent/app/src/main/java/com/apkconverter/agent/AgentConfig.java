@@ -27,6 +27,15 @@ final class AgentConfig {
     static final String KEY_SCREEN_MAX_SIZE = "screen_max_size";
     static final String KEY_SETUP_WIZARD_ACTIVE = "setup_wizard_active";
     static final String KEY_SETUP_WIZARD_WAITING_FOR = "setup_wizard_waiting_for";
+    static final String KEY_NOTIFICATION_LISTENER_ENABLED = "notification_listener_enabled";
+    static final String KEY_NOTIFICATION_LAST_APP = "notification_last_app";
+    static final String KEY_NOTIFICATION_LAST_TITLE = "notification_last_title";
+    static final String KEY_NOTIFICATION_LAST_TEXT = "notification_last_text";
+    static final String KEY_NOTIFICATION_LAST_TIME = "notification_last_time";
+    static final String KEY_NOTIFICATION_COUNT = "notification_count";
+    static final String KEY_ACTIVE_APP_PACKAGE = "active_app_package";
+    static final String KEY_ACTIVE_APP_LABEL = "active_app_label";
+    static final String KEY_ACTIVE_APP_TIME = "active_app_time";
 
     private AgentConfig() {
     }

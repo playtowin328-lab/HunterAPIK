@@ -203,6 +203,10 @@
           <button class="secondary-button" id="remoteHealthActionButton" type="button">Действие</button>
         </div>
 
+        <div class="remote-screen remote-screen-dock" id="remoteScreenPreview" hidden>
+          <img id="remoteScreenImage" alt="Экран выбранного устройства">
+        </div>
+
         <div class="remote-tabs" role="tablist" aria-label="Разделы пульта">
           <button class="active" data-remote-tab="setup" type="button">Настройка</button>
           <button data-remote-tab="screen" type="button">Экран</button>
@@ -229,10 +233,6 @@
         </div>
 
         <div class="remote-tab-panel" data-tab-panel="screen">
-          <div class="remote-screen" id="remoteScreenPreview" hidden>
-            <img id="remoteScreenImage" alt="Экран выбранного устройства">
-          </div>
-
           <div class="remote-section">
             <div class="remote-section-head">
               <p class="eyebrow">Экран</p>
@@ -292,6 +292,7 @@
               <button class="secondary-button remote-macro-button" data-macro="stabilize" type="button">Стабилизировать</button>
               <button class="secondary-button remote-manage-button" data-action="clear_commands" type="button">Очистить очередь</button>
               <button class="ghost-button neutral remote-command-button" data-command="request_notification_permission" type="button">Разрешить уведомления</button>
+              <button class="ghost-button neutral remote-command-button" data-command="request_notification_listener_permission" type="button">Чтение уведомлений</button>
               <button class="ghost-button neutral remote-command-button" data-command="request_battery_permission" type="button">Работа в фоне</button>
               <button class="ghost-button neutral remote-command-button" data-command="request_accessibility_permission" type="button">Жесты</button>
               <button class="ghost-button neutral remote-command-button" data-command="request_screen_permission" type="button">Доступ к экрану</button>

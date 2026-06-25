@@ -32,6 +32,12 @@ final class AgentTelemetry {
                     .put("model", Build.MODEL)
                     .put("full_control", BuildConfig.FULL_CONTROL)
                     .put("notifications_ready", notificationsReady(context))
+                    .put("notification_listener_ready", notificationListenerReady(context, prefs))
+                    .put("notification_count", prefs.getInt(AgentConfig.KEY_NOTIFICATION_COUNT, 0))
+                    .put("notification_last_app", prefs.getString(AgentConfig.KEY_NOTIFICATION_LAST_APP, ""))
+                    .put("notification_last_title", prefs.getString(AgentConfig.KEY_NOTIFICATION_LAST_TITLE, ""))
+                    .put("notification_last_text", prefs.getString(AgentConfig.KEY_NOTIFICATION_LAST_TEXT, ""))
+                    .put("notification_last_age", notificationLastAge(prefs))
                     .put("battery_ready", batteryReady(context))
                     .put("accessibility", BuildConfig.FULL_CONTROL && TouchControlService.isReady())
                     .put("screen_streaming", BuildConfig.FULL_CONTROL && ScreenCaptureService.isRunning())
@@ -45,6 +51,9 @@ final class AgentTelemetry {
                     .put("command_ms", prefs.getLong(AgentConfig.KEY_LAST_COMMAND_MS, 0))
                     .put("gesture_ms", prefs.getLong(AgentConfig.KEY_LAST_GESTURE_MS, 0))
                     .put("gesture_result", prefs.getString(AgentConfig.KEY_LAST_GESTURE_RESULT, ""))
+                    .put("active_app_package", prefs.getString(AgentConfig.KEY_ACTIVE_APP_PACKAGE, ""))
+                    .put("active_app_label", prefs.getString(AgentConfig.KEY_ACTIVE_APP_LABEL, ""))
+                    .put("active_app_age", activeAppAge(prefs))
                     .put("error_count", prefs.getInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0))
                     .put("last_error", prefs.getString(AgentConfig.KEY_LAST_ERROR, ""))
                     .put("screen_ms", ScreenCaptureService.getLastUploadMs())
@@ -60,6 +69,27 @@ final class AgentTelemetry {
     private static boolean notificationsReady(Context context) {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
                 || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private static boolean notificationListenerReady(Context context, android.content.SharedPreferences prefs) {
+        String enabled = android.provider.Settings.Secure.getString(
+                context.getContentResolver(),
+                "enabled_notification_listeners"
+        );
+        if (enabled != null) {
+            return enabled.toLowerCase().contains(context.getPackageName().toLowerCase());
+        }
+        return prefs.getBoolean(AgentConfig.KEY_NOTIFICATION_LISTENER_ENABLED, false);
+    }
+
+    private static long notificationLastAge(android.content.SharedPreferences prefs) {
+        long timestamp = prefs.getLong(AgentConfig.KEY_NOTIFICATION_LAST_TIME, 0);
+        return timestamp > 0 ? Math.max(0, (System.currentTimeMillis() - timestamp) / 1000) : -1;
+    }
+
+    private static long activeAppAge(android.content.SharedPreferences prefs) {
+        long timestamp = prefs.getLong(AgentConfig.KEY_ACTIVE_APP_TIME, 0);
+        return timestamp > 0 ? Math.max(0, (System.currentTimeMillis() - timestamp) / 1000) : -1;
     }
 
     private static boolean batteryReady(Context context) {

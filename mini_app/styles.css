@@ -1023,6 +1023,13 @@ select:focus {
   background: #000;
 }
 
+.remote-screen-dock {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  box-shadow: var(--shadow);
+}
+
 .remote-screen img,
 .screen-preview img {
   display: block;
@@ -1034,7 +1041,11 @@ select:focus {
 }
 
 .remote-screen img {
-  max-height: min(72vh, 860px);
+  max-height: min(58vh, 720px);
+}
+
+.remote-screen-dock img {
+  min-height: 220px;
 }
 
 .screen-preview {

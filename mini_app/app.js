@@ -119,6 +119,7 @@ const remoteCommandMessages = {
   stop_alarm: "Сигнал останавливается.",
   lock_screen: "Блокировка экрана запрошена.",
   request_notification_permission: "Запрос уведомлений открыт на телефоне.",
+  request_notification_listener_permission: "Настройки доступа к уведомлениям открыты на телефоне.",
   request_battery_permission: "Запрос работы в фоне открыт на телефоне.",
   request_accessibility_permission: "Настройки жестов и Accessibility открыты на телефоне.",
   request_screen_permission: "Запрос доступа к экрану открыт на телефоне.",
@@ -305,6 +306,11 @@ function formatTelemetry(device) {
   if (typeof telemetry.blackout === "boolean") items.push(`blackout: ${telemetry.blackout ? "on" : "off"}`);
   if (telemetry.setup_wizard) items.push(`setup: ${telemetry.setup_waiting_for || "active"}`);
   if (typeof telemetry.notifications_ready === "boolean") items.push(`уведомления: ${telemetry.notifications_ready ? "on" : "off"}`);
+  if (typeof telemetry.notification_listener_ready === "boolean") items.push(`чтение уведомлений: ${telemetry.notification_listener_ready ? "on" : "off"}`);
+  if (telemetry.notification_last_app) {
+    const title = telemetry.notification_last_title ? ` · ${telemetry.notification_last_title}` : "";
+    items.push(`последнее уведомление: ${telemetry.notification_last_app}${title}`);
+  }
   if (typeof telemetry.battery_ready === "boolean") items.push(`фон: ${telemetry.battery_ready ? "on" : "off"}`);
   if (typeof telemetry.accessibility === "boolean") items.push(`жесты: ${telemetry.accessibility ? "on" : "off"}`);
   if (typeof telemetry.screen_streaming === "boolean") items.push(`экран: ${telemetry.screen_streaming ? "on" : "off"}`);
@@ -312,6 +318,7 @@ function formatTelemetry(device) {
   if (typeof telemetry.command_ms === "number" && telemetry.command_ms > 0) items.push(`cmd: ${telemetry.command_ms} ms`);
   if (typeof telemetry.gesture_ms === "number" && telemetry.gesture_ms > 0) items.push(`gesture: ${telemetry.gesture_ms} ms`);
   if (telemetry.gesture_result) items.push(`gesture: ${telemetry.gesture_result}`);
+  if (telemetry.active_app_label || telemetry.active_app_package) items.push(`активно: ${telemetry.active_app_label || telemetry.active_app_package}`);
   if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) items.push(`screen: ${telemetry.screen_ms} ms`);
   if (typeof telemetry.screen_frames === "number" && telemetry.screen_frames > 0) items.push(`frames: ${telemetry.screen_frames}`);
   if (typeof telemetry.screen_dropped === "number" && telemetry.screen_dropped > 0) items.push(`drop: ${telemetry.screen_dropped}`);
@@ -339,6 +346,7 @@ function formatDiagnostics(device) {
   if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) parts.push(`экран ${telemetry.screen_ms} ms`);
   if (typeof telemetry.gesture_ms === "number" && telemetry.gesture_ms > 0) parts.push(`жест ${telemetry.gesture_ms} ms`);
   if (telemetry.gesture_result) parts.push(telemetry.gesture_result);
+  if (telemetry.active_app_label || telemetry.active_app_package) parts.push(`активно ${telemetry.active_app_label || telemetry.active_app_package}`);
   if (telemetry.last_error) parts.push(`ошибка: ${telemetry.last_error}`);
   return parts.join(" · ");
 }
@@ -371,6 +379,7 @@ function formatRemoteStatus(device) {
     telemetry.blackout ? "Black" : "",
     telemetry.accessibility ? "жесты" : "",
     telemetry.screen_streaming ? "экран" : "",
+    telemetry.notification_listener_ready ? "уведомления" : "",
   ].filter(Boolean).join(" · ") || "готово";
   const pending = Number(diagnostics.pending_commands || 0);
   const delivered = Number(diagnostics.delivered_commands || 0);
@@ -460,6 +469,16 @@ function primaryDeviceIssue(device) {
       detail: "Жесты и live-экран доступны только в Full APK. Для статуса и базовых команд Lite подходит.",
       action: "setup",
       actionLabel: "Проверить setup",
+    };
+  }
+  if (telemetry.notification_listener_ready === false) {
+    return {
+      status: "info",
+      label: "Уведомления",
+      title: "Чтение уведомлений не включено",
+      detail: "Для журнала уведомлений нужно вручную включить Hunter Agent в Android Notification Access.",
+      action: "notification_listener",
+      actionLabel: "Открыть доступ",
     };
   }
   if (telemetry.full_control === true && telemetry.accessibility !== true) {
@@ -590,6 +609,15 @@ function setupSteps(device) {
         : "Обнови APK, чтобы видеть точный статус уведомлений.",
       status: !isAndroid ? "skipped" : (telemetry.notifications_ready === true ? "ready" : "todo"),
       command: "request_notification_permission",
+    },
+    {
+      key: "notification_listener",
+      title: "Чтение уведомлений",
+      detail: telemetry.notification_listener_ready
+        ? "Notification Listener включен. Агент видит новые уведомления после явного разрешения."
+        : "Открой системный доступ к уведомлениям и включи Hunter Agent вручную.",
+      status: !isAndroid ? "skipped" : (telemetry.notification_listener_ready === true ? "ready" : "todo"),
+      command: "request_notification_listener_permission",
     },
     {
       key: "battery",
@@ -1426,6 +1454,16 @@ function runQuickAction(action) {
   }
   if (action === "pair") {
     requestPairButton.click();
+    return;
+  }
+  if (action === "notification_listener") {
+    setRemoteTab("system");
+    sendSimpleDeviceCommand(
+      selectedDevice(),
+      "request_notification_listener_permission",
+      remoteControlNote,
+      remoteCommandMessages.request_notification_listener_permission
+    );
   }
 }
 

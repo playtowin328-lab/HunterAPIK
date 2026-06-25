@@ -6,6 +6,8 @@ import android.accessibilityservice.GestureDescription;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.graphics.Path;
 import android.os.Bundle;
 import android.os.SystemClock;
@@ -27,6 +29,20 @@ public class TouchControlService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (event == null || event.getPackageName() == null) {
+            return;
+        }
+        int type = event.getEventType();
+        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            return;
+        }
+        String packageName = event.getPackageName().toString();
+        AgentConfig.prefs(this)
+                .edit()
+                .putString(AgentConfig.KEY_ACTIVE_APP_PACKAGE, packageName)
+                .putString(AgentConfig.KEY_ACTIVE_APP_LABEL, appLabel(packageName))
+                .putLong(AgentConfig.KEY_ACTIVE_APP_TIME, System.currentTimeMillis())
+                .apply();
     }
 
     @Override
@@ -325,5 +341,16 @@ public class TouchControlService extends AccessibilityService {
 
     private static float clamp(float value) {
         return Math.max(0f, Math.min(1f, value));
+    }
+
+    private String appLabel(String packageName) {
+        try {
+            PackageManager manager = getPackageManager();
+            ApplicationInfo info = manager.getApplicationInfo(packageName, 0);
+            CharSequence label = manager.getApplicationLabel(info);
+            return label == null ? packageName : label.toString();
+        } catch (Exception exc) {
+            return packageName;
+        }
     }
 }
