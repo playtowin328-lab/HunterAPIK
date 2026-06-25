@@ -322,6 +322,7 @@ function formatTelemetry(device) {
   if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) items.push(`screen: ${telemetry.screen_ms} ms`);
   if (typeof telemetry.screen_frames === "number" && telemetry.screen_frames > 0) items.push(`frames: ${telemetry.screen_frames}`);
   if (typeof telemetry.screen_dropped === "number" && telemetry.screen_dropped > 0) items.push(`drop: ${telemetry.screen_dropped}`);
+  if (telemetry.screen_black_frame) items.push(`screen: protected/black`);
   if (typeof telemetry.error_count === "number" && telemetry.error_count > 0) items.push(`errors: ${telemetry.error_count}`);
   if (diagnostics.pending_commands) items.push(`очередь: ${diagnostics.pending_commands}`);
   if (typeof diagnostics.frame_age === "number") items.push(`кадр: ${diagnostics.frame_age} сек`);
@@ -344,6 +345,7 @@ function formatDiagnostics(device) {
   }
   if (typeof telemetry.loop_ms === "number" && telemetry.loop_ms > 0) parts.push(`агент ${telemetry.loop_ms} ms`);
   if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) parts.push(`экран ${telemetry.screen_ms} ms`);
+  if (telemetry.screen_black_frame) parts.push("кадр черный: приложение может блокировать захват");
   if (typeof telemetry.gesture_ms === "number" && telemetry.gesture_ms > 0) parts.push(`жест ${telemetry.gesture_ms} ms`);
   if (telemetry.gesture_result) parts.push(telemetry.gesture_result);
   if (telemetry.active_app_label || telemetry.active_app_package) parts.push(`активно ${telemetry.active_app_label || telemetry.active_app_package}`);
@@ -459,6 +461,16 @@ function primaryDeviceIssue(device) {
       detail: String(telemetry.screen_error).slice(0, 160),
       action: "screen",
       actionLabel: "Запустить экран",
+    };
+  }
+  if (telemetry.screen_black_frame) {
+    return {
+      status: "warn",
+      label: "Экран",
+      title: "Приложение блокирует захват",
+      detail: "Android не отдает картинку для защищенного окна. Управлять можно жестами, но картинка будет черной, пока открыто это приложение.",
+      action: "home",
+      actionLabel: "Домой",
     };
   }
   if (telemetry.full_control === false) {
@@ -1199,7 +1211,13 @@ function startScreenPolling(device, screenPreview, screenImage, controlNote) {
       const payload = await loadScreenFrame(device);
       screenImage.src = payload.frame.image_data;
       screenPreview.hidden = false;
+      screenPreview.dataset.capture = payload.frame.black_frame ? "blocked" : "live";
       const frameAge = Math.max(0, Math.round(Date.now() / 1000 - payload.frame.updated_at));
+      if (payload.frame.black_frame) {
+        const ratio = Math.round(Number(payload.frame.black_ratio || 0) * 100);
+        controlNote.textContent = `Кадр почти черный (${ratio}%). Обычно это защищенное приложение/DRM/FLAG_SECURE: Android блокирует трансляцию. Можно нажать Домой или управлять жестами вслепую.`;
+        return;
+      }
       controlNote.textContent = frameAge > 4
         ? `Кадр устарел на ${frameAge} сек. Проверь разрешение экрана и что телефон не заблокирован.`
         : `Кадр обновлён: ${formatLastSeen(payload.frame.updated_at)}. Тапай по экрану для управления.`;
@@ -1464,6 +1482,11 @@ function runQuickAction(action) {
       remoteControlNote,
       remoteCommandMessages.request_notification_listener_permission
     );
+    return;
+  }
+  if (action === "home") {
+    setRemoteTab("nav");
+    sendSimpleDeviceCommand(selectedDevice(), "home", remoteControlNote, remoteCommandMessages.home);
   }
 }
 

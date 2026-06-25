@@ -25,6 +25,8 @@ final class AgentConfig {
     static final String KEY_BLACKOUT_ENABLED = "blackout_enabled";
     static final String KEY_LOST_MODE_ENABLED = "lost_mode_enabled";
     static final String KEY_SCREEN_MAX_SIZE = "screen_max_size";
+    static final String KEY_SCREEN_BLACK_FRAME = "screen_black_frame";
+    static final String KEY_SCREEN_BLACK_RATIO = "screen_black_ratio";
     static final String KEY_SETUP_WIZARD_ACTIVE = "setup_wizard_active";
     static final String KEY_SETUP_WIZARD_WAITING_FOR = "setup_wizard_waiting_for";
     static final String KEY_NOTIFICATION_LISTENER_ENABLED = "notification_listener_enabled";

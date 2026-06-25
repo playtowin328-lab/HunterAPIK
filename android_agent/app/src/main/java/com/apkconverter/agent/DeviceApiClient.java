@@ -128,7 +128,7 @@ final class DeviceApiClient {
         });
     }
 
-    static void uploadScreenFrame(Context context, byte[] jpegBytes) throws Exception {
+    static void uploadScreenFrame(Context context, byte[] jpegBytes, boolean blackFrame, float blackRatio) throws Exception {
         SharedPreferences prefs = AgentConfig.prefs(context);
         String serverUrl = prefs.getString(AgentConfig.KEY_SERVER_URL, "").trim();
         String ownerId = prefs.getString(AgentConfig.KEY_OWNER_ID, "").trim();
@@ -139,7 +139,9 @@ final class DeviceApiClient {
             JSONObject payload = new JSONObject()
                     .put("owner_id", ownerId)
                     .put("device_id", AgentConfig.getDeviceId(context))
-                    .put("image_base64", imageBase64);
+                    .put("image_base64", imageBase64)
+                    .put("black_frame", blackFrame)
+                    .put("black_ratio", blackRatio);
 
             HttpURLConnection connection = openConnection(endpoint(serverUrl, "/api/devices/screen"), "POST");
             connection.setRequestProperty("X-Device-Secret", deviceSecret);

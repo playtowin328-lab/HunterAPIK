@@ -195,10 +195,17 @@ public class ScreenCaptureService extends Service {
             int targetWidth = Math.max(1, Math.round(cropped.getWidth() * scale));
             int targetHeight = Math.max(1, Math.round(cropped.getHeight() * scale));
             Bitmap scaled = Bitmap.createScaledBitmap(cropped, targetWidth, targetHeight, true);
+            float blackRatio = blackFrameRatio(scaled);
+            boolean blackFrame = blackRatio >= 0.985f;
 
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
             scaled.compress(Bitmap.CompressFormat.JPEG, 65, outputStream);
-            DeviceApiClient.uploadScreenFrame(this, outputStream.toByteArray());
+            DeviceApiClient.uploadScreenFrame(this, outputStream.toByteArray(), blackFrame, blackRatio);
+            AgentConfig.prefs(this)
+                    .edit()
+                    .putBoolean(AgentConfig.KEY_SCREEN_BLACK_FRAME, blackFrame)
+                    .putFloat(AgentConfig.KEY_SCREEN_BLACK_RATIO, blackRatio)
+                    .apply();
             uploadedFrames.incrementAndGet();
             lastUploadMs = System.currentTimeMillis() - started;
             lastError = "";
@@ -214,6 +221,28 @@ public class ScreenCaptureService extends Service {
             image.close();
             uploadInProgress.set(false);
         }
+    }
+
+    private float blackFrameRatio(Bitmap bitmap) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int stepX = Math.max(1, width / 48);
+        int stepY = Math.max(1, height / 48);
+        int total = 0;
+        int black = 0;
+        for (int y = stepY / 2; y < height; y += stepY) {
+            for (int x = stepX / 2; x < width; x += stepX) {
+                int color = bitmap.getPixel(x, y);
+                int r = (color >> 16) & 0xff;
+                int g = (color >> 8) & 0xff;
+                int b = color & 0xff;
+                if (r < 12 && g < 12 && b < 12) {
+                    black++;
+                }
+                total++;
+            }
+        }
+        return total == 0 ? 0f : (float) black / total;
     }
 
     private void stopCapture() {

@@ -2601,7 +2601,7 @@ def screen_paths(owner_id: str, device_id: str) -> tuple[Path, Path]:
     return device_dir / f"{safe_device}.jpg", device_dir / f"{safe_device}.json"
 
 
-def save_screen_frame(owner_id: str, device_id: str, image_base64: str) -> dict:
+def save_screen_frame(owner_id: str, device_id: str, image_base64: str, black_frame: bool = False, black_ratio: float = 0.0) -> dict:
     if not owner_id or not device_id:
         raise ValueError("owner_id and device_id are required")
 
@@ -2617,6 +2617,8 @@ def save_screen_frame(owner_id: str, device_id: str, image_base64: str) -> dict:
         "device_id": str(device_id),
         "updated_at": int(time.time()),
         "content_type": content_type,
+        "black_frame": bool(black_frame),
+        "black_ratio": max(0.0, min(1.0, float(black_ratio or 0))),
     }
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
@@ -3988,6 +3990,8 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 str(payload.get("owner_id", "")).strip(),
                 str(payload.get("device_id", "")).strip(),
                 str(payload.get("image_base64", "")).strip(),
+                bool(payload.get("black_frame", False)),
+                float(payload.get("black_ratio", 0) or 0),
             )
         except (json.JSONDecodeError, ValueError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)

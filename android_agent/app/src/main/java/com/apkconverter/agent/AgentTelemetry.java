@@ -59,6 +59,8 @@ final class AgentTelemetry {
                     .put("screen_ms", ScreenCaptureService.getLastUploadMs())
                     .put("screen_frames", ScreenCaptureService.getUploadedFrames())
                     .put("screen_dropped", ScreenCaptureService.getDroppedFrames())
+                    .put("screen_black_frame", prefs.getBoolean(AgentConfig.KEY_SCREEN_BLACK_FRAME, false))
+                    .put("screen_black_ratio", prefs.getFloat(AgentConfig.KEY_SCREEN_BLACK_RATIO, 0f))
                     .put("screen_error", ScreenCaptureService.getLastError())
                     .toString();
         } catch (Exception exc) {
