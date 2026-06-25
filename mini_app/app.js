@@ -1088,7 +1088,7 @@ function percent(value) {
 function commandPayloadSummary(type, payload = {}) {
   if (type === "tap" || type === "long_tap") return `координаты: ${percent(payload.x)}, ${percent(payload.y)}`;
   if (type === "swipe") return `свайп: ${percent(payload.x)}, ${percent(payload.y)} -> ${percent(payload.end_x)}, ${percent(payload.end_y)}`;
-  if (type === "input_text") return `текст: ${String(payload.text || "").length} символов`;
+  if (type === "input_text") return `текст: ${String(payload.text || "").length} символов, содержимое не сохраняется`;
   if (type === "request_screen") return `качество: ${payload.quality || getDeviceQuality(selectedDevice() || {})}`;
   return "";
 }

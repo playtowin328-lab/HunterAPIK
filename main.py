@@ -517,6 +517,16 @@ def command_payload_summary(command_type: str, payload: dict | None) -> str:
     return ""
 
 
+def command_audit_payload(command_type: str, payload: dict | None) -> dict:
+    payload = payload or {}
+    if command_type == "input_text":
+        return {
+            "text_length": len(str(payload.get("text", ""))),
+            "redacted": True,
+        }
+    return payload
+
+
 def command_audit_detail(prefix: str, command_type: str, device_id: str, command_id: str = "", payload: dict | None = None, result: str = "", status: str = "") -> str:
     parts = [prefix, command_type, f"device={device_id}"]
     if command_id:
@@ -3912,7 +3922,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                     "device_id": device_id,
                     "command_id": command["command_id"],
                     "type": command_type,
-                    "payload": command_payload or {},
+                    "payload": command_audit_payload(command_type, command_payload),
                 },
                 notify=not (command_type == "request_screen" and (command_payload or {}).get("stream")),
             )
