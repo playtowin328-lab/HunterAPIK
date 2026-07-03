@@ -204,6 +204,20 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertFalse(event.get("private", False))
         self.assertTrue(main.verify_audit_chain()["ok"])
 
+    def test_database_backup_restores_devices_and_roles(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "backup-phone", "name": "Backup phone"})
+        main.grant_bot_access("200", "100", "admin")
+        backup = main.create_database_backup("test")
+        with main.db_connect() as connection:
+            connection.execute("DELETE FROM devices")
+            connection.execute("DELETE FROM bot_access")
+
+        main.restore_database_backup(backup)
+
+        self.assertEqual("backup-phone", main.list_devices_for_user("100")[0]["device_id"])
+        with patch.object(main, "ADMIN_IDS", {"100"}):
+            self.assertEqual("admin", main.get_user_role("200"))
+
 
 if __name__ == "__main__":
     unittest.main()

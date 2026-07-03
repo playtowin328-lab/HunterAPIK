@@ -56,6 +56,7 @@ const remoteScreenPreview = $("#remoteScreenPreview");
 const remoteScreenImage = $("#remoteScreenImage");
 const remoteControlNote = $("#remoteControlNote");
 const remotePanelTextInput = $("#remotePanelTextInput");
+const blackoutMessage = $("#blackoutMessage");
 const remotePanelSendText = $("#remotePanelSendText");
 const remoteConnectionStatus = $("#remoteConnectionStatus");
 const remoteBatteryStatus = $("#remoteBatteryStatus");
@@ -2069,7 +2070,9 @@ $$(".remote-quality-button", remotePanel).forEach((button) => {
 $$(".remote-command-button", remotePanel).forEach((button) => {
   button.addEventListener("click", () => {
     const command = button.dataset.command;
-    const textPayload = command === "input_text" ? { text: remotePanelTextInput.value.trim() } : {};
+    const textPayload = command === "input_text"
+      ? { text: remotePanelTextInput.value.trim() }
+      : (command === "blackout_on" ? { text: blackoutMessage?.value.trim() || "Устройство временно недоступно" } : {});
     const successText = remoteCommandMessages[command] || "Команда отправлена.";
     const timeoutMs = Number(button.dataset.timeout || 9000);
     sendSimpleDeviceCommand(selectedDevice(), command, remoteControlNote, successText, textPayload, timeoutMs);

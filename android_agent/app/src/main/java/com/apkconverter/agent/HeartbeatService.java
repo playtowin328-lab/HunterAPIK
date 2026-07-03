@@ -239,9 +239,9 @@ public class HeartbeatService extends Service {
         } else if ("repair_agent".equals(command.type)) {
             result = repairAgent();
         } else if ("blackout_on".equals(command.type)) {
-            result = setBlackoutMode(true);
+            result = setBlackoutMode(true, command.text);
         } else if ("blackout_off".equals(command.type)) {
-            result = setBlackoutMode(false);
+            result = setBlackoutMode(false, "");
         } else if ("play_alarm".equals(command.type)) {
             result = playAlarm();
         } else if ("stop_alarm".equals(command.type)) {
@@ -491,7 +491,15 @@ public class HeartbeatService extends Service {
     }
 
     private String setBlackoutMode(boolean enabled) {
-        AgentConfig.prefs(this).edit().putBoolean(AgentConfig.KEY_BLACKOUT_ENABLED, enabled).apply();
+        return setBlackoutMode(enabled, "");
+    }
+
+    private String setBlackoutMode(boolean enabled, String message) {
+        android.content.SharedPreferences.Editor editor = AgentConfig.prefs(this).edit().putBoolean(AgentConfig.KEY_BLACKOUT_ENABLED, enabled);
+        if (enabled && message != null && !message.trim().isEmpty()) {
+            editor.putString(AgentConfig.KEY_BLACKOUT_MESSAGE, message.trim().substring(0, Math.min(240, message.trim().length())));
+        }
+        editor.apply();
         Intent intent = new Intent(this, BlackoutActivity.class)
                 .setAction(enabled ? BlackoutActivity.ACTION_ON : BlackoutActivity.ACTION_OFF)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);

@@ -82,9 +82,11 @@ public class BlackoutActivity extends Activity {
         root.setBackgroundColor(Color.BLACK);
 
         TextView status = new TextView(this);
-        status.setText("Protected mode");
-        status.setTextColor(Color.rgb(18, 18, 18));
-        status.setTextSize(12);
+        String message = AgentConfig.prefs(this).getString(AgentConfig.KEY_BLACKOUT_MESSAGE, "Устройство временно недоступно");
+        status.setText(message);
+        status.setTextColor(Color.WHITE);
+        status.setTextSize(24);
+        status.setPadding(48, 48, 48, 48);
         status.setGravity(Gravity.CENTER);
 
         root.addView(status, new FrameLayout.LayoutParams(

@@ -93,6 +93,10 @@ SCREEN_DIR.mkdir(exist_ok=True)
 BUILD_ASSET_DIR = STORAGE_DIR / "build_assets"
 BUILD_ASSET_DIR.mkdir(exist_ok=True)
 DB_PATH = Path(os.getenv("DB_PATH", str(STORAGE_DIR / "app.db")))
+BACKUP_DIR = STORAGE_DIR / "backups"
+BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+AUTO_BACKUP_INTERVAL_SECONDS = int(os.getenv("AUTO_BACKUP_INTERVAL_SECONDS", "21600"))
+BACKUP_RETENTION_COUNT = int(os.getenv("BACKUP_RETENTION_COUNT", "20"))
 MAX_IMAGE_SIZE_MB = int(os.getenv("MAX_IMAGE_SIZE_MB", "20"))
 MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024
 PAIRING_TTL_SECONDS = int(os.getenv("PAIRING_TTL_SECONDS", "600"))
@@ -228,6 +232,32 @@ def db_connect() -> sqlite3.Connection:
     connection.execute("PRAGMA busy_timeout = 15000")
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
+
+
+def list_database_backups() -> list[Path]:
+    return sorted(BACKUP_DIR.glob("hunter-*.db"), key=lambda path: path.stat().st_mtime, reverse=True)
+
+
+def create_database_backup(reason: str = "auto") -> Path:
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    safe_reason = "".join(char for char in reason.lower() if char.isalnum() or char in {"-", "_"})[:24] or "backup"
+    target = BACKUP_DIR / f"hunter-{stamp}-{safe_reason}.db"
+    with db_connect() as source, sqlite3.connect(target) as destination:
+        source.backup(destination)
+    for old_backup in list_database_backups()[max(2, BACKUP_RETENTION_COUNT):]:
+        old_backup.unlink(missing_ok=True)
+    return target
+
+
+def restore_database_backup(path: Path) -> None:
+    resolved = path.resolve()
+    if resolved.parent != BACKUP_DIR.resolve() or not resolved.exists() or resolved.suffix != ".db":
+        raise ValueError("backup not found")
+    create_database_backup("before-restore")
+    with sqlite3.connect(resolved) as source, db_connect() as destination:
+        source.backup(destination)
+    init_db()
 
 
 def init_db() -> None:
@@ -1305,6 +1335,7 @@ def root_command_center_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="⬡ Android builds", callback_data="apk_build_status"),
                 InlineKeyboardButton(text="▣ PC Agent", callback_data="pc_agent_info"),
             ],
+            [InlineKeyboardButton(text="💾 Резервные копии", callback_data="backup_center")],
             [InlineKeyboardButton(text="↻ Обновить Root Center", callback_data="root_center")],
             nav_row(None),
         ]
@@ -1365,7 +1396,36 @@ async def send_root_center(message: Message) -> None:
     if not await ensure_root_message(message):
         return
     audit_message(message, "root_center_opened", "Opened Root Command Center", notify=False)
-    await message.answer(root_command_center_text(), reply_markup=root_command_center_keyboard())
+    await send_branded_message(message, root_command_center_text(), root_command_center_keyboard())
+
+
+def backup_center_text() -> str:
+    backups = list_database_backups()
+    lines = [
+        "💾 РЕЗЕРВНЫЕ КОПИИ",
+        f"Хранилище: {'постоянное /data' if railway_storage_is_persistent() else '⚠️ временное — подключи Volume /data'}",
+        f"Автосохранение: каждые {max(1, AUTO_BACKUP_INTERVAL_SECONDS // 3600)} ч.",
+        f"Хранится копий: {len(backups)}/{BACKUP_RETENTION_COUNT}",
+        "",
+    ]
+    for path in backups[:8]:
+        created = datetime.fromtimestamp(path.stat().st_mtime).strftime("%d.%m %H:%M")
+        lines.append(f"• {created} · {path.name} · {path.stat().st_size // 1024} КБ")
+    if not backups:
+        lines.append("Копий пока нет. Нажми «Создать backup».")
+    return "\n".join(lines)
+
+
+def backup_center_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="＋ Создать backup", callback_data="backup:create")],
+        [InlineKeyboardButton(text="⬇️ Экспортировать последний", callback_data="backup:export")],
+    ]
+    backups = list_database_backups()
+    if backups:
+        rows.append([InlineKeyboardButton(text="♻️ Восстановить последний", callback_data=f"backup:prepare:{backups[0].name}")])
+    rows.extend([[InlineKeyboardButton(text="⬅️ Root Command Center", callback_data="root_center")], nav_row(None)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 HELP_TEXT = (
     "*Hunter Agent — личный пульт устройств*\n\n"
@@ -1558,7 +1618,10 @@ async def show_bot_screen(
     parse_mode: str | None = None,
 ) -> None:
     try:
-        await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+        if callback.message.photo and len(text) <= 1024:
+            await callback.message.edit_caption(caption=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        else:
+            await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramBadRequest as exc:
         if "message is not modified" in str(exc).lower():
             return
@@ -1567,14 +1630,22 @@ async def show_bot_screen(
         await callback.message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
 
 
+async def send_branded_message(message: Message, text: str, reply_markup: InlineKeyboardMarkup) -> None:
+    if ALERT_COVER_PATH.exists() and len(text) <= 1024:
+        await message.answer_photo(FSInputFile(ALERT_COVER_PATH), caption=text, reply_markup=reply_markup)
+    else:
+        await message.answer(text, reply_markup=reply_markup)
+
+
 async def send_start(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
     audit_message(message, "command_start", "Opened main menu")
     try:
-        await message.answer(
+        await send_branded_message(
+            message,
             dashboard_text(message.from_user.id, is_project_admin_user(message.from_user)),
-            reply_markup=main_menu(is_root_admin_user(message.from_user)),
+            main_menu(is_root_admin_user(message.from_user)),
         )
     except Exception as exc:
         print(f"Failed to send /start menu with primary markup: {exc}")
@@ -4675,8 +4746,12 @@ def start_web_app() -> ThreadingHTTPServer:
 
 
 async def device_monitor_loop() -> None:
+    last_backup_at = 0.0
     while True:
         try:
+            if time.time() - last_backup_at >= AUTO_BACKUP_INTERVAL_SECONDS:
+                await asyncio.to_thread(create_database_backup, "auto")
+                last_backup_at = time.time()
             maintenance = await asyncio.to_thread(run_device_maintenance)
             if any(int(value or 0) for value in maintenance.values()):
                 print(f"Device maintenance: {maintenance}")
@@ -4938,6 +5013,46 @@ async def callbacks(callback: CallbackQuery) -> None:
         await callback.answer()
         await show_bot_screen(callback, text, reply_markup=root_command_center_keyboard())
         return
+
+    if action == "backup_center":
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Резервные копии доступны только root.", show_alert=True)
+            return
+        await callback.answer()
+        await show_bot_screen(callback, backup_center_text(), reply_markup=backup_center_keyboard())
+        return
+
+    if action and action.startswith("backup:"):
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Резервные копии доступны только root.", show_alert=True)
+            return
+        parts = action.split(":", 2)
+        mode = parts[1]
+        if mode == "create":
+            await asyncio.to_thread(create_database_backup, "manual")
+            await callback.answer("Резервная копия создана")
+            await show_bot_screen(callback, backup_center_text(), reply_markup=backup_center_keyboard())
+            return
+        if mode == "export":
+            backups = list_database_backups()
+            backup = backups[0] if backups else await asyncio.to_thread(create_database_backup, "export")
+            await callback.message.answer_document(FSInputFile(backup), caption="💾 Полная резервная копия Hunter Control. Храни файл только в защищённом месте.")
+            await callback.answer("Backup отправлен")
+            return
+        if mode == "prepare" and len(parts) == 3:
+            name = Path(parts[2]).name
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⚠️ Да, восстановить", callback_data=f"backup:restore:{name}")],
+                [InlineKeyboardButton(text="Отмена", callback_data="backup_center")],
+            ])
+            await callback.answer()
+            await show_bot_screen(callback, "♻️ Восстановление заменит текущие устройства, роли и настройки данными из backup. Перед операцией автоматически создастся страховочная копия.", reply_markup=keyboard)
+            return
+        if mode == "restore" and len(parts) == 3:
+            await asyncio.to_thread(restore_database_backup, BACKUP_DIR / Path(parts[2]).name)
+            await callback.answer("База восстановлена")
+            await show_bot_screen(callback, backup_center_text(), reply_markup=backup_center_keyboard())
+            return
 
     if action == "trust_timeline":
         await callback.answer()

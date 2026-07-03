@@ -4,6 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Hunter Agent</title>
+    <meta name="theme-color" content="#0b2334">
+    <link rel="manifest" href="./manifest.webmanifest">
     <link rel="stylesheet" href="./styles.css">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
@@ -318,6 +320,11 @@
 
         <div class="remote-section remote-tab-panel" data-tab-panel="protect">
           <p class="eyebrow">Защита</p>
+          <div class="blackout-message-box">
+            <label for="blackoutMessage">Текст на защитном экране</label>
+            <textarea id="blackoutMessage" maxlength="240" rows="3" placeholder="Например: Рабочее устройство. Позвоните владельцу +7…"></textarea>
+            <small>Текст показывается крупно на чёрном фоне. Не указывай пароли или секретные данные.</small>
+          </div>
           <div class="remote-grid protection-controls">
             <button class="secondary-button danger-soft remote-command-button" data-command="lost_mode_on" type="button">Режим кражи</button>
             <button class="secondary-button remote-command-button" data-command="lost_mode_off" type="button">Снять режим</button>
@@ -440,5 +447,6 @@
     </template>
 
     <script src="./app.js"></script>
+    <script>if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('./service-worker.js'));</script>
   </body>
 </html>
