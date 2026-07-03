@@ -26,6 +26,8 @@
           </div>
         </div>
         <div class="topbar-actions">
+          <button class="install-button hidden" id="installPwaButton" type="button">Установить</button>
+          <button class="icon-button" id="commandPaletteButton" type="button" aria-label="Быстрые команды" title="Быстрые команды">⌘</button>
           <button class="icon-button" id="fullscreenButton" type="button" aria-label="Во весь экран" title="Во весь экран">⛶</button>
           <button class="icon-button" id="themeButton" type="button" aria-label="Сменить тему" title="Сменить тему">◐</button>
         </div>
@@ -445,6 +447,30 @@
         </div>
       </article>
     </template>
+
+    <div class="command-palette hidden" id="commandPalette" role="dialog" aria-modal="true" aria-labelledby="commandPaletteTitle">
+      <button class="command-palette-backdrop" id="commandPaletteBackdrop" type="button" aria-label="Закрыть"></button>
+      <section class="command-palette-card">
+        <div class="command-palette-head">
+          <div><p class="eyebrow">Быстрый доступ</p><h2 id="commandPaletteTitle">Куда перейти?</h2></div>
+          <button class="icon-button" id="commandPaletteClose" type="button" aria-label="Закрыть">×</button>
+        </div>
+        <label class="command-palette-search">
+          <span>⌕</span>
+          <input id="commandPaletteInput" type="search" placeholder="Устройство, раздел или действие" autocomplete="off">
+          <kbd>Esc</kbd>
+        </label>
+        <div class="command-palette-list" id="commandPaletteList">
+          <button data-palette-label="устройства список телефоны" data-target="#devices" type="button"><span>📱</span><div><strong>Устройства</strong><small>Список и состояние парка</small></div></button>
+          <button data-palette-label="пульт управление экран" data-target="#remotePanel" type="button"><span>⌁</span><div><strong>Пульт управления</strong><small>Экран, жесты и защита</small></div></button>
+          <button data-palette-label="подключить добавить qr agent" data-target="#setupPanel" type="button"><span>＋</span><div><strong>Подключить устройство</strong><small>APK, QR и первый запуск</small></div></button>
+          <button data-palette-label="браузер companion камера геолокация" data-target="#browserCompanion" type="button"><span>◎</span><div><strong>Browser Companion</strong><small>Временный доступ без APK</small></div></button>
+          <button data-palette-label="обновить синхронизировать" data-action="refresh" type="button"><span>↻</span><div><strong>Обновить данные</strong><small>Устройства и инфраструктура</small></div></button>
+          <button data-palette-label="тема темная светлая" data-action="theme" type="button"><span>◐</span><div><strong>Сменить тему</strong><small>Светлый или тёмный режим</small></div></button>
+        </div>
+        <p class="command-palette-empty hidden" id="commandPaletteEmpty">Ничего не найдено</p>
+      </section>
+    </div>
 
     <script src="./app.js"></script>
     <script>if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('./service-worker.js'));</script>

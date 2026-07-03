@@ -1474,6 +1474,70 @@ body {
   backdrop-filter: blur(12px);
 }
 
+.install-button {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid rgba(255,255,255,.22);
+  border-radius: 11px;
+  background: rgba(255,255,255,.16);
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 850;
+  backdrop-filter: blur(12px);
+}
+
+.command-palette {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: start center;
+  padding: min(14vh, 110px) 14px 20px;
+}
+
+.command-palette-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(2, 8, 14, .68);
+  backdrop-filter: blur(9px);
+}
+
+.command-palette-card {
+  position: relative;
+  width: min(620px, 100%);
+  max-height: min(720px, 80vh);
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: 0 32px 100px rgba(0,0,0,.35);
+  animation: palette-in .18s ease-out;
+}
+
+.command-palette-head,
+.command-palette-search,
+.command-palette-list > button {
+  display: flex;
+  align-items: center;
+}
+
+.command-palette-head { justify-content: space-between; gap: 12px; }
+.command-palette-search { gap: 10px; margin-top: 14px; padding: 0 12px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-soft); }
+.command-palette-search input { flex: 1; min-width: 0; border: 0; background: transparent; box-shadow: none; }
+.command-palette-search kbd { padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 10px; }
+.command-palette-list { display: grid; gap: 6px; margin-top: 12px; }
+.command-palette-list > button { gap: 12px; width: 100%; padding: 12px; border: 0; border-radius: 12px; background: transparent; color: var(--text); cursor: pointer; text-align: left; }
+.command-palette-list > button:hover { background: var(--surface-soft); }
+.command-palette-list > button > span { display: grid; flex: 0 0 38px; width: 38px; height: 38px; place-items: center; border-radius: 11px; background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent-strong); font-size: 18px; }
+.command-palette-list strong, .command-palette-list small { display: block; }
+.command-palette-list small, .command-palette-empty { margin-top: 3px; color: var(--muted); font-size: 11px; }
+.command-palette-empty { padding: 24px; text-align: center; }
+.palette-open { overflow: hidden; }
+@keyframes palette-in { from { transform: translateY(-10px) scale(.98); opacity: 0; } to { transform: none; opacity: 1; } }
+
 .summary {
   gap: 12px;
 }

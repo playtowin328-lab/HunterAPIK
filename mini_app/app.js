@@ -11,6 +11,14 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 const themeButton = $("#themeButton");
 const fullscreenButton = $("#fullscreenButton");
+const installPwaButton = $("#installPwaButton");
+const commandPaletteButton = $("#commandPaletteButton");
+const commandPalette = $("#commandPalette");
+const commandPaletteBackdrop = $("#commandPaletteBackdrop");
+const commandPaletteClose = $("#commandPaletteClose");
+const commandPaletteInput = $("#commandPaletteInput");
+const commandPaletteItems = $$("#commandPaletteList > button");
+const commandPaletteEmpty = $("#commandPaletteEmpty");
 const deviceForm = $("#deviceForm");
 const deviceName = $("#deviceName");
 const deviceType = $("#deviceType");
@@ -197,6 +205,7 @@ let deviceAlertSettings = null;
 let deviceAlertEvents = [];
 let deviceAlertKindList = [];
 let fullscreenFallbackActive = false;
+let pwaInstallPrompt = null;
 let activeDeviceFilter = localStorage.getItem("hunter_device_filter") || "all";
 let deviceSearchQuery = "";
 if (!["all", "online", "attention"].includes(activeDeviceFilter)) activeDeviceFilter = "all";
@@ -204,6 +213,36 @@ const screenPollers = new Map();
 const pendingScreenRequests = new Set();
 const companionStreams = new Set();
 window.currentDeviceScope = "own";
+
+function setCommandPalette(open) {
+  commandPalette?.classList.toggle("hidden", !open);
+  document.documentElement.classList.toggle("palette-open", open);
+  if (open) {
+    commandPaletteInput.value = "";
+    commandPaletteItems.forEach((item) => item.classList.remove("hidden"));
+    commandPaletteEmpty.classList.add("hidden");
+    setTimeout(() => commandPaletteInput?.focus(), 0);
+  }
+}
+
+function filterCommandPalette() {
+  const query = commandPaletteInput.value.trim().toLocaleLowerCase("ru");
+  let visible = 0;
+  commandPaletteItems.forEach((item) => {
+    const matches = !query || (item.dataset.paletteLabel || "").includes(query);
+    item.classList.toggle("hidden", !matches);
+    if (matches) visible += 1;
+  });
+  commandPaletteEmpty.classList.toggle("hidden", visible !== 0);
+}
+
+async function installPwa() {
+  if (!pwaInstallPrompt) return;
+  pwaInstallPrompt.prompt();
+  await pwaInstallPrompt.userChoice;
+  pwaInstallPrompt = null;
+  installPwaButton.classList.add("hidden");
+}
 
 function companionFeatures() {
   return [
@@ -2170,6 +2209,30 @@ themeButton.addEventListener("click", () => {
 });
 
 fullscreenButton?.addEventListener("click", toggleFullscreenMode);
+commandPaletteButton?.addEventListener("click", () => setCommandPalette(true));
+commandPaletteClose?.addEventListener("click", () => setCommandPalette(false));
+commandPaletteBackdrop?.addEventListener("click", () => setCommandPalette(false));
+commandPaletteInput?.addEventListener("input", filterCommandPalette);
+commandPaletteItems.forEach((item) => item.addEventListener("click", async () => {
+  setCommandPalette(false);
+  if (item.dataset.target) document.querySelector(item.dataset.target)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (item.dataset.action === "refresh") await Promise.all([refreshDevices(), loadSetupStatus()]);
+  if (item.dataset.action === "theme") themeButton.click();
+}));
+document.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "k") {
+    event.preventDefault();
+    setCommandPalette(true);
+  } else if (event.key === "Escape" && !commandPalette?.classList.contains("hidden")) {
+    setCommandPalette(false);
+  }
+});
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  pwaInstallPrompt = event;
+  installPwaButton?.classList.remove("hidden");
+});
+installPwaButton?.addEventListener("click", installPwa);
 
 document.addEventListener("fullscreenchange", syncFullscreenState);
 document.addEventListener("webkitfullscreenchange", syncFullscreenState);
