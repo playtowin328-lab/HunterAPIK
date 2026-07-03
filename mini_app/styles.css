@@ -1234,3 +1234,546 @@ select:focus {
     justify-self: start;
   }
 }
+
+/* 2026 control-room refresh */
+:root {
+  --bg: #eef3f8;
+  --surface: rgba(255, 255, 255, .92);
+  --surface-soft: #f3f6f9;
+  --text: #101b2a;
+  --muted: #68778b;
+  --line: #dce4ed;
+  --accent: #087f8c;
+  --accent-strong: #075e6a;
+  --success: #16865b;
+  --shadow: 0 14px 40px rgba(22, 40, 63, .07);
+  --shadow-lifted: 0 22px 60px rgba(22, 40, 63, .13);
+  --radius: 18px;
+}
+
+:root.dark {
+  --bg: #090f16;
+  --surface: rgba(18, 28, 39, .94);
+  --surface-soft: #182330;
+  --text: #f2f7fb;
+  --muted: #93a3b6;
+  --line: #283748;
+  --accent: #40c2c9;
+  --accent-strong: #7bdde0;
+  --success: #54d59b;
+  --shadow: 0 16px 44px rgba(0, 0, 0, .28);
+  --shadow-lifted: 0 26px 70px rgba(0, 0, 0, .42);
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 84px;
+}
+
+body {
+  background:
+    radial-gradient(circle at 8% 0%, rgba(8, 127, 140, .11), transparent 30rem),
+    radial-gradient(circle at 96% 18%, rgba(45, 123, 229, .08), transparent 34rem),
+    var(--bg);
+}
+
+.app-shell {
+  grid-template-columns: minmax(350px, .86fr) minmax(560px, 1.5fr);
+  grid-template-areas:
+    "topbar topbar"
+    "summary summary"
+    "nav nav"
+    "intro remote"
+    "devices remote"
+    "setup remote"
+    "deploy remote"
+    "alerts remote"
+    "form form";
+  gap: 16px;
+  max-width: 1640px;
+  padding: clamp(12px, 2vw, 28px);
+}
+
+.topbar {
+  position: relative;
+  overflow: hidden;
+  align-items: center;
+  min-height: 148px;
+  padding: clamp(22px, 3vw, 38px);
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 26px;
+  background: linear-gradient(125deg, #0b2334 0%, #075b65 55%, #078b85 100%);
+  color: #fff;
+  box-shadow: 0 24px 70px rgba(7, 63, 75, .24);
+}
+
+.topbar::after {
+  content: "";
+  position: absolute;
+  right: -70px;
+  top: -105px;
+  width: 300px;
+  height: 300px;
+  border: 54px solid rgba(255, 255, 255, .07);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.topbar > * {
+  position: relative;
+  z-index: 1;
+}
+
+.topbar .eyebrow,
+.topbar-subtitle {
+  color: rgba(255, 255, 255, .72);
+}
+
+.topbar h1 {
+  max-width: 780px;
+  font-size: clamp(34px, 4vw, 56px);
+  font-weight: 820;
+  letter-spacing: -.045em;
+}
+
+.topbar-subtitle {
+  max-width: 680px;
+  margin-top: 10px;
+  font-size: 14px;
+}
+
+.topbar .icon-button {
+  border: 1px solid rgba(255, 255, 255, .18);
+  background: rgba(255, 255, 255, .1);
+  color: #fff;
+  box-shadow: none;
+  backdrop-filter: blur(12px);
+}
+
+.summary {
+  gap: 12px;
+}
+
+.summary > div {
+  position: relative;
+  overflow: hidden;
+  min-height: 96px;
+  padding: 19px 20px;
+  border: 1px solid rgba(255, 255, 255, .7);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.summary > div::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--accent);
+}
+
+.summary > div:nth-child(2)::before {
+  background: var(--success);
+}
+
+.summary > div:nth-child(3)::before {
+  background: #7585ee;
+}
+
+.metric {
+  font-size: 30px;
+  letter-spacing: -.035em;
+}
+
+.quick-nav {
+  grid-area: nav;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.quick-nav a {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 14px;
+  border-radius: 11px;
+  color: var(--muted);
+  text-decoration: none;
+  transition: background .18s ease, color .18s ease, transform .18s ease;
+}
+
+.quick-nav a:hover,
+.quick-nav a.active {
+  background: var(--surface-soft);
+  color: var(--accent-strong);
+  transform: translateY(-1px);
+}
+
+.quick-nav span {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-nav small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.device-list-intro {
+  grid-area: intro;
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 4px 0;
+}
+
+.device-list-intro h2 {
+  font-size: 23px;
+  letter-spacing: -.025em;
+}
+
+.device-list-intro > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.summary > div,
+.setup-panel,
+.deploy-panel,
+.remote-panel,
+.alert-panel,
+.device-card,
+.empty-state {
+  border-radius: var(--radius);
+}
+
+.setup-panel,
+.deploy-panel,
+.alert-panel {
+  padding: 18px;
+}
+
+.section-head h2,
+.remote-head h2 {
+  font-size: 21px;
+  letter-spacing: -.025em;
+}
+
+.setup-steps {
+  position: relative;
+  gap: 6px;
+}
+
+.setup-steps span {
+  justify-content: flex-start;
+  min-height: 50px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 12px;
+}
+
+.setup-steps strong {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  box-shadow: 0 5px 14px rgba(8, 127, 140, .24);
+}
+
+.device-list {
+  gap: 12px;
+}
+
+.device-card {
+  position: relative;
+  overflow: hidden;
+  padding: 18px;
+  transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+}
+
+.device-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--success);
+}
+
+.device-card.offline::before {
+  background: var(--muted);
+}
+
+.device-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lifted);
+}
+
+.device-card.selected {
+  border-color: rgba(8, 127, 140, .65);
+  box-shadow: 0 0 0 3px rgba(8, 127, 140, .10), var(--shadow-lifted);
+}
+
+.device-heading h2 {
+  font-size: 19px;
+  letter-spacing: -.02em;
+}
+
+.status-pill {
+  padding: 7px 11px;
+  border: 1px solid rgba(22, 134, 91, .18);
+}
+
+.telemetry span {
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  background: transparent;
+}
+
+.actions .open-remote-button {
+  flex: 1 1 150px;
+}
+
+.manage-actions {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.remote-panel {
+  top: 16px;
+  max-height: calc(100dvh - 32px);
+  padding: clamp(18px, 2vw, 26px);
+  border-color: rgba(8, 127, 140, .22);
+  border-radius: 24px;
+  box-shadow: var(--shadow-lifted);
+  scrollbar-width: thin;
+}
+
+.remote-head {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.remote-status-grid > div {
+  padding: 13px;
+  border: 0;
+  border-radius: 13px;
+}
+
+.quick-action-button {
+  min-height: 78px;
+  padding: 13px;
+  border-radius: 14px;
+  transition: transform .18s ease, border-color .18s ease, background .18s ease;
+}
+
+.quick-action-button:hover {
+  transform: translateY(-2px);
+  background: var(--surface);
+}
+
+.remote-health-card,
+.setup-automation,
+.remote-section,
+.remote-log {
+  border-radius: 14px;
+}
+
+.remote-tabs {
+  position: sticky;
+  top: -1px;
+  z-index: 5;
+  padding: 6px;
+  border-radius: 14px;
+  backdrop-filter: blur(16px);
+}
+
+.remote-tabs button {
+  min-height: 40px;
+  border-radius: 9px;
+}
+
+.remote-tabs button.active {
+  color: var(--accent-strong);
+  box-shadow: 0 5px 16px rgba(22, 40, 63, .09);
+}
+
+.icon-button,
+.primary-button,
+.secondary-button,
+.ghost-button {
+  min-height: 44px;
+  border-radius: 11px;
+  transition: transform .15s ease, filter .15s ease, background .15s ease;
+}
+
+button:not(:disabled):hover {
+  filter: brightness(1.025);
+  transform: translateY(-1px);
+}
+
+button:not(:disabled):active {
+  transform: translateY(0) scale(.985);
+}
+
+.primary-button {
+  background: linear-gradient(135deg, #087f8c, #13a271);
+  box-shadow: 0 8px 20px rgba(8, 127, 140, .18);
+}
+
+.secondary-button {
+  border: 1px solid rgba(8, 127, 140, .12);
+}
+
+input,
+select {
+  min-height: 46px;
+  border-radius: 11px;
+}
+
+input:focus,
+select:focus {
+  box-shadow: 0 0 0 3px rgba(8, 127, 140, .12);
+}
+
+.control-note {
+  padding: 12px 13px;
+  border-left-width: 4px;
+  border-radius: 10px;
+}
+
+@media (max-width: 940px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "topbar"
+      "summary"
+      "nav"
+      "intro"
+      "devices"
+      "remote"
+      "setup"
+      "deploy"
+      "alerts"
+      "form";
+    padding: 12px;
+  }
+
+  .topbar {
+    min-height: 132px;
+    border-radius: 22px;
+  }
+
+  .quick-nav {
+    position: sticky;
+    top: 8px;
+    z-index: 20;
+    backdrop-filter: blur(18px);
+  }
+
+  .remote-panel {
+    max-height: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .app-shell {
+    gap: 11px;
+    padding: 8px;
+  }
+
+  .topbar {
+    min-height: 148px;
+    padding: 22px 18px;
+  }
+
+  .topbar h1 {
+    font-size: 36px;
+  }
+
+  .topbar-actions {
+    position: absolute;
+    right: 14px;
+    top: 14px;
+  }
+
+  .quick-nav {
+    grid-template-columns: repeat(4, minmax(70px, 1fr));
+    overflow-x: auto;
+  }
+
+  .quick-nav a {
+    padding: 9px;
+  }
+
+  .quick-nav small {
+    display: none;
+  }
+
+  .summary > div {
+    min-height: 80px;
+    padding: 15px 13px;
+  }
+
+  .metric {
+    font-size: 24px;
+  }
+
+  .device-list-intro {
+    align-items: start;
+    padding-inline: 5px;
+  }
+
+  .device-list-intro > span {
+    display: none;
+  }
+
+  .setup-panel,
+  .deploy-panel,
+  .alert-panel,
+  .remote-panel,
+  .device-card {
+    padding: 15px;
+    border-radius: 16px;
+  }
+
+  .quick-action-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .quick-action-button:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .remote-status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .setup-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .device-card .actions,
+  .manage-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .manage-actions .delete-device-button {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { transition: none !important; }
+}

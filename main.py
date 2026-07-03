@@ -784,7 +784,12 @@ def process_device_notifications(device: dict, force: bool = False) -> None:
             if int(previous.get("delivered_commands") or 0) < 2 <= snapshot["delivered_commands"]:
                 alerts.append((f"агент получил {snapshot['delivered_commands']} команд, но не завершил их", {"kind": "command_queue"}))
             if previous.get("health_state") not in {"degraded", "warning", "revoked"} and snapshot["health_state"] in {"degraded", "warning", "revoked"}:
-                alerts.append((f"состояние требует внимания: {snapshot['health_state']}", {"kind": "health"}))
+                specific_problem_reported = any(
+                    metadata.get("kind") in {"agent_error", "screen_error", "command_queue"}
+                    for _, metadata in alerts
+                )
+                if not specific_problem_reported:
+                    alerts.append((f"состояние требует внимания: {snapshot['health_state']}", {"kind": "health"}))
         elif force:
             alerts.append(("устройство добавлено в мониторинг уведомлений", {"kind": "monitor_started"}))
 
@@ -2205,6 +2210,12 @@ def create_device_command(owner_id: str, device_id: str, command_type: str, payl
         "updated_at": now,
     }
     with db_connect() as connection:
+        device_row = connection.execute(
+            "SELECT 1 FROM devices WHERE owner_id = ? AND device_id = ?",
+            (command["owner_id"], command["device_id"]),
+        ).fetchone()
+        if not device_row:
+            raise ValueError("device not found")
         if command_type == "request_screen" and command["payload"].get("stream"):
             connection.execute(
                 """
@@ -2253,7 +2264,7 @@ def next_device_command(owner_id: str, device_id: str) -> dict | None:
         )
 
     command = dict(row)
-    command["payload"] = json.loads(command.pop("payload_json") or "{}")
+    command["payload"] = decode_json_object(command.pop("payload_json", None))
     command["status"] = "delivered"
     command["updated_at"] = now
     return command
@@ -2276,7 +2287,7 @@ def complete_device_command(owner_id: str, device_id: str, command_id: str, stat
         )
 
     command = dict(row)
-    command["payload"] = json.loads(command.pop("payload_json") or "{}")
+    command["payload"] = decode_json_object(command.pop("payload_json", None))
     command["status"] = status[:32]
     command["result"] = result[:500]
     command["updated_at"] = now
@@ -2311,7 +2322,7 @@ def get_device_command(owner_id: str, device_id: str, command_id: str) -> dict |
     if not row:
         return None
     command = dict(row)
-    command["payload"] = json.loads(command.pop("payload_json") or "{}")
+    command["payload"] = decode_json_object(command.pop("payload_json", None))
     return command
 
 
@@ -3043,6 +3054,15 @@ def normalize_device(raw_device: dict) -> dict:
     }
 
 
+def decode_json_object(value: str | None) -> dict:
+    """Decode persisted JSON without letting one damaged row break the API."""
+    try:
+        decoded = json.loads(value or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
 def upsert_device(raw_device: dict) -> dict:
     device = normalize_device(raw_device)
     if not device["owner_id"] or not device["device_id"]:
@@ -3127,7 +3147,7 @@ def list_devices(owner_id: str = "") -> list[dict]:
             "platform": row["platform"],
             "agent": row["agent"],
             "secret": row["secret"],
-            "telemetry": json.loads(row["telemetry_json"] or "{}"),
+            "telemetry": decode_json_object(row["telemetry_json"]),
             "last_seen": int(row["last_seen"]),
             "created_at": int(row["created_at"]),
         }

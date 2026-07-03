@@ -106,11 +106,13 @@ public class HeartbeatService extends Service {
 
         try {
             editor.putString(AgentConfig.KEY_LAST_ERROR, "");
-            String commandStatus = handlePendingCommands();
             if (shouldHeartbeat) {
+                // Heartbeat is the connection's source of truth. A failed command poll
+                // must never prevent the device from attempting to stay online.
                 DeviceApiClient.heartbeat(this);
                 lastHeartbeatAt = now;
             }
+            String commandStatus = handlePendingCommands();
             editor.putString(KEY_LAST_STATUS, "Online - " + timestamp + commandStatus);
             editor.putLong(KEY_LAST_SUCCESS, now);
             editor.putLong(AgentConfig.KEY_LAST_LOOP_MS, System.currentTimeMillis() - tickStarted);

@@ -19,6 +19,8 @@ final class DeviceApiClient {
     private static final int CONNECT_TIMEOUT_MS = 12000;
     private static final int READ_TIMEOUT_MS = 12000;
     private static final int MAX_COMMAND_RESULT_LENGTH = 1200;
+    private static final int NETWORK_ATTEMPTS = 3;
+    private static final long RETRY_BASE_DELAY_MS = 750L;
 
     private DeviceApiClient() {
     }
@@ -244,16 +246,16 @@ final class DeviceApiClient {
 
     private static <T> T withRetry(NetworkCall<T> call) throws Exception {
         Exception lastException = null;
-        for (int attempt = 0; attempt < 2; attempt++) {
+        for (int attempt = 0; attempt < NETWORK_ATTEMPTS; attempt++) {
             try {
                 return call.run();
             } catch (Exception exc) {
                 lastException = exc;
-                if (attempt == 1 || !isRetryable(exc)) {
+                if (attempt == NETWORK_ATTEMPTS - 1 || !isRetryable(exc)) {
                     throw exc;
                 }
                 try {
-                    Thread.sleep(350L);
+                    Thread.sleep(RETRY_BASE_DELAY_MS * (1L << attempt));
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     throw interrupted;

@@ -21,7 +21,7 @@
         </div>
       </header>
 
-      <section class="summary" aria-label="Сводка">
+      <section class="summary" id="overview" aria-label="Сводка">
         <div>
           <span class="metric" id="totalDevices">0</span>
           <span class="label">Устройств</span>
@@ -36,7 +36,14 @@
         </div>
       </section>
 
-      <section class="setup-panel" aria-label="Подключение телефона">
+      <nav class="quick-nav" aria-label="Основные разделы">
+        <a class="active" href="#overview"><span>Обзор</span><small>Статус</small></a>
+        <a href="#devices"><span>Устройства</span><small>Список</small></a>
+        <a href="#remotePanel"><span>Пульт</span><small>Управление</small></a>
+        <a href="#setupPanel"><span>Подключение</span><small>Новый Agent</small></a>
+      </nav>
+
+      <section class="setup-panel" id="setupPanel" aria-label="Подключение телефона">
         <div class="section-head">
           <div>
             <p class="eyebrow">Подключение</p>
@@ -324,6 +331,13 @@
         </div>
       </section>
 
+      <div class="device-list-intro" id="devices">
+          <div>
+            <p class="eyebrow">Мои устройства</p>
+            <h2>Подключённая техника</h2>
+          </div>
+          <span>Нажми «Пульт», чтобы управлять</span>
+      </div>
       <section class="device-list" id="deviceList" aria-label="Список устройств"></section>
 
       <form class="device-form hidden" id="deviceForm">
@@ -362,9 +376,9 @@
           </div>
 
           <div class="manage-actions">
-            <button class="ghost-button neutral rename-device-button" type="button">Rename</button>
-            <button class="ghost-button revoke-device-button" type="button">Revoke</button>
-            <button class="ghost-button delete-device-button" type="button">Delete</button>
+            <button class="ghost-button neutral rename-device-button" type="button">Переименовать</button>
+            <button class="ghost-button revoke-device-button" type="button">Сбросить связь</button>
+            <button class="ghost-button delete-device-button" type="button">Удалить</button>
           </div>
 
           <p class="control-note"></p>
