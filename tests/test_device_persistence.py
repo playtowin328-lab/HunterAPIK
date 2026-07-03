@@ -18,6 +18,7 @@ class DevicePersistenceTests(unittest.TestCase):
         with main.db_connect() as connection:
             connection.execute("DELETE FROM commands")
             connection.execute("DELETE FROM devices")
+            connection.execute("DELETE FROM audit_events")
 
     def test_heartbeat_update_preserves_existing_pairing_secret(self) -> None:
         main.upsert_device(
@@ -131,6 +132,33 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertIn("https://panel.example.com", origins)
         self.assertIn("https://mini.example.com", origins)
         self.assertIn("https://admin.example.com", origins)
+
+    def test_audit_redacts_secrets_and_verifies_hash_chain(self) -> None:
+        first = main.save_audit_event(
+            "100",
+            "device_added",
+            "Phone added",
+            {"owner_id": "100", "token": "do-not-store", "nested": {"device_secret": "hidden"}},
+        )
+        second = main.save_audit_event("100", "device_command", "Ping", {"owner_id": "100"})
+
+        self.assertEqual("[REDACTED]", first["metadata"]["token"])
+        self.assertEqual("[REDACTED]", first["metadata"]["nested"]["device_secret"])
+        self.assertEqual(first["event_hash"], second["prev_hash"])
+        self.assertTrue(main.verify_audit_chain()["ok"])
+
+    def test_audit_chain_detects_modified_history(self) -> None:
+        event = main.save_audit_event("100", "device_added", "Original", {"owner_id": "100"})
+        with main.db_connect() as connection:
+            connection.execute("UPDATE audit_events SET detail = ? WHERE event_id = ?", ("Modified", event["event_id"]))
+
+        self.assertFalse(main.verify_audit_chain()["ok"])
+
+    def test_device_schema_migration_keeps_existing_rows(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "keep-me", "name": "Persistent phone"})
+        main.init_db()
+        devices = main.list_devices_for_user("100")
+        self.assertEqual(["keep-me"], [device["device_id"] for device in devices])
 
 
 if __name__ == "__main__":

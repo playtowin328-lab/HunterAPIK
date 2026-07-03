@@ -297,6 +297,17 @@ def init_db() -> None:
             """
         )
         connection.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at DESC)")
+        audit_columns = {row["name"] for row in connection.execute("PRAGMA table_info(audit_events)").fetchall()}
+        for column, declaration in {
+            "severity": "TEXT NOT NULL DEFAULT 'info'",
+            "visibility": "TEXT NOT NULL DEFAULT 'admin'",
+            "owner_id": "TEXT NOT NULL DEFAULT ''",
+            "prev_hash": "TEXT NOT NULL DEFAULT ''",
+            "event_hash": "TEXT NOT NULL DEFAULT ''",
+        }.items():
+            if column not in audit_columns:
+                connection.execute(f"ALTER TABLE audit_events ADD COLUMN {column} {declaration}")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_owner_created ON audit_events(owner_id, created_at DESC)")
 
 
 init_db()
@@ -397,6 +408,45 @@ def is_root_user_id(user_id: str) -> bool:
     return not ADMIN_IDS or user_id in ADMIN_IDS
 
 
+AUDIT_SECRET_KEYS = {
+    "authorization", "token", "secret", "password", "passcode", "pairing_code",
+    "code", "api_key", "device_secret", "cookie", "init_data",
+}
+
+
+def sanitize_audit_value(value: object, key: str = "", depth: int = 0) -> object:
+    if key.lower() in AUDIT_SECRET_KEYS or any(marker in key.lower() for marker in ("token", "secret", "password", "authorization")):
+        return "[REDACTED]"
+    if depth >= 4:
+        return "[TRUNCATED]"
+    if isinstance(value, dict):
+        return {str(item_key)[:80]: sanitize_audit_value(item_value, str(item_key), depth + 1) for item_key, item_value in list(value.items())[:50]}
+    if isinstance(value, (list, tuple)):
+        return [sanitize_audit_value(item, key, depth + 1) for item in list(value)[:50]]
+    if isinstance(value, str):
+        return value[:500]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:500]
+
+
+def audit_event_policy(action: str, metadata: dict) -> tuple[str, str]:
+    action = str(action or "")
+    kind = str(metadata.get("kind") or "")
+    if action in {"grant_access", "revoke_access", "device_alert_settings"} or action.startswith("command_root"):
+        return "security", "root"
+    if action == "device_alert" and kind in {"offline", "health", "agent_error", "screen_error", "command_queue"}:
+        return "warning", "admin"
+    if action in {"device_command_result", "device_manage"} and str(metadata.get("status") or "") in {"failed", "rejected", "error"}:
+        return "warning", "admin"
+    return "info", "admin"
+
+
+def audit_hash_payload(event: dict) -> bytes:
+    payload = {key: event.get(key) for key in ("event_id", "actor_id", "action", "detail", "metadata", "created_at", "severity", "visibility", "owner_id", "prev_hash")}
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
 def save_audit_event(
     actor_id: str,
     action: str,
@@ -404,20 +454,37 @@ def save_audit_event(
     metadata: dict | None = None,
     actor_name: str = "",
 ) -> dict:
+    safe_metadata = sanitize_audit_value(metadata or {})
+    if not isinstance(safe_metadata, dict):
+        safe_metadata = {}
+    severity, visibility = audit_event_policy(action, safe_metadata)
     event = {
         "event_id": secrets.token_urlsafe(16),
         "actor_id": str(actor_id or "unknown")[:64],
         "actor_name": str(actor_name or "")[:120],
         "action": str(action or "unknown")[:80],
         "detail": str(detail or "")[:600],
-        "metadata": metadata or {},
+        "metadata": safe_metadata,
         "created_at": now_ts(),
+        "severity": severity,
+        "visibility": visibility,
+        "owner_id": str(safe_metadata.get("owner_id") or actor_id or "")[:64],
+        "prev_hash": "",
+        "event_hash": "",
     }
     with db_connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        previous = connection.execute(
+            "SELECT event_hash FROM audit_events WHERE event_hash != '' ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        ).fetchone()
+        event["prev_hash"] = str(previous["event_hash"] if previous else "")
+        event["event_hash"] = hashlib.sha256(audit_hash_payload(event)).hexdigest()
         connection.execute(
             """
-            INSERT INTO audit_events(event_id, actor_id, actor_name, action, detail, metadata_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO audit_events(
+                event_id, actor_id, actor_name, action, detail, metadata_json, created_at,
+                severity, visibility, owner_id, prev_hash, event_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event["event_id"],
@@ -427,9 +494,30 @@ def save_audit_event(
                 event["detail"],
                 json.dumps(event["metadata"], ensure_ascii=False),
                 event["created_at"],
+                event["severity"],
+                event["visibility"],
+                event["owner_id"],
+                event["prev_hash"],
+                event["event_hash"],
             ),
         )
     return event
+
+
+def verify_audit_chain(limit: int = 5000) -> dict:
+    with db_connect() as connection:
+        rows = connection.execute(
+            "SELECT * FROM audit_events WHERE event_hash != '' ORDER BY created_at ASC, rowid ASC LIMIT ?",
+            (max(1, min(int(limit), 20000)),),
+        ).fetchall()
+    expected_prev = ""
+    for row in rows:
+        event = audit_row_to_dict(row)
+        event["prev_hash"] = row["prev_hash"]
+        if row["prev_hash"] != expected_prev or hashlib.sha256(audit_hash_payload(event)).hexdigest() != row["event_hash"]:
+            return {"ok": False, "checked": len(rows), "event_id": row["event_id"]}
+        expected_prev = row["event_hash"]
+    return {"ok": True, "checked": len(rows), "last_hash": expected_prev[:12]}
 
 
 AUDIT_FILTERS = {
@@ -502,6 +590,7 @@ def audit_row_to_dict(event: sqlite3.Row) -> dict:
         metadata = json.loads(metadata_raw or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
         metadata = {}
+    keys = set(event.keys())
     return {
         "event_id": event["event_id"],
         "actor_id": event["actor_id"],
@@ -510,6 +599,11 @@ def audit_row_to_dict(event: sqlite3.Row) -> dict:
         "detail": event["detail"],
         "metadata": metadata,
         "created_at": int(event["created_at"]),
+        "severity": event["severity"] if "severity" in keys else "info",
+        "visibility": event["visibility"] if "visibility" in keys else "admin",
+        "owner_id": event["owner_id"] if "owner_id" in keys else "",
+        "prev_hash": event["prev_hash"] if "prev_hash" in keys else "",
+        "event_hash": event["event_hash"] if "event_hash" in keys else "",
     }
 
 
@@ -872,6 +966,53 @@ def audit_text(limit: int = 20, category: str = "", actor_id: str = "") -> str:
     return "\n".join(lines)
 
 
+def timeline_events_for_user(user_id: str, limit: int = 15) -> list[sqlite3.Row]:
+    role = get_user_role(user_id)
+    safe_limit = max(1, min(int(limit or 15), 50))
+    with db_connect() as connection:
+        if role == "root":
+            return list(connection.execute("SELECT * FROM audit_events ORDER BY created_at DESC, rowid DESC LIMIT ?", (safe_limit,)))
+        if role == "admin":
+            return list(
+                connection.execute(
+                    "SELECT * FROM audit_events WHERE visibility = 'admin' ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                    (safe_limit,),
+                )
+            )
+        return list(
+            connection.execute(
+                "SELECT * FROM audit_events WHERE visibility = 'admin' AND owner_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (str(user_id), safe_limit),
+            )
+        )
+
+
+def timeline_text(user_id: str, limit: int = 15) -> str:
+    rows = timeline_events_for_user(str(user_id), limit)
+    role = get_user_role(str(user_id))
+    integrity = verify_audit_chain()
+    integrity_text = f"✓ цепочка цела · {integrity['checked']} событий" if integrity["ok"] else "⚠ обнаружено изменение журнала"
+    lines = ["◉ TRUST TIMELINE", f"Режим: {role} · {integrity_text}", ""]
+    if not rows:
+        lines.append("Событий для этого уровня доступа пока нет.")
+        return "\n".join(lines)
+    severity_icons = {"security": "🛡", "warning": "⚠️", "info": "•"}
+    for row in rows:
+        event = audit_row_to_dict(row)
+        created = datetime.fromtimestamp(event["created_at"]).strftime("%d.%m %H:%M:%S")
+        icon = severity_icons.get(event["severity"], "•")
+        lines.append(f"{icon} {created} · {event['action']}")
+        lines.append(f"{event['detail'][:220]}")
+    return "\n".join(lines)
+
+
+async def send_timeline(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    audit_message(message, "timeline_opened", "Opened Trust Timeline", notify=False)
+    await message.answer(timeline_text(str(message.from_user.id)), reply_markup=nav_keyboard(None))
+
+
 def audit_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -936,6 +1077,7 @@ def access_keyboard() -> InlineKeyboardMarkup:
 
 def root_settings_text() -> str:
     notify_settings = load_device_notify_settings()
+    audit_integrity = verify_audit_chain()
     with db_connect() as connection:
         role_rows = connection.execute(
             "SELECT role, COUNT(*) AS count FROM bot_access GROUP BY role ORDER BY role"
@@ -960,6 +1102,8 @@ def root_settings_text() -> str:
             f"Mini App URL: {MINI_APP_URL or 'missing'}",
             f"Storage: {STORAGE_DIR}",
             f"DB: {DB_PATH}",
+            f"Persistence: {'protected' if railway_storage_is_persistent() else 'CRITICAL: ephemeral storage'}",
+            f"Audit integrity: {'verified' if audit_integrity['ok'] else 'FAILED'} · checked={audit_integrity['checked']}",
             f"Device TTL: {DEVICE_TTL_SECONDS}s",
             f"Device monitor: every {DEVICE_MONITOR_INTERVAL_SECONDS}s",
             f"Command timeout: pending={COMMAND_PENDING_TIMEOUT_SECONDS}s, delivered={COMMAND_DELIVERED_TIMEOUT_SECONDS}s",
@@ -1097,6 +1241,7 @@ def main_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="⌁ Центр управления", callback_data="control_info"),
                 InlineKeyboardButton(text="✓ Диагностика", callback_data="connect_check"),
             ],
+            [InlineKeyboardButton(text="◉ Trust Timeline", callback_data="trust_timeline")],
             [
                 InlineKeyboardButton(text="⬡ Android Agent", callback_data="apk_list"),
                 InlineKeyboardButton(text="▣ PC Agent", callback_data="pc_agent_info"),
@@ -4455,6 +4600,15 @@ async def callbacks(callback: CallbackQuery) -> None:
         )
         return
 
+    if action == "trust_timeline":
+        await callback.answer()
+        await show_bot_screen(
+            callback,
+            timeline_text(str(callback.from_user.id)),
+            reply_markup=nav_keyboard(None),
+        )
+        return
+
     if action == "settings":
         await callback.answer()
         await show_bot_screen(callback, SETTINGS_TEXT, reply_markup=nav_keyboard(None))
@@ -4865,6 +5019,7 @@ async def run_bot() -> None:
     dp.message.register(send_roles, Command("roles"))
     dp.message.register(send_root_settings, Command("root_settings"))
     dp.message.register(send_audit, Command("audit"))
+    dp.message.register(send_timeline, Command("timeline"))
     dp.message.register(send_grant_access, Command("grant"))
     dp.message.register(send_grant_admin, Command("grant_admin"))
     dp.message.register(send_grant_user, Command("grant_user"))
