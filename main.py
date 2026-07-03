@@ -709,7 +709,7 @@ async def notify_root_admins(event: dict) -> None:
     if not BOT_INSTANCE:
         return
     severity = str(event.get("severity") or "info")
-    prefix = {"security": "🛡 SECURITY", "warning": "⚠️ ATTENTION", "info": "◉ EVENT"}.get(severity, "◉ EVENT")
+    prefix = {"security": "🛡 БЕЗОПАСНОСТЬ", "warning": "⚠️ ТРЕБУЕТ ВНИМАНИЯ", "info": "◉ НОВОЕ СОБЫТИЕ"}.get(severity, "◉ НОВОЕ СОБЫТИЕ")
     metadata = event.get("metadata") or {}
     if event.get("action") == "device_alert":
         kind = str(metadata.get("kind") or "health")
@@ -719,6 +719,13 @@ async def notify_root_admins(event: dict) -> None:
             "screen": "📱", "agent_error": "⚠️", "screen_error": "⚠️",
             "command_queue": "⏳", "health": "🩺",
         }.get(kind, "◉")
+        kind_label = {
+            "online": "Связь восстановлена", "offline": "Нет связи", "battery": "Низкий заряд",
+            "charging": "Состояние зарядки", "network": "Изменение сети", "lost_mode": "Режим защиты",
+            "blackout": "Защитный экран", "accessibility": "Доступ к управлению", "screen": "Трансляция экрана",
+            "agent_error": "Ошибка агента", "screen_error": "Ошибка экрана",
+            "command_queue": "Очередь команд", "health": "Состояние устройства",
+        }.get(kind, "Событие устройства")
         device_name = metadata.get("name") or "Устройство"
         created = datetime.fromtimestamp(int(event.get("created_at") or now_ts())).strftime("%d.%m · %H:%M")
         recommendation = {
@@ -742,11 +749,37 @@ async def notify_root_admins(event: dict) -> None:
             f"{icon} HUNTER CONTROL · {device_name}\n\n"
             f"Что произошло\n{event.get('detail', 'Новое событие устройства')}\n\n"
             f"Что сделать\n{recommendation}\n\n"
-            f"Детали\n• Тип: {kind}\n• Время: {created}\n• Device ID: {device_id}\n• Owner: {owner_id}\n\n"
+            f"Детали\n• Тип: {kind_label}\n• Время: {created}\n• ID устройства: {device_id}\n• Владелец: {owner_id}\n\n"
             "Событие сохранено в защищённом Trust Timeline."
         )
     else:
-        text = f"{prefix}\n\n" + audit_event_text(event)
+        action = str(event.get("action") or "")
+        action_label = {
+            "device_added": "Добавлено новое устройство",
+            "device_paired": "Устройство подключено",
+            "device_repaired": "Связь устройства восстановлена",
+            "device_manage": "Изменены настройки устройства",
+            "device_command": "Команда отправлена устройству",
+            "device_command_result": "Устройство завершило команду",
+            "pairing_code_created": "Создан код подключения",
+            "grant_access": "Пользователю выдан доступ",
+            "revoke_access": "Доступ пользователя отозван",
+            "build_apk_lite": "Запущена сборка Lite APK",
+            "build_apk_full": "Запущена сборка Full APK",
+            "build_pc_agent": "Запущена сборка PC Agent",
+            "timeline_opened": "Открыта лента событий",
+            "photo_uploaded": "Получено изображение",
+            "image_document_uploaded": "Получен файл изображения",
+        }.get(action, "Системное событие")
+        created = datetime.fromtimestamp(int(event.get("created_at") or now_ts())).strftime("%d.%m · %H:%M")
+        actor = event.get("actor_name") or event.get("actor_id") or "Система"
+        text = (
+            f"{prefix}\n\n"
+            f"{action_label}\n"
+            f"Источник: {actor}\n"
+            f"Время: {created}\n\n"
+            "Подробности доступны в Trust Timeline согласно вашей роли."
+        )
     recipients = [LOG_CHAT_ID] if LOG_CHAT_ID else sorted(ADMIN_IDS)
     for admin_id in recipients:
         if str(admin_id) == str(event.get("actor_id")):
@@ -788,6 +821,23 @@ def audit_event(
     actor_name: str = "",
     notify: bool = True,
 ) -> dict:
+    actor = str(actor_id or "unknown")
+    if actor.isdigit() and is_root_user_id(actor):
+        return {
+            "event_id": "",
+            "actor_id": actor,
+            "actor_name": "",
+            "action": "",
+            "detail": "",
+            "metadata": {},
+            "created_at": now_ts(),
+            "severity": "private",
+            "visibility": "private",
+            "owner_id": actor,
+            "prev_hash": "",
+            "event_hash": "",
+            "private": True,
+        }
     event = save_audit_event(actor_id, action, detail, metadata, actor_name)
     schedule_root_notification(event, notify=notify)
     return event

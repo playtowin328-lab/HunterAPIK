@@ -190,6 +190,20 @@ class DevicePersistenceTests(unittest.TestCase):
             self.assertFalse(main.can_access_owner("", "300"))
             self.assertFalse(main.can_access_owner("999", "999"))
 
+    def test_root_actions_are_not_written_to_audit_log(self) -> None:
+        with patch.object(main, "ADMIN_IDS", {"100"}):
+            event = main.audit_event("100", "device_command", "Private root action", {"device_id": "phone-1"})
+        with main.db_connect() as connection:
+            count = connection.execute("SELECT COUNT(*) AS count FROM audit_events").fetchone()["count"]
+        self.assertTrue(event["private"])
+        self.assertEqual(0, count)
+
+    def test_system_events_remain_visible_when_root_privacy_is_enabled(self) -> None:
+        with patch.object(main, "ADMIN_IDS", {"100"}):
+            event = main.audit_event("device_monitor", "device_alert", "Phone offline", {"owner_id": "100", "kind": "offline"}, notify=False)
+        self.assertFalse(event.get("private", False))
+        self.assertTrue(main.verify_audit_chain()["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()
