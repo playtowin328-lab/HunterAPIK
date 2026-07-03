@@ -88,6 +88,46 @@ DB_PATH = Path(os.getenv("DB_PATH", str(STORAGE_DIR / "app.db")))
 MAX_IMAGE_SIZE_MB = int(os.getenv("MAX_IMAGE_SIZE_MB", "20"))
 MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024
 PAIRING_TTL_SECONDS = int(os.getenv("PAIRING_TTL_SECONDS", "600"))
+MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_MB", "8")) * 1024 * 1024
+RATE_LIMIT_GET_PER_MINUTE = int(os.getenv("RATE_LIMIT_GET_PER_MINUTE", "300"))
+RATE_LIMIT_POST_PER_MINUTE = int(os.getenv("RATE_LIMIT_POST_PER_MINUTE", "180"))
+
+
+def configured_web_origins() -> set[str]:
+    origins = {
+        value.strip().rstrip("/")
+        for value in os.getenv("ALLOWED_WEB_ORIGINS", "").replace(";", ",").split(",")
+        if value.strip()
+    }
+    for value in (PUBLIC_BASE_URL, MINI_APP_URL):
+        parsed = urlparse(value)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            origins.add(f"{parsed.scheme}://{parsed.netloc}")
+    return origins
+
+
+ALLOWED_WEB_ORIGINS = configured_web_origins()
+REQUEST_RATE_LOCK = threading.Lock()
+REQUEST_RATE_BUCKETS: dict[tuple[str, str], list[float]] = {}
+
+
+def request_rate_allowed(client_id: str, method: str, now: float | None = None) -> tuple[bool, int]:
+    current = time.time() if now is None else now
+    limit = RATE_LIMIT_POST_PER_MINUTE if method == "POST" else RATE_LIMIT_GET_PER_MINUTE
+    key = (client_id, method)
+    with REQUEST_RATE_LOCK:
+        recent = [stamp for stamp in REQUEST_RATE_BUCKETS.get(key, []) if current - stamp < 60]
+        if len(recent) >= limit:
+            REQUEST_RATE_BUCKETS[key] = recent
+            retry_after = max(1, int(60 - (current - recent[0])))
+            return False, retry_after
+        recent.append(current)
+        REQUEST_RATE_BUCKETS[key] = recent
+        if len(REQUEST_RATE_BUCKETS) > 5000:
+            stale = [bucket_key for bucket_key, stamps in REQUEST_RATE_BUCKETS.items() if not stamps or current - stamps[-1] >= 60]
+            for bucket_key in stale[:1000]:
+                REQUEST_RATE_BUCKETS.pop(bucket_key, None)
+    return True, 0
 
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
@@ -979,6 +1019,15 @@ def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
     setup_ok = not [item for item in setup_checks() if item.get("required") and not item.get("ok")]
     storage_line = "защищено Volume" if storage_ok else "ВНИМАНИЕ: временное хранилище"
     setup_line = "готова" if setup_ok else "требует настройки"
+    fleet_state = "🟢 Стабильно" if devices and online == len(devices) and not attention else ("🟡 Нужна проверка" if devices else "⚪ Не подключено")
+    device_preview = []
+    for device in devices[:5]:
+        marker = "🟢" if device.get("online") else "⚫"
+        battery = (device.get("telemetry") or {}).get("battery")
+        battery_text = f" · 🔋 {battery}%" if isinstance(battery, (int, float)) else ""
+        device_preview.append(f"{marker} {device.get('name', 'Устройство')}{battery_text}")
+    if len(devices) > 5:
+        device_preview.append(f"…и ещё {len(devices) - 5}")
     next_step = (
         "Открой устройство в мини‑аппе и выбери нужное действие."
         if devices
@@ -987,14 +1036,16 @@ def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
     return "\n".join(
         [
             "◈ HUNTER CONTROL",
-            "Персональный центр устройств и автоматизации",
+            "Ваш персональный центр устройств",
             "",
-            f"Устройства: {len(devices)}  •  Online: {online}  •  Требуют внимания: {attention}",
-            f"Инфраструктура: {setup_line}  •  Данные: {storage_line}",
+            f"{fleet_state}",
+            f"📱 Всего: {len(devices)}  ·  🟢 Online: {online}  ·  ⚠ Внимание: {attention}",
+            f"☁️ Инфраструктура: {setup_line}  ·  🛡 Данные: {storage_line}",
+            *( ["", "Быстрый обзор:", *device_preview] if device_preview else [] ),
             "",
-            f"Следующий шаг: {next_step}",
+            f"→ {next_step}",
             "",
-            "Выбери раздел ниже — бот проведёт по процессу без технической путаницы.",
+            "Управление, диагностика и подключение — в кнопках ниже.",
         ]
     )
 
@@ -1011,17 +1062,18 @@ SETTINGS_TEXT = (
 )
 
 GUIDE_TEXT = (
-    "*Подробная инструкция*\n\n"
-    "*1. Собери APK*\n"
-    "Для обычного подключения используй Lite APK. Для экрана и жестов нужен Full APK: `/build_apk_full Название`.\n\n"
-    "*2. Установи на Android*\n"
-    "Открой страницу `/agent` на телефоне, скачай APK и разреши установку из выбранного источника, если Android спросит.\n\n"
-    "*3. Привяжи телефон*\n"
-    "Нажми `Получить QR` или отправь `/pair`. Открой QR‑ссылку на телефоне, где установлен Android Agent.\n\n"
-    "*4. Разрешения*\n"
-    "Для стабильной работы включи уведомления и работу в фоне. Для Full APK дополнительно включи Accessibility и подтверди запись экрана.\n\n"
-    "*5. Проверка*\n"
-    "Открой `Мои устройства` или мини‑апп. Телефон должен стать `Online`. Если нет — нажми `Полная проверка`."
+    "*Подключение без технической путаницы*\n\n"
+    "*1. Выбери режим*\n"
+    "Lite — статус и безопасная связь. Full — экран и жесты, которые владелец отдельно разрешает на телефоне.\n\n"
+    "*2. Установи Agent*\n"
+    "Открой страницу установки на своём Android, скачай APK и следуй подсказкам системы.\n\n"
+    "*3. Подключи по QR*\n"
+    "Нажми «Получить QR и код», открой одноразовую ссылку на телефоне и подтверди подключение в Agent.\n\n"
+    "*4. Разреши только нужное*\n"
+    "Уведомления и фоновая работа помогают держать связь. Экран и Accessibility нужны только для Full и включаются вручную.\n\n"
+    "*5. Проверь результат*\n"
+    "Устройство появится в мини‑аппе со статусом Online. Если нет — нажми «Диагностика»: бот покажет конкретный следующий шаг.\n\n"
+    "_Подключайте только свои устройства или устройства, владелец которых явно дал согласие._"
 )
 
 def main_menu() -> InlineKeyboardMarkup:
@@ -1525,13 +1577,12 @@ def connect_text(owner_id: int) -> str:
         selected = next((device for device in devices if device.get("online")), devices[0])
         setup_hint = f"\n\nБлижайший шаг: {selected.get('name', 'устройство')} — {format_device_setup_line(selected)}"
     return (
-        "Мастер подключения телефона\n\n"
-        "1. Если APK ещё не готов, собери Lite или Full.\n"
-        "2. Скачай APK на Android и установи приложение.\n"
-        "3. Нажми «Получить QR и код».\n"
-        "4. Открой QR‑ссылку на телефоне или введи код в Android Agent.\n"
-        "5. Включи уведомления и работу в фоне. Для Full ещё включи Accessibility и запись экрана.\n"
-        "6. Вернись в мини‑апп: телефон должен стать Online.\n\n"
+        "Подключение нового устройства\n\n"
+        "Шаг 1 из 4 — установи Lite или Full Agent на свой Android.\n"
+        "Шаг 2 из 4 — получи одноразовый QR‑код и открой его на телефоне.\n"
+        "Шаг 3 из 4 — подтверди подключение и выбери нужные разрешения.\n"
+        "Шаг 4 из 4 — вернись сюда и проверь статус Online.\n\n"
+        "Безопасность: код действует ограниченное время, а чувствительные разрешения включаются только на телефоне.\n\n"
         f"APK: {apk_source}\n"
         f"Устройства: {len(devices)} всего, {online_count} online"
         f"{setup_hint}"
@@ -2066,14 +2117,14 @@ def make_pairing_qr_bytes(link: str) -> bytes:
 def pairing_text(code: str, links: dict[str, str]) -> str:
     minutes = max(1, PAIRING_TTL_SECONDS // 60)
     return (
-        f"Device pairing code: {code}\n\n"
-        f"Scan this QR with the phone camera, or tap the button below.\n\n"
-        f"Install Android Agent: {links['server']}/agent\n"
-        f"Pair link: {links['web_link']}\n\n"
-        f"Manual Android Agent setup:\n"
-        f"Server URL: {links['server']}\n"
-        f"Code: {code}\n\n"
-        f"Code is valid for {minutes} min."
+        f"Подключение устройства · код {code}\n\n"
+        f"1. Установи Hunter Agent на своё Android-устройство.\n"
+        f"2. Отсканируй QR камерой или нажми кнопку подключения.\n"
+        f"3. Подтверди связь и нужные разрешения в Agent.\n\n"
+        f"Установка: {links['server']}/agent\n"
+        f"Ссылка подключения: {links['web_link']}\n\n"
+        f"Ручной ввод:\nServer URL: {links['server']}\nКод: {code}\n\n"
+        f"Код действует {minutes} мин. Никому не пересылай его."
     )
 
 
@@ -3405,16 +3456,54 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(MINI_APP_DIR), **kwargs)
 
     def end_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin", "").rstrip("/")
+        if origin and origin in ALLOWED_WEB_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Device-Secret")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(self), microphone=(), geolocation=(self), display-capture=(self), payment=(), usb=()")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self' 'unsafe-inline' https://telegram.org; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+            "object-src 'none'; base-uri 'self'; form-action 'self'; "
+            "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org",
+        )
+        if PUBLIC_BASE_URL.startswith("https://"):
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        if self.path.startswith("/api/") or self.path.startswith("/health") or self.path.startswith("/setup-status"):
+            self.send_header("Cache-Control", "no-store")
         super().end_headers()
+
+    def client_rate_id(self) -> str:
+        forwarded = self.headers.get("CF-Connecting-IP", "").strip()
+        if not forwarded:
+            forwarded = self.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+        return forwarded or str(self.client_address[0])
+
+    def allow_request(self, method: str) -> bool:
+        allowed, retry_after = request_rate_allowed(self.client_rate_id(), method)
+        if allowed:
+            return True
+        self.send_response(HTTPStatus.TOO_MANY_REQUESTS)
+        self.send_header("Retry-After", str(retry_after))
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        body = json.dumps({"error": "too many requests", "retry_after": retry_after}).encode("utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return False
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
         self.end_headers()
 
     def do_GET(self) -> None:
+        if not self.allow_request("GET"):
+            return
         parsed_url = urlparse(self.path)
         if parsed_url.path == "/health":
             setup_status = setup_status_payload()
@@ -3426,11 +3515,8 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                     "bot_polling_ready": BOT_POLLING_READY,
                     "bot_polling_enabled": BOT_POLLING_ENABLED,
                     "bot_polling_status": BOT_POLLING_STATUS,
-                    "instance_id": INSTANCE_ID,
                     "mini_app": True,
                     "storage_persistent": railway_storage_is_persistent(),
-                    "storage_dir": str(STORAGE_DIR),
-                    "db_path": str(DB_PATH),
                     "setup_ready": setup_status["ok"],
                     "setup_required_failed_count": setup_status["required_failed_count"],
                 }
@@ -3861,6 +3947,16 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self) -> None:
+        if not self.allow_request("POST"):
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_json({"error": "invalid Content-Length"}, HTTPStatus.BAD_REQUEST)
+            return
+        if content_length < 0 or content_length > MAX_REQUEST_BODY_BYTES:
+            self.send_json({"error": "request body too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
         parsed_url = urlparse(self.path)
         if parsed_url.path == "/api/pair/claim":
             self.handle_pair_claim()

@@ -110,6 +110,28 @@ class DevicePersistenceTests(unittest.TestCase):
         ):
             self.assertTrue(main.railway_storage_is_persistent())
 
+    def test_request_rate_limit_rejects_only_after_limit(self) -> None:
+        with (
+            patch.object(main, "RATE_LIMIT_GET_PER_MINUTE", 2),
+            patch.object(main, "REQUEST_RATE_BUCKETS", {}),
+        ):
+            self.assertEqual((True, 0), main.request_rate_allowed("test-client", "GET", now=100.0))
+            self.assertEqual((True, 0), main.request_rate_allowed("test-client", "GET", now=101.0))
+            allowed, retry_after = main.request_rate_allowed("test-client", "GET", now=102.0)
+            self.assertFalse(allowed)
+            self.assertGreater(retry_after, 0)
+
+    def test_configured_web_origins_include_public_domain(self) -> None:
+        with (
+            patch.object(main, "PUBLIC_BASE_URL", "https://panel.example.com/path"),
+            patch.object(main, "MINI_APP_URL", "https://mini.example.com"),
+            patch.dict(os.environ, {"ALLOWED_WEB_ORIGINS": "https://admin.example.com"}),
+        ):
+            origins = main.configured_web_origins()
+        self.assertIn("https://panel.example.com", origins)
+        self.assertIn("https://mini.example.com", origins)
+        self.assertIn("https://admin.example.com", origins)
+
 
 if __name__ == "__main__":
     unittest.main()

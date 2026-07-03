@@ -140,12 +140,12 @@ public class MainActivity extends Activity {
         root.setGravity(Gravity.CENTER_HORIZONTAL);
 
         LinearLayout hero = card();
-        TextView title = text("Hunter Vault Agent", 26, COLOR_TEXT, true);
-        TextView mode = badge(BuildConfig.FULL_CONTROL ? "FULL CONTROL" : "LITE");
+        TextView title = text("Hunter Device Agent", 26, COLOR_TEXT, true);
+        TextView mode = badge(BuildConfig.FULL_CONTROL ? "FULL · С РАЗРЕШЕНИЯМИ" : "LITE · БЕЗ УПРАВЛЕНИЯ");
         TextView subtitle = text(
                 BuildConfig.FULL_CONTROL
-                        ? "Полный режим: экран, жесты и управление после твоих разрешений."
-                        : "Lite режим: безопасное подключение, QR и статус без экрана и жестов.",
+                        ? "Экран и жесты работают только после вашего подтверждения и видны в статусе ниже."
+                        : "Безопасное подключение, состояние устройства и диагностика — без доступа к экрану и жестам.",
                 14,
                 COLOR_MUTED,
                 false
@@ -155,11 +155,8 @@ public class MainActivity extends Activity {
         hero.addView(subtitle, matchWidthWithTopMargin(8));
         root.addView(hero, matchWidth());
 
-        root.addView(buildWalletCard(), matchWidthWithTopMargin(12));
-        root.addView(buildExchangeCard(), matchWidthWithTopMargin(12));
-
         LinearLayout connectCard = card();
-        connectCard.addView(sectionTitle("Подключение"));
+        connectCard.addView(sectionTitle("1 · Подключение"));
 
         permissionsText = new TextView(this);
         permissionsText.setTextSize(14);
@@ -177,13 +174,13 @@ public class MainActivity extends Activity {
         addField(connectCard, "Токен, резервный режим", tokenInput);
         addField(connectCard, "Имя устройства", deviceNameInput);
 
-        Button saveButton = primaryButton("Сохранить настройки");
+        Button saveButton = secondaryButton("Сохранить параметры");
         saveButton.setOnClickListener(view -> {
             savePrefs();
             renderStatus();
         });
 
-        Button pairButton = primaryButton("Подключить по коду");
+        Button pairButton = primaryButton("Подтвердить и подключить");
         pairButton.setOnClickListener(view -> {
             savePrefs();
             pairWithCurrentCode();
@@ -198,8 +195,8 @@ public class MainActivity extends Activity {
         root.addView(connectCard, matchWidthWithTopMargin(12));
 
         LinearLayout togglesCard = card();
-        togglesCard.addView(sectionTitle("Wallet Security Setup"));
-        agentSwitch = switchRow("Агент работает в фоне");
+        togglesCard.addView(sectionTitle("2 · Разрешения и связь"));
+        agentSwitch = switchRow("Поддерживать защищённую связь в фоне");
         agentSwitch.setOnClickListener(view -> {
             savePrefs();
             if (agentSwitch.isChecked()) {
@@ -210,7 +207,7 @@ public class MainActivity extends Activity {
             renderStatus();
         });
 
-        notificationSwitch = switchRow("Уведомления");
+        notificationSwitch = switchRow("Показывать уведомление о работе Agent");
         notificationSwitch.setOnClickListener(view -> {
             openNotificationSettings();
             renderStatus();
@@ -222,13 +219,13 @@ public class MainActivity extends Activity {
             renderStatus();
         });
 
-        accessibilitySwitch = switchRow(BuildConfig.FULL_CONTROL ? "Жесты и тапы" : "Жесты отключены в Lite");
+        accessibilitySwitch = switchRow(BuildConfig.FULL_CONTROL ? "Разрешить удалённые жесты" : "Жесты недоступны в Lite");
         accessibilitySwitch.setOnClickListener(view -> {
             openAccessibilitySettings();
             renderStatus();
         });
 
-        screenSwitch = switchRow(BuildConfig.FULL_CONTROL ? "Передача экрана" : "Экран отключен в Lite");
+        screenSwitch = switchRow(BuildConfig.FULL_CONTROL ? "Разрешить показ экрана" : "Показ экрана недоступен в Lite");
         screenSwitch.setOnClickListener(view -> {
             requestScreenCapture();
             renderStatus();
@@ -243,7 +240,7 @@ public class MainActivity extends Activity {
         root.addView(togglesCard, matchWidthWithTopMargin(12));
 
         LinearLayout actionsCard = card();
-        actionsCard.addView(sectionTitle("Действия"));
+        actionsCard.addView(sectionTitle("3 · Проверка готовности"));
 
         Button setupButton = primaryButton(BuildConfig.FULL_CONTROL ? "Мастер разрешений" : "Проверить Lite режим");
         setupButton.setOnClickListener(view -> startPermissionWizard());

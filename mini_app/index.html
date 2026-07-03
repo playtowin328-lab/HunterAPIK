@@ -11,9 +11,14 @@
     <main class="app-shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">Hunter Agent</p>
-          <h1>Пульт устройств</h1>
-          <p class="topbar-subtitle" id="setupText">Загружаю устройства и проверяю подключение...</p>
+          <p class="eyebrow">Hunter Control</p>
+          <h1>Центр устройств</h1>
+          <p class="topbar-subtitle" id="setupText">Проверяю связь, безопасность и готовность устройств...</p>
+          <div class="fleet-live" aria-label="Состояние центра управления">
+            <span class="fleet-live-pill" id="fleetLiveStatus"><i aria-hidden="true"></i> Центр подключается</span>
+            <span class="fleet-live-pill" id="fleetAttentionStatus">Нет данных</span>
+            <time class="fleet-live-pill" id="localClock">--:--</time>
+          </div>
         </div>
         <div class="topbar-actions">
           <button class="icon-button" id="fullscreenButton" type="button" aria-label="Во весь экран" title="Во весь экран">⛶</button>
@@ -36,49 +41,83 @@
         </div>
       </section>
 
+      <section class="trust-strip" aria-label="Безопасность подключения">
+        <span class="trust-icon" aria-hidden="true">✓</span>
+        <div>
+          <strong>Только ваши устройства — только с явным разрешением</strong>
+          <p>Каждое подключение подтверждается одноразовым кодом. Экран и управление включаются владельцем на самом устройстве и в любой момент отключаются.</p>
+        </div>
+      </section>
+
       <nav class="quick-nav" aria-label="Основные разделы">
         <a class="active" href="#overview"><span>Обзор</span><small>Статус</small></a>
         <a href="#devices"><span>Устройства</span><small>Список</small></a>
         <a href="#remotePanel"><span>Пульт</span><small>Управление</small></a>
-        <a href="#setupPanel"><span>Подключение</span><small>Новый Agent</small></a>
+        <a href="#setupPanel"><span>Подключение</span><small>Agent / Browser</small></a>
       </nav>
 
       <section class="setup-panel" id="setupPanel" aria-label="Подключение телефона">
         <div class="section-head">
           <div>
-            <p class="eyebrow">Подключение</p>
-            <h2>APK, QR и первый запуск</h2>
+            <p class="eyebrow">Быстрый старт</p>
+            <h2>Подключите устройство за несколько минут</h2>
           </div>
           <button class="ghost-button neutral" id="refreshButton" type="button">Обновить</button>
         </div>
 
         <div class="setup-steps" aria-label="Шаги подключения">
-          <span><strong>1</strong> Скачать APK</span>
-          <span><strong>2</strong> Получить QR</span>
-          <span><strong>3</strong> Разрешения</span>
-          <span><strong>4</strong> Online</span>
+          <span><strong>1</strong> Установить Agent</span>
+          <span><strong>2</strong> Сканировать QR</span>
+          <span><strong>3</strong> Подтвердить доступ</span>
+          <span><strong>4</strong> Проверить связь</span>
         </div>
 
         <div class="setup-actions">
-          <button class="primary-button" id="installAgentButton" type="button">Скачать APK</button>
-          <button class="secondary-button" id="requestPairButton" type="button">Получить QR</button>
+          <button class="primary-button" id="installAgentButton" type="button">1. Установить Agent</button>
+          <button class="secondary-button" id="requestPairButton" type="button">2. Получить QR-код</button>
           <button class="secondary-button" id="openInstalledAgentButton" type="button">Открыть Agent</button>
           <button class="secondary-button" id="connectCurrentDevice" type="button">Страница установки</button>
           <button class="secondary-button" id="openDesktopAppButton" type="button">Открыть на ПК</button>
         </div>
 
-        <p class="hint" id="currentDeviceText">Определяю текущее устройство...</p>
+        <p class="hint" id="currentDeviceText">Определяю устройство и подскажу следующий шаг...</p>
 
         <div class="pair-result hidden" id="pairResult">
           <img id="pairQrImage" alt="QR код подключения">
           <div>
             <p class="eyebrow">Код подключения</p>
             <strong id="pairCode">000000</strong>
-            <p>Открой ссылку на телефоне с установленным Android Agent или введи код вручную.</p>
+            <p>Код одноразовый. Открой ссылку на своём Android-устройстве и подтверди подключение в Agent.</p>
             <div class="pair-links">
               <button class="secondary-button" id="openPairPageButton" type="button">Открыть ссылку</button>
               <button class="ghost-button neutral" id="openAgentDeepLinkButton" type="button">Открыть Agent</button>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="companion-panel" id="browserCompanion" aria-label="Безопасный доступ через браузер">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Browser Companion</p>
+            <h2>Временный доступ без установки</h2>
+          </div>
+          <span class="companion-state" id="companionState" data-state="idle"><i></i> Не активен</span>
+        </div>
+        <p class="hint">Работает, пока открыта эта страница. Браузер всегда показывает системное подтверждение и индикатор активного доступа.</p>
+        <div class="companion-capabilities" id="companionCapabilities"></div>
+        <div class="companion-actions">
+          <button class="secondary-button" id="companionScreenButton" type="button">Показать экран</button>
+          <button class="secondary-button" id="companionCameraButton" type="button">Включить камеру</button>
+          <button class="secondary-button" id="companionLocationButton" type="button">Передать геопозицию</button>
+          <button class="secondary-button" id="companionNotificationButton" type="button">Разрешить уведомления</button>
+          <button class="ghost-button danger-soft" id="companionStopButton" type="button" disabled>Остановить всё</button>
+        </div>
+        <div class="companion-preview hidden" id="companionPreview">
+          <video id="companionVideo" autoplay muted playsinline></video>
+          <div>
+            <strong id="companionPreviewTitle">Предпросмотр</strong>
+            <p id="companionDetail">Поток остаётся только в этом браузере.</p>
           </div>
         </div>
       </section>
@@ -333,10 +372,21 @@
 
       <div class="device-list-intro" id="devices">
           <div>
-            <p class="eyebrow">Мои устройства</p>
-            <h2>Подключённая техника</h2>
+            <p class="eyebrow">Рабочее пространство</p>
+            <h2>Ваши устройства</h2>
           </div>
-          <span>Нажми «Пульт», чтобы управлять</span>
+          <span>Статус, диагностика и разрешённые действия — в одном месте</span>
+      </div>
+      <div class="device-toolbar" aria-label="Поиск и фильтры устройств">
+        <label class="device-search">
+          <span aria-hidden="true">⌕</span>
+          <input id="deviceSearchInput" type="search" placeholder="Найти устройство" autocomplete="off">
+        </label>
+        <div class="device-filters" role="group" aria-label="Фильтр устройств">
+          <button class="active" data-device-filter="all" type="button">Все <span id="filterAllCount">0</span></button>
+          <button data-device-filter="online" type="button">Online <span id="filterOnlineCount">0</span></button>
+          <button data-device-filter="attention" type="button">Внимание <span id="filterAttentionCount">0</span></button>
+        </div>
       </div>
       <section class="device-list" id="deviceList" aria-label="Список устройств"></section>
 

@@ -65,7 +65,9 @@ p {
   grid-template-areas:
     "topbar topbar"
     "summary summary"
+    "trust trust"
     "setup remote"
+    "companion remote"
     "deploy remote"
     "alerts remote"
     "devices remote"
@@ -135,7 +137,9 @@ h2 {
 }
 
 .summary > div,
+.trust-strip,
 .setup-panel,
+.companion-panel,
 .deploy-panel,
 .remote-panel,
 .alert-panel,
@@ -145,6 +149,35 @@ h2 {
   border-radius: 8px;
   background: var(--surface);
   box-shadow: var(--shadow);
+}
+
+.trust-strip {
+  grid-area: trust;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-color: color-mix(in srgb, var(--success) 35%, var(--line));
+  background: color-mix(in srgb, var(--success) 7%, var(--surface));
+}
+
+.trust-strip p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.trust-icon {
+  display: grid;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--success);
+  color: #fff;
+  font-weight: 900;
 }
 
 .summary > div {
@@ -178,6 +211,7 @@ h2 {
 }
 
 .setup-panel,
+.companion-panel,
 .deploy-panel,
 .remote-panel,
 .alert-panel {
@@ -188,6 +222,10 @@ h2 {
 
 .setup-panel {
   grid-area: setup;
+}
+
+.companion-panel {
+  grid-area: companion;
 }
 
 .deploy-panel {
@@ -1138,6 +1176,7 @@ select:focus {
     grid-template-areas:
       "topbar"
       "summary"
+      "trust"
       "setup"
       "deploy"
       "alerts"
@@ -1283,9 +1322,12 @@ body {
     "topbar topbar"
     "summary summary"
     "nav nav"
+    "trust trust"
     "intro remote"
+    "toolbar remote"
     "devices remote"
     "setup remote"
+    "companion remote"
     "deploy remote"
     "alerts remote"
     "form form";
@@ -1319,6 +1361,19 @@ body {
   pointer-events: none;
 }
 
+.topbar::before {
+  content: "";
+  position: absolute;
+  left: 38%;
+  bottom: -190px;
+  width: 420px;
+  height: 320px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(95, 239, 209, .22), transparent 68%);
+  pointer-events: none;
+  animation: ambient-drift 9s ease-in-out infinite alternate;
+}
+
 .topbar > * {
   position: relative;
   z-index: 1;
@@ -1327,6 +1382,46 @@ body {
 .topbar .eyebrow,
 .topbar-subtitle {
   color: rgba(255, 255, 255, .72);
+}
+
+.fleet-live {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 18px;
+}
+
+.fleet-live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, .15);
+  border-radius: 999px;
+  background: rgba(3, 28, 36, .22);
+  color: rgba(255, 255, 255, .88);
+  font-size: 11px;
+  font-weight: 750;
+  backdrop-filter: blur(10px);
+}
+
+.fleet-live-pill i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ffd166;
+  box-shadow: 0 0 0 0 rgba(255, 209, 102, .55);
+  animation: live-pulse 1.8s ease-out infinite;
+}
+
+:root[data-fleet="ready"] .fleet-live-pill i {
+  background: #67edaa;
+  box-shadow: 0 0 0 0 rgba(103, 237, 170, .55);
+}
+
+:root[data-fleet="attention"] .fleet-live-pill i {
+  background: #ffbd66;
 }
 
 .topbar h1 {
@@ -1448,6 +1543,80 @@ body {
   font-size: 12px;
 }
 
+.device-toolbar {
+  grid-area: toolbar;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.device-search {
+  display: flex;
+  flex: 1 1 190px;
+  align-items: center;
+  gap: 8px;
+  min-width: 130px;
+  padding-left: 10px;
+  color: var(--muted);
+}
+
+.device-search input {
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 4px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.device-search input:focus {
+  box-shadow: none;
+  outline: none;
+}
+
+.device-filters {
+  display: flex;
+  gap: 5px;
+}
+
+.device-filters button {
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.device-filters button.active {
+  background: var(--surface-soft);
+  color: var(--accent-strong);
+}
+
+.device-filters span {
+  display: inline-grid;
+  min-width: 19px;
+  height: 19px;
+  margin-left: 3px;
+  place-items: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-size: 10px;
+}
+
+.compact-empty {
+  padding: 22px;
+}
+
 .summary > div,
 .setup-panel,
 .deploy-panel,
@@ -1459,9 +1628,113 @@ body {
 }
 
 .setup-panel,
+.companion-panel,
 .deploy-panel,
 .alert-panel {
   padding: 18px;
+}
+
+.companion-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.companion-state i,
+.companion-capabilities i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.companion-state[data-state="active"] {
+  color: var(--success);
+}
+
+.companion-state[data-state="active"] i {
+  background: var(--success);
+  animation: live-pulse 1.8s ease-out infinite;
+}
+
+.companion-state[data-state="warning"] {
+  color: var(--warn);
+}
+
+.companion-state[data-state="warning"] i {
+  background: var(--warn);
+}
+
+.companion-capabilities {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 13px;
+}
+
+.companion-capabilities span {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.companion-capabilities span[data-ready="true"] i {
+  background: var(--success);
+}
+
+.companion-capabilities strong {
+  grid-column: 1 / -1;
+  color: var(--text);
+  font-size: 10px;
+}
+
+.companion-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.companion-actions > :last-child {
+  grid-column: 1 / -1;
+}
+
+.companion-preview {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface-soft);
+}
+
+.companion-preview video {
+  width: 100%;
+  max-height: 320px;
+  border-radius: 9px;
+  background: #05080b;
+  object-fit: contain;
+}
+
+.companion-preview p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .section-head h2,
@@ -1507,6 +1780,19 @@ body {
   inset: 0 auto 0 0;
   width: 4px;
   background: var(--success);
+}
+
+.device-card:not(.offline)::after {
+  content: "";
+  position: absolute;
+  right: 15px;
+  bottom: 15px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 45%, transparent);
+  animation: live-pulse 2s ease-out infinite;
 }
 
 .device-card.offline::before {
@@ -1625,6 +1911,26 @@ button:not(:disabled):active {
   transform: translateY(0) scale(.985);
 }
 
+@keyframes live-pulse {
+  0% { box-shadow: 0 0 0 0 currentColor; }
+  70% { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+@keyframes ambient-drift {
+  from { transform: translate3d(-25px, 0, 0) scale(.92); opacity: .7; }
+  to { transform: translate3d(35px, -28px, 0) scale(1.08); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+
 .primary-button {
   background: linear-gradient(135deg, #087f8c, #13a271);
   box-shadow: 0 8px 20px rgba(8, 127, 140, .18);
@@ -1658,10 +1964,13 @@ select:focus {
       "topbar"
       "summary"
       "nav"
+      "trust"
       "intro"
+      "toolbar"
       "devices"
       "remote"
       "setup"
+      "companion"
       "deploy"
       "alerts"
       "form";
@@ -1717,6 +2026,24 @@ select:focus {
 
   .quick-nav small {
     display: none;
+  }
+
+  .device-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .device-search {
+    flex-basis: auto;
+  }
+
+  .device-filters {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .companion-capabilities {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .summary > div {

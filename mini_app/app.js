@@ -15,9 +15,17 @@ const deviceForm = $("#deviceForm");
 const deviceName = $("#deviceName");
 const deviceType = $("#deviceType");
 const deviceList = $("#deviceList");
+const deviceSearchInput = $("#deviceSearchInput");
+const deviceFilterButtons = $$("[data-device-filter]");
+const filterAllCount = $("#filterAllCount");
+const filterOnlineCount = $("#filterOnlineCount");
+const filterAttentionCount = $("#filterAttentionCount");
 const currentDeviceText = $("#currentDeviceText");
 const connectCurrentDevice = $("#connectCurrentDevice");
 const setupText = $("#setupText");
+const fleetLiveStatus = $("#fleetLiveStatus");
+const fleetAttentionStatus = $("#fleetAttentionStatus");
+const localClock = $("#localClock");
 const installAgentButton = $("#installAgentButton");
 const openInstalledAgentButton = $("#openInstalledAgentButton");
 const openDesktopAppButton = $("#openDesktopAppButton");
@@ -77,6 +85,17 @@ const deviceAlertsQuietStart = $("#deviceAlertsQuietStart");
 const deviceAlertsQuietEnd = $("#deviceAlertsQuietEnd");
 const deviceAlertKinds = $("#deviceAlertKinds");
 const deviceAlertLog = $("#deviceAlertLog");
+const companionState = $("#companionState");
+const companionCapabilities = $("#companionCapabilities");
+const companionScreenButton = $("#companionScreenButton");
+const companionCameraButton = $("#companionCameraButton");
+const companionLocationButton = $("#companionLocationButton");
+const companionNotificationButton = $("#companionNotificationButton");
+const companionStopButton = $("#companionStopButton");
+const companionPreview = $("#companionPreview");
+const companionVideo = $("#companionVideo");
+const companionPreviewTitle = $("#companionPreviewTitle");
+const companionDetail = $("#companionDetail");
 
 const telegramUser = tg?.initDataUnsafe?.user;
 const profileName = telegramUser?.first_name || telegramUser?.username || "Я";
@@ -177,9 +196,152 @@ let deviceAlertSettings = null;
 let deviceAlertEvents = [];
 let deviceAlertKindList = [];
 let fullscreenFallbackActive = false;
+let activeDeviceFilter = localStorage.getItem("hunter_device_filter") || "all";
+let deviceSearchQuery = "";
+if (!["all", "online", "attention"].includes(activeDeviceFilter)) activeDeviceFilter = "all";
 const screenPollers = new Map();
 const pendingScreenRequests = new Set();
+const companionStreams = new Set();
 window.currentDeviceScope = "own";
+
+function companionFeatures() {
+  return [
+    { label: "HTTPS", ready: window.isSecureContext },
+    { label: "Экран", ready: Boolean(navigator.mediaDevices?.getDisplayMedia) },
+    { label: "Камера", ready: Boolean(navigator.mediaDevices?.getUserMedia) },
+    { label: "Геопозиция", ready: Boolean(navigator.geolocation) },
+    { label: "Уведомления", ready: "Notification" in window },
+  ];
+}
+
+function renderCompanionCapabilities() {
+  if (!companionCapabilities) return;
+  companionCapabilities.innerHTML = companionFeatures()
+    .map((feature) => `<span data-ready="${feature.ready}"><i></i>${feature.label}<strong>${feature.ready ? "готово" : "нет"}</strong></span>`)
+    .join("");
+  companionScreenButton.disabled = !window.isSecureContext || !navigator.mediaDevices?.getDisplayMedia;
+  companionCameraButton.disabled = !window.isSecureContext || !navigator.mediaDevices?.getUserMedia;
+  companionLocationButton.disabled = !window.isSecureContext || !navigator.geolocation;
+  companionNotificationButton.disabled = !window.isSecureContext || !("Notification" in window);
+}
+
+function setCompanionState(text, state = "active") {
+  if (!companionState) return;
+  companionState.dataset.state = state;
+  companionState.innerHTML = `<i></i> ${text}`;
+  companionStopButton.disabled = companionStreams.size === 0;
+}
+
+function showCompanionStream(stream, title, detail) {
+  companionStreams.add(stream);
+  companionVideo.srcObject = stream;
+  companionPreview.classList.remove("hidden");
+  companionPreviewTitle.textContent = title;
+  companionDetail.textContent = detail;
+  stream.getTracks().forEach((track) => track.addEventListener("ended", stopCompanionAccess, { once: true }));
+  setCompanionState("Доступ активен");
+}
+
+function stopCompanionAccess() {
+  companionStreams.forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
+  companionStreams.clear();
+  if (companionVideo) companionVideo.srcObject = null;
+  companionPreview?.classList.add("hidden");
+  setCompanionState("Не активен", "idle");
+}
+
+async function startCompanionScreen() {
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    showCompanionStream(stream, "Экран доступен", "Передача завершится при закрытии вкладки или через системную кнопку браузера.");
+  } catch (error) {
+    setCompanionState(error.name === "NotAllowedError" ? "Доступ не разрешён" : "Ошибка экрана", "warning");
+  }
+}
+
+async function startCompanionCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+    showCompanionStream(stream, "Камера активна", "Видео остаётся локальным, пока не создана подтверждённая удалённая сессия.");
+  } catch (error) {
+    setCompanionState(error.name === "NotAllowedError" ? "Камера не разрешена" : "Ошибка камеры", "warning");
+  }
+}
+
+function requestCompanionLocation() {
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      const accuracy = Math.round(position.coords.accuracy || 0);
+      companionPreview.classList.remove("hidden");
+      companionVideo.srcObject = null;
+      companionPreviewTitle.textContent = "Геопозиция получена";
+      companionDetail.textContent = `Точность около ${accuracy} м. Координаты не отправлены и остаются на этой странице.`;
+      setCompanionState("Геопозиция разрешена");
+    },
+    (error) => setCompanionState(error.code === 1 ? "Геопозиция не разрешена" : "Ошибка геопозиции", "warning"),
+    { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 },
+  );
+}
+
+async function requestCompanionNotifications() {
+  const permission = await Notification.requestPermission();
+  setCompanionState(permission === "granted" ? "Уведомления разрешены" : "Уведомления не разрешены", permission === "granted" ? "active" : "warning");
+}
+
+function updateLocalClock() {
+  if (!localClock) return;
+  localClock.textContent = new Intl.DateTimeFormat("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date());
+}
+
+function renderFleetPulse(onlineCount) {
+  const attentionCount = devices.filter((device) => {
+    const state = device.health?.state || (device.online ? "online" : "offline");
+    return ["warning", "degraded", "revoked", "offline"].includes(state);
+  }).length;
+  const allOnline = devices.length > 0 && onlineCount === devices.length;
+
+  document.documentElement.dataset.fleet = !devices.length ? "empty" : (allOnline ? "ready" : "attention");
+  if (fleetLiveStatus) {
+    fleetLiveStatus.innerHTML = `<i aria-hidden="true"></i> ${allOnline ? "Все устройства на связи" : `${onlineCount} из ${devices.length} на связи`}`;
+  }
+  if (fleetAttentionStatus) {
+    fleetAttentionStatus.textContent = attentionCount
+      ? `Внимание: ${attentionCount}`
+      : (devices.length ? "Система стабильна" : "Добавьте первое устройство");
+  }
+}
+
+function needsAttention(device) {
+  const state = device.health?.state || (device.online ? "online" : "offline");
+  return ["warning", "degraded", "revoked", "offline"].includes(state);
+}
+
+function visibleDevices() {
+  const query = deviceSearchQuery.trim().toLocaleLowerCase("ru");
+  return devices.filter((device) => {
+    if (activeDeviceFilter === "online" && !device.online) return false;
+    if (activeDeviceFilter === "attention" && !needsAttention(device)) return false;
+    if (!query) return true;
+    return [device.name, device.device_id, device.platform, device.agent, device.type]
+      .filter(Boolean)
+      .some((value) => String(value).toLocaleLowerCase("ru").includes(query));
+  });
+}
+
+function renderDeviceToolbar() {
+  if (filterAllCount) filterAllCount.textContent = devices.length;
+  if (filterOnlineCount) filterOnlineCount.textContent = devices.filter((device) => device.online).length;
+  if (filterAttentionCount) filterAttentionCount.textContent = devices.filter(needsAttention).length;
+  deviceFilterButtons.forEach((button) => {
+    const active = button.dataset.deviceFilter === activeDeviceFilter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
 
 function getLocalDeviceId() {
   const existingId = localStorage.getItem(localDeviceIdKey);
@@ -1640,6 +1802,8 @@ function render() {
   totalDevices.textContent = devices.length;
   const onlineCount = devices.filter((device) => device.online).length;
   onlineDevices.textContent = onlineCount;
+  renderFleetPulse(onlineCount);
+  renderDeviceToolbar();
   userName.textContent = profileName;
   const scopeText = window.currentDeviceScope === "all" ? "все устройства проекта" : "твои устройства";
   setupText.textContent = devices.length
@@ -1657,7 +1821,12 @@ function render() {
     localStorage.setItem("hunter_selected_device_id", selectedDeviceId);
   }
 
-  devices.forEach((device) => {
+  const filteredDevices = visibleDevices();
+  if (!filteredDevices.length) {
+    deviceList.innerHTML = '<p class="empty-state compact-empty">По этому фильтру устройств нет. Измени поиск или покажи весь список.</p>';
+  }
+
+  filteredDevices.forEach((device) => {
     const card = template.content.firstElementChild.cloneNode(true);
     const healthState = device.health?.state || (device.online ? "online" : "offline");
     card.classList.toggle("offline", !device.online);
@@ -1766,6 +1935,19 @@ deviceForm.addEventListener("submit", async (event) => {
   } catch (error) {
     currentDeviceText.textContent = error.message;
   }
+});
+
+deviceSearchInput?.addEventListener("input", () => {
+  deviceSearchQuery = deviceSearchInput.value;
+  render();
+});
+
+deviceFilterButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    activeDeviceFilter = button.dataset.deviceFilter || "all";
+    localStorage.setItem("hunter_device_filter", activeDeviceFilter);
+    render();
+  });
 });
 
 connectCurrentDevice.addEventListener("click", () => {
@@ -1971,6 +2153,12 @@ refreshButton.addEventListener("click", async () => {
 deployRefreshButton?.addEventListener("click", loadSetupStatus);
 deviceAlertRefreshButton?.addEventListener("click", loadDeviceAlerts);
 deviceAlertSaveButton?.addEventListener("click", saveDeviceAlertSettings);
+companionScreenButton?.addEventListener("click", startCompanionScreen);
+companionCameraButton?.addEventListener("click", startCompanionCamera);
+companionLocationButton?.addEventListener("click", requestCompanionLocation);
+companionNotificationButton?.addEventListener("click", requestCompanionNotifications);
+companionStopButton?.addEventListener("click", stopCompanionAccess);
+window.addEventListener("pagehide", stopCompanionAccess);
 
 themeButton.addEventListener("click", () => {
   const dark = !document.documentElement.classList.contains("dark");
@@ -1995,6 +2183,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 setTelegramTheme();
+renderCompanionCapabilities();
 syncFullscreenState();
 renderRemoteLog();
 renderCurrentDevice();
@@ -2002,3 +2191,5 @@ renderSetupStatus();
 loadSetupStatus();
 refreshDevices();
 startRefreshLoop();
+updateLocalClock();
+setInterval(updateLocalClock, 1000);
