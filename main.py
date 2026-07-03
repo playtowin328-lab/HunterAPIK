@@ -966,6 +966,38 @@ HELP_TEXT = (
     "/admins — управление доступом"
 )
 
+
+def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
+    devices = list_all_devices() if project_scope else list_devices_for_user(str(owner_id))
+    online = sum(1 for device in devices if device.get("online"))
+    attention = sum(
+        1
+        for device in devices
+        if (device.get("health") or {}).get("state") in {"warning", "degraded", "revoked", "offline"}
+    )
+    storage_ok = railway_storage_is_persistent()
+    setup_ok = not [item for item in setup_checks() if item.get("required") and not item.get("ok")]
+    storage_line = "защищено Volume" if storage_ok else "ВНИМАНИЕ: временное хранилище"
+    setup_line = "готова" if setup_ok else "требует настройки"
+    next_step = (
+        "Открой устройство в мини‑аппе и выбери нужное действие."
+        if devices
+        else "Подключи Railway Volume, затем нажми «Добавить устройство»."
+    )
+    return "\n".join(
+        [
+            "◈ HUNTER CONTROL",
+            "Персональный центр устройств и автоматизации",
+            "",
+            f"Устройства: {len(devices)}  •  Online: {online}  •  Требуют внимания: {attention}",
+            f"Инфраструктура: {setup_line}  •  Данные: {storage_line}",
+            "",
+            f"Следующий шаг: {next_step}",
+            "",
+            "Выбери раздел ниже — бот проведёт по процессу без технической путаницы.",
+        ]
+    )
+
 SETTINGS_TEXT = (
     "Настройки бота\n\n"
     f"• Максимальный размер изображения: {MAX_IMAGE_SIZE_MB} МБ\n"
@@ -1006,31 +1038,33 @@ def main_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [mini_app_button],
             [
-                InlineKeyboardButton(text="🔗 Подключить телефон", callback_data="connect_wizard"),
-                InlineKeyboardButton(text="📡 Мои устройства", callback_data="my_devices"),
+                InlineKeyboardButton(text="＋ Добавить устройство", callback_data="connect_wizard"),
+                InlineKeyboardButton(text="◉ Устройства", callback_data="my_devices"),
             ],
             [
-                InlineKeyboardButton(text="🕹 Управление", callback_data="control_info"),
-                InlineKeyboardButton(text="📘 Инструкция", callback_data="guide"),
-            ],
-            [InlineKeyboardButton(text="💻 PC Agent", callback_data="pc_agent_info")],
-            [
-                InlineKeyboardButton(text="🛠 Собрать APK", callback_data="connect_build_now"),
-                InlineKeyboardButton(text="✅ Полная проверка", callback_data="connect_check"),
-            ],
-            [InlineKeyboardButton(text="🚦 Мастер настройки", callback_data="setup_wizard")],
-            [
-                InlineKeyboardButton(text="📄 PDF", callback_data="make_pdf"),
-                InlineKeyboardButton(text="🖼 PNG", callback_data="make_png"),
-                InlineKeyboardButton(text="📝 Текст", callback_data="make_text"),
+                InlineKeyboardButton(text="⌁ Центр управления", callback_data="control_info"),
+                InlineKeyboardButton(text="✓ Диагностика", callback_data="connect_check"),
             ],
             [
-                InlineKeyboardButton(text="✨ Улучшить фото", callback_data="enhance_photo"),
-                InlineKeyboardButton(text="📦 ZIP", callback_data="make_zip"),
+                InlineKeyboardButton(text="⬡ Android Agent", callback_data="apk_list"),
+                InlineKeyboardButton(text="▣ PC Agent", callback_data="pc_agent_info"),
             ],
-            [InlineKeyboardButton(text="🚀 Railway", callback_data="railway_info")],
-            [InlineKeyboardButton(text="🔐 Доступ", callback_data="access_info")],
-            [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
+            [InlineKeyboardButton(text="⚡ Мастер инфраструктуры", callback_data="setup_wizard")],
+            [
+                InlineKeyboardButton(text="PDF", callback_data="make_pdf"),
+                InlineKeyboardButton(text="PNG", callback_data="make_png"),
+                InlineKeyboardButton(text="OCR", callback_data="make_text"),
+            ],
+            [
+                InlineKeyboardButton(text="✦ Улучшить изображение", callback_data="enhance_photo"),
+                InlineKeyboardButton(text="Архив ZIP", callback_data="make_zip"),
+            ],
+            [
+                InlineKeyboardButton(text="Railway", callback_data="railway_info"),
+                InlineKeyboardButton(text="Доступ", callback_data="access_info"),
+                InlineKeyboardButton(text="Настройки", callback_data="settings"),
+            ],
+            [InlineKeyboardButton(text="? Помощь и сценарии", callback_data="guide")],
         ]
     )
 
@@ -1099,11 +1133,17 @@ async def send_start(message: Message) -> None:
         return
     audit_message(message, "command_start", "Opened main menu")
     try:
-        await message.answer(HELP_TEXT, reply_markup=main_menu())
+        await message.answer(
+            dashboard_text(message.from_user.id, is_project_admin_user(message.from_user)),
+            reply_markup=main_menu(),
+        )
     except Exception as exc:
         print(f"Failed to send /start menu with primary markup: {exc}")
         try:
-            await message.answer(HELP_TEXT, reply_markup=fallback_main_menu())
+            await message.answer(
+                dashboard_text(message.from_user.id, is_project_admin_user(message.from_user)),
+                reply_markup=fallback_main_menu(),
+            )
         except Exception as fallback_exc:
             print(f"Failed to send /start fallback menu: {fallback_exc}")
             await message.answer("Бот запущен. Отправь /check, /connect или /pair.")
@@ -2071,7 +2111,20 @@ async def send_pairing_code(message: Message) -> None:
 def format_devices_text(owner_id: int) -> str:
     devices = list_devices_for_user(str(owner_id))
     if not devices:
-        return "Пока нет подключенных устройств. Нажми «Подключить телефон» и введи код в Android Agent."
+        storage_warning = (
+            "\n\n⚠️ Railway Volume не подключён: новые устройства снова исчезнут после deploy. "
+            "Сначала создай Volume /data и задай STORAGE_DIR=/data, DB_PATH=/data/app.db."
+            if not railway_storage_is_persistent()
+            else ""
+        )
+        return (
+            "Устройств пока нет.\n\n"
+            "1. Открой «Добавить устройство».\n"
+            "2. Получи новый QR / код.\n"
+            "3. В Android Agent нажми подключение и открой ссылку.\n"
+            "4. Вернись сюда и обнови список."
+            f"{storage_warning}"
+        )
 
     lines = ["📡 Твои устройства:"]
     lines.extend(format_device_lines(devices, include_owner=False))
@@ -4299,7 +4352,11 @@ async def callbacks(callback: CallbackQuery) -> None:
 
     if action == "main_menu":
         await callback.answer()
-        await show_bot_screen(callback, HELP_TEXT, reply_markup=main_menu())
+        await show_bot_screen(
+            callback,
+            dashboard_text(callback.from_user.id, is_project_admin_user(callback.from_user)),
+            reply_markup=main_menu(),
+        )
         return
 
     if action == "settings":
@@ -4486,9 +4543,15 @@ async def callbacks(callback: CallbackQuery) -> None:
         await callback.answer()
         await show_bot_screen(
             callback,
-            "Railway\n\n"
-            "Нужные переменные: BOT_TOKEN, DEVICE_API_TOKEN, PUBLIC_BASE_URL или RAILWAY_PUBLIC_DOMAIN, MINI_APP_URL, GITHUB_REPO, GITHUB_TOKEN.\n\n"
-            "После изменения переменных перезапусти сервис. Мини-апп и API отдаются этим же web-процессом.",
+            "Railway · инфраструктура\n\n"
+            f"Хранилище: {'Volume подключён' if railway_storage_is_persistent() else 'ВРЕМЕННОЕ — устройства не сохраняются'}\n"
+            f"Storage: {STORAGE_DIR}\nDB: {DB_PATH}\n\n"
+            "Для постоянных устройств:\n"
+            "1. Railway → Service → Volumes → Add Volume.\n"
+            "2. Mount path: /data.\n"
+            "3. Variables: STORAGE_DIR=/data и DB_PATH=/data/app.db.\n"
+            "4. Redeploy, затем заново подключи устройства через QR.\n\n"
+            "Остальные переменные: BOT_TOKEN, DEVICE_API_TOKEN, PUBLIC_BASE_URL, MINI_APP_URL, GITHUB_REPO и GITHUB_TOKEN.",
             reply_markup=nav_keyboard(None),
         )
         return
