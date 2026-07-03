@@ -37,6 +37,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BOT_POLLING_ENABLED = os.getenv("BOT_POLLING_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+IS_RAILWAY = bool(os.getenv("RAILWAY_DEPLOYMENT_ID") or os.getenv("RAILWAY_REPLICA_ID") or os.getenv("RAILWAY_PUBLIC_DOMAIN"))
 INSTANCE_ID = os.getenv("RAILWAY_REPLICA_ID") or os.getenv("RAILWAY_DEPLOYMENT_ID") or os.getenv("HOSTNAME", "local")
 RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL") or (
@@ -94,6 +95,21 @@ APP_STARTED_AT = time.time()
 BOT_POLLING_READY = False
 BOT_POLLING_STATUS = "starting"
 BOT_INSTANCE: Bot | None = None
+
+
+def railway_storage_is_persistent() -> bool:
+    """Reject repository-local storage on Railway, where redeploys erase it."""
+    if not IS_RAILWAY:
+        return True
+    try:
+        storage = STORAGE_DIR.resolve()
+        database = DB_PATH.resolve()
+        base = BASE_DIR.resolve()
+        storage_outside_app = storage != base and base not in storage.parents
+        database_in_storage = database == storage or storage in database.parents
+        return STORAGE_DIR.is_absolute() and DB_PATH.is_absolute() and storage_outside_app and database_in_storage
+    except (OSError, RuntimeError):
+        return False
 BOT_LOOP: asyncio.AbstractEventLoop | None = None
 
 
@@ -1287,6 +1303,7 @@ def setup_check_line(name: str, ok: bool, detail: str, fix: str = "") -> str:
 
 
 def setup_checks() -> list[dict]:
+    persistent_storage = railway_storage_is_persistent()
     return [
         {
             "name": "BOT_TOKEN",
@@ -1346,15 +1363,15 @@ def setup_checks() -> list[dict]:
         },
         {
             "name": "STORAGE_DIR",
-            "ok": STORAGE_DIR.exists(),
-            "detail": str(STORAGE_DIR),
+            "ok": STORAGE_DIR.exists() and persistent_storage,
+            "detail": f"{STORAGE_DIR} ({'persistent' if persistent_storage else 'ephemeral'})",
             "fix": "подключи Railway Volume и укажи STORAGE_DIR=/data",
             "required": True,
         },
         {
             "name": "DB_PATH",
-            "ok": DB_PATH.parent.exists(),
-            "detail": str(DB_PATH),
+            "ok": DB_PATH.parent.exists() and persistent_storage,
+            "detail": f"{DB_PATH} ({'persistent' if persistent_storage else 'ephemeral'})",
             "fix": "для Railway Volume обычно DB_PATH=/data/app.db",
             "required": True,
         },
@@ -3358,6 +3375,9 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                     "bot_polling_status": BOT_POLLING_STATUS,
                     "instance_id": INSTANCE_ID,
                     "mini_app": True,
+                    "storage_persistent": railway_storage_is_persistent(),
+                    "storage_dir": str(STORAGE_DIR),
+                    "db_path": str(DB_PATH),
                     "setup_ready": setup_status["ok"],
                     "setup_required_failed_count": setup_status["required_failed_count"],
                 }

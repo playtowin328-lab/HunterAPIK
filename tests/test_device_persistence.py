@@ -92,6 +92,24 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertEqual(1, notify.call_count)
         self.assertEqual("agent_error", notify.call_args.args[2]["kind"])
 
+    def test_railway_rejects_relative_ephemeral_storage(self) -> None:
+        with (
+            patch.object(main, "IS_RAILWAY", True),
+            patch.object(main, "STORAGE_DIR", Path("storage")),
+            patch.object(main, "DB_PATH", Path("storage/app.db")),
+        ):
+            self.assertFalse(main.railway_storage_is_persistent())
+
+    def test_railway_accepts_absolute_volume_storage(self) -> None:
+        volume = TEST_STORAGE / "volume"
+        volume.mkdir(exist_ok=True)
+        with (
+            patch.object(main, "IS_RAILWAY", True),
+            patch.object(main, "STORAGE_DIR", volume),
+            patch.object(main, "DB_PATH", volume / "app.db"),
+        ):
+            self.assertTrue(main.railway_storage_is_persistent())
+
 
 if __name__ == "__main__":
     unittest.main()
