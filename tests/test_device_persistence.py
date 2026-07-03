@@ -160,6 +160,12 @@ class DevicePersistenceTests(unittest.TestCase):
         devices = main.list_devices_for_user("100")
         self.assertEqual(["keep-me"], [device["device_id"] for device in devices])
 
+    def test_root_menu_is_hidden_from_regular_menu(self) -> None:
+        regular_labels = [button.text for row in main.main_menu(False).inline_keyboard for button in row]
+        root_labels = [button.text for row in main.main_menu(True).inline_keyboard for button in row]
+        self.assertNotIn("◆ Root Command Center", regular_labels)
+        self.assertIn("◆ Root Command Center", root_labels)
+
 
 if __name__ == "__main__":
     unittest.main()

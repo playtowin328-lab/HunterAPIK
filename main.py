@@ -1126,6 +1126,94 @@ def root_settings_text() -> str:
         ]
     )
 
+
+def root_command_center_text() -> str:
+    devices = list_all_devices()
+    online = sum(1 for device in devices if device.get("online"))
+    attention = sum(1 for device in devices if (device.get("health") or {}).get("state") in {"warning", "degraded", "revoked", "offline"})
+    integrity = verify_audit_chain()
+    with db_connect() as connection:
+        pending = connection.execute("SELECT COUNT(*) AS count FROM commands WHERE status IN ('pending', 'delivered')").fetchone()["count"]
+        failed = connection.execute("SELECT COUNT(*) AS count FROM commands WHERE status IN ('failed', 'rejected')").fetchone()["count"]
+        users = connection.execute("SELECT COUNT(*) AS count FROM bot_access").fetchone()["count"]
+        security_events = connection.execute(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE severity = 'security' AND created_at >= ?",
+            (now_ts() - 86400,),
+        ).fetchone()["count"]
+    setup = setup_status_payload()
+    setup_line = "готова" if setup["ok"] else f"исправить {setup['required_failed_count']} пунктов"
+    return "\n".join(
+        [
+            "◆ ROOT COMMAND CENTER",
+            "Полный контроль продукта и инфраструктуры",
+            "",
+            f"📱 Парк: {len(devices)} · online {online} · внимание {attention}",
+            f"⚙️ Команды: активные {pending} · ошибки {failed}",
+            f"👥 Доступ: {users} назначенных пользователей",
+            f"🛡 Безопасность: {security_events} важных событий за 24 часа",
+            f"🔗 Журнал: {'целостность подтверждена' if integrity['ok'] else 'ВНИМАНИЕ: цепочка нарушена'} · {integrity['checked']} записей",
+            f"💾 Данные: {'Volume защищён' if railway_storage_is_persistent() else 'КРИТИЧНО: временный диск'}",
+            f"☁️ Инфраструктура: {setup_line}",
+            f"🤖 Telegram polling: {BOT_POLLING_STATUS}",
+            "",
+            "Все действия root фиксируются в Trust Timeline без сохранения секретов и личного содержимого.",
+        ]
+    )
+
+
+def root_command_center_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📱 Все устройства", callback_data="my_devices"),
+                InlineKeyboardButton(text="◉ Trust Timeline", callback_data="trust_timeline"),
+            ],
+            [
+                InlineKeyboardButton(text="👥 Роли и доступ", callback_data="access_info"),
+                InlineKeyboardButton(text="🛡 Root settings", callback_data="root_settings"),
+            ],
+            [
+                InlineKeyboardButton(text="🔔 События устройств", callback_data="root_alerts"),
+                InlineKeyboardButton(text="🔗 Целостность", callback_data="root_integrity"),
+            ],
+            [
+                InlineKeyboardButton(text="☁️ Инфраструктура", callback_data="setup_wizard"),
+                InlineKeyboardButton(text="✓ Полная диагностика", callback_data="connect_check"),
+            ],
+            [
+                InlineKeyboardButton(text="⬡ Android builds", callback_data="apk_build_status"),
+                InlineKeyboardButton(text="▣ PC Agent", callback_data="pc_agent_info"),
+            ],
+            [InlineKeyboardButton(text="↻ Обновить Root Center", callback_data="root_center")],
+            nav_row(None),
+        ]
+    )
+
+
+def root_alerts_text() -> str:
+    settings = load_device_notify_settings()
+    events = list_device_alert_events(12)
+    lines = [
+        "🔔 События устройств",
+        f"Мониторинг: {'включён' if settings.get('enabled') else 'выключен'}",
+        f"Категории: {len(settings.get('enabled_kinds') or [])}/{len(DEVICE_ALERT_KINDS)}",
+        f"Тихие часы: {'включены' if settings.get('quiet_hours_enabled') else 'выключены'}",
+        "",
+    ]
+    if not events:
+        lines.append("Новых событий пока нет.")
+    for event in events:
+        created = datetime.fromtimestamp(event["created_at"]).strftime("%d.%m %H:%M")
+        lines.append(f"• {created} · {event['detail'][:240]}")
+    return "\n".join(lines)
+
+
+async def send_root_center(message: Message) -> None:
+    if not await ensure_root_message(message):
+        return
+    audit_message(message, "root_center_opened", "Opened Root Command Center", notify=False)
+    await message.answer(root_command_center_text(), reply_markup=root_command_center_keyboard())
+
 HELP_TEXT = (
     "*Hunter Agent — личный пульт устройств*\n\n"
     "Бот помогает собрать Android APK, привязать телефон по QR и открыть управление в мини‑аппе. "
@@ -1220,7 +1308,7 @@ GUIDE_TEXT = (
     "_Подключайте только свои устройства или устройства, владелец которых явно дал согласие._"
 )
 
-def main_menu() -> InlineKeyboardMarkup:
+def main_menu(show_root: bool = False) -> InlineKeyboardMarkup:
     mini_app_button = (
         InlineKeyboardButton(
             text="📱 Мини‑апп",
@@ -1230,8 +1318,7 @@ def main_menu() -> InlineKeyboardMarkup:
         else InlineKeyboardButton(text="📱 Мини‑апп", callback_data="mini_app_info")
     )
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    rows = [
             [mini_app_button],
             [
                 InlineKeyboardButton(text="＋ Добавить устройство", callback_data="connect_wizard"),
@@ -1263,7 +1350,9 @@ def main_menu() -> InlineKeyboardMarkup:
             ],
             [InlineKeyboardButton(text="? Помощь и сценарии", callback_data="guide")],
         ]
-    )
+    if show_root:
+        rows.insert(0, [InlineKeyboardButton(text="◆ Root Command Center", callback_data="root_center")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def fallback_main_menu() -> InlineKeyboardMarkup:
@@ -1332,7 +1421,7 @@ async def send_start(message: Message) -> None:
     try:
         await message.answer(
             dashboard_text(message.from_user.id, is_project_admin_user(message.from_user)),
-            reply_markup=main_menu(),
+            reply_markup=main_menu(is_root_admin_user(message.from_user)),
         )
     except Exception as exc:
         print(f"Failed to send /start menu with primary markup: {exc}")
@@ -4508,7 +4597,7 @@ async def handle_photo(message: Message, bot: Bot) -> None:
 
     await message.answer(
         "Фото принято ✅\nВыбери, что сделать с ним:",
-        reply_markup=main_menu(),
+        reply_markup=main_menu(is_root_admin_user(message.from_user)),
     )
 
 
@@ -4547,7 +4636,7 @@ async def handle_document_image(message: Message, bot: Bot) -> None:
 
     await message.answer(
         "Картинка принята как файл ✅\nВыбери действие:",
-        reply_markup=main_menu(),
+        reply_markup=main_menu(is_root_admin_user(message.from_user)),
     )
 
 
@@ -4596,8 +4685,42 @@ async def callbacks(callback: CallbackQuery) -> None:
         await show_bot_screen(
             callback,
             dashboard_text(callback.from_user.id, is_project_admin_user(callback.from_user)),
-            reply_markup=main_menu(),
+            reply_markup=main_menu(is_root_admin_user(callback.from_user)),
         )
+        return
+
+    if action == "root_center":
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Root Command Center доступен только владельцу из ADMIN_IDS.", show_alert=True)
+            return
+        audit_callback(callback, "root_center_opened", "Opened Root Command Center", notify=False)
+        await callback.answer()
+        await show_bot_screen(callback, root_command_center_text(), reply_markup=root_command_center_keyboard())
+        return
+
+    if action == "root_alerts":
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Только root может видеть общие события устройств.", show_alert=True)
+            return
+        await callback.answer()
+        await show_bot_screen(callback, root_alerts_text(), reply_markup=root_command_center_keyboard())
+        return
+
+    if action == "root_integrity":
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Только root может проверять целостность журнала.", show_alert=True)
+            return
+        integrity = verify_audit_chain()
+        audit_callback(callback, "audit_integrity_checked", f"Audit integrity: {integrity['ok']}", notify=False)
+        text = (
+            "🔗 Целостность Trust Timeline\n\n"
+            f"Статус: {'ПОДТВЕРЖДЕНА' if integrity['ok'] else 'НАРУШЕНА'}\n"
+            f"Проверено событий: {integrity['checked']}\n"
+            f"Последний отпечаток: {integrity.get('last_hash') or 'нет'}\n\n"
+            "Хеш-цепочка позволяет обнаружить изменение или удаление защищённых записей после её начала."
+        )
+        await callback.answer()
+        await show_bot_screen(callback, text, reply_markup=root_command_center_keyboard())
         return
 
     if action == "trust_timeline":
@@ -5018,6 +5141,7 @@ async def run_bot() -> None:
     dp.message.register(send_admins, Command("admins"))
     dp.message.register(send_roles, Command("roles"))
     dp.message.register(send_root_settings, Command("root_settings"))
+    dp.message.register(send_root_center, Command("root"))
     dp.message.register(send_audit, Command("audit"))
     dp.message.register(send_timeline, Command("timeline"))
     dp.message.register(send_grant_access, Command("grant"))
