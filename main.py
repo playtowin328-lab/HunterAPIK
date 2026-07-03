@@ -709,7 +709,25 @@ async def notify_root_admins(event: dict) -> None:
         return
     severity = str(event.get("severity") or "info")
     prefix = {"security": "🛡 SECURITY", "warning": "⚠️ ATTENTION", "info": "◉ EVENT"}.get(severity, "◉ EVENT")
-    text = f"{prefix}\n\n" + audit_event_text(event)
+    metadata = event.get("metadata") or {}
+    if event.get("action") == "device_alert":
+        kind = str(metadata.get("kind") or "health")
+        icon = {
+            "online": "🟢", "offline": "🔴", "battery": "🪫", "charging": "🔌",
+            "network": "📡", "lost_mode": "🚨", "blackout": "🔒", "accessibility": "🖐",
+            "screen": "📱", "agent_error": "⚠️", "screen_error": "⚠️",
+            "command_queue": "⏳", "health": "🩺",
+        }.get(kind, "◉")
+        device_name = metadata.get("name") or "Устройство"
+        created = datetime.fromtimestamp(int(event.get("created_at") or now_ts())).strftime("%d.%m · %H:%M")
+        text = (
+            f"{icon} {device_name}\n"
+            f"{event.get('detail', 'Новое событие')}\n\n"
+            f"{created} · {kind}\n"
+            "Открой Hunter Control для диагностики и действий."
+        )
+    else:
+        text = f"{prefix}\n\n" + audit_event_text(event)
     recipients = [LOG_CHAT_ID] if LOG_CHAT_ID else sorted(ADMIN_IDS)
     for admin_id in recipients:
         if str(admin_id) == str(event.get("actor_id")):
@@ -1224,12 +1242,20 @@ def root_command_center_keyboard() -> InlineKeyboardMarkup:
 def root_alerts_text() -> str:
     settings = load_device_notify_settings()
     events = list_device_alert_events(12)
+    enabled_kinds = set(settings.get("enabled_kinds") or [])
+    critical = {"offline", "battery", "lost_mode", "agent_error", "screen_error", "health"}
+    profile = "Все события" if enabled_kinds == DEVICE_ALERT_KINDS else ("Только критичные" if enabled_kinds == critical else "Персональный")
     lines = [
-        "🔔 События устройств",
-        f"Мониторинг: {'включён' if settings.get('enabled') else 'выключен'}",
-        f"Категории: {len(settings.get('enabled_kinds') or [])}/{len(DEVICE_ALERT_KINDS)}",
-        f"Тихие часы: {'включены' if settings.get('quiet_hours_enabled') else 'выключены'}",
+        "🔔 ЦЕНТР УВЕДОМЛЕНИЙ",
+        "Управляй сигналами без лишнего шума",
         "",
+        f"{'🟢' if settings.get('enabled') else '⚪'} Мониторинг: {'работает' if settings.get('enabled') else 'выключен'}",
+        f"🎚 Профиль: {profile}",
+        f"📋 Категории: {len(enabled_kinds)}/{len(DEVICE_ALERT_KINDS)}",
+        f"🌙 Тихие часы: {'включены' if settings.get('quiet_hours_enabled') else 'выключены'} · {settings.get('quiet_hours_start')}:00–{settings.get('quiet_hours_end')}:00",
+        f"📨 Доставка: {'отдельный чат' if LOG_CHAT_ID else 'личные сообщения root'}",
+        "",
+        "Последние события:",
     ]
     if not events:
         lines.append("Новых событий пока нет.")
@@ -1237,6 +1263,30 @@ def root_alerts_text() -> str:
         created = datetime.fromtimestamp(event["created_at"]).strftime("%d.%m %H:%M")
         lines.append(f"• {created} · {event['detail'][:240]}")
     return "\n".join(lines)
+
+
+def root_alerts_keyboard() -> InlineKeyboardMarkup:
+    settings = load_device_notify_settings()
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text="⏸ Выключить мониторинг" if settings.get("enabled") else "▶️ Включить мониторинг",
+                callback_data="alerts:toggle",
+            )],
+            [
+                InlineKeyboardButton(text="🚨 Только критичное", callback_data="alerts:critical"),
+                InlineKeyboardButton(text="⭐ Важное", callback_data="alerts:important"),
+            ],
+            [InlineKeyboardButton(text="🔔 Все события", callback_data="alerts:all")],
+            [InlineKeyboardButton(
+                text="🌙 Выключить тихие часы" if settings.get("quiet_hours_enabled") else "🌙 Включить тихие часы 23–08",
+                callback_data="alerts:quiet",
+            )],
+            [InlineKeyboardButton(text="↻ Обновить", callback_data="root_alerts")],
+            [InlineKeyboardButton(text="⬅️ Root Command Center", callback_data="root_center")],
+            nav_row(None),
+        ]
+    )
 
 
 async def send_root_center(message: Message) -> None:
@@ -4744,7 +4794,45 @@ async def callbacks(callback: CallbackQuery) -> None:
             await callback.answer("Только root может видеть общие события устройств.", show_alert=True)
             return
         await callback.answer()
-        await show_bot_screen(callback, root_alerts_text(), reply_markup=root_command_center_keyboard())
+        await show_bot_screen(callback, root_alerts_text(), reply_markup=root_alerts_keyboard())
+        return
+
+    if action and action.startswith("alerts:"):
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Настройки уведомлений доступны только root.", show_alert=True)
+            return
+        mode = action.split(":", 1)[1]
+        settings = load_device_notify_settings()
+        critical = {"offline", "battery", "lost_mode", "agent_error", "screen_error", "health"}
+        important = critical | {"online", "charging", "network", "accessibility", "screen", "command_queue"}
+        if mode == "toggle":
+            settings["enabled"] = not settings.get("enabled")
+        elif mode == "quiet":
+            settings["quiet_hours_enabled"] = not settings.get("quiet_hours_enabled")
+            settings["quiet_hours_start"] = 23
+            settings["quiet_hours_end"] = 8
+        elif mode == "critical":
+            settings["enabled"] = True
+            settings["enabled_kinds"] = sorted(critical)
+        elif mode == "important":
+            settings["enabled"] = True
+            settings["enabled_kinds"] = sorted(important)
+        elif mode == "all":
+            settings["enabled"] = True
+            settings["enabled_kinds"] = sorted(DEVICE_ALERT_KINDS)
+        else:
+            await callback.answer("Неизвестный профиль уведомлений.", show_alert=True)
+            return
+        saved = save_device_notify_settings(settings)
+        audit_callback(
+            callback,
+            "device_alert_settings",
+            f"Notification profile changed: {mode}",
+            {"enabled": saved["enabled"], "enabled_kinds": saved["enabled_kinds"], "quiet_hours_enabled": saved["quiet_hours_enabled"]},
+            notify=False,
+        )
+        await callback.answer("Настройки сохранены")
+        await show_bot_screen(callback, root_alerts_text(), reply_markup=root_alerts_keyboard())
         return
 
     if action == "root_integrity":
