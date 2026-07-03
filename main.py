@@ -51,6 +51,13 @@ ADMIN_IDS = {
     for item in os.getenv("ADMIN_IDS", "").replace(";", ",").split(",")
     if item.strip()
 }
+BOOTSTRAP_ADMIN_IDS = {
+    item.strip() for item in os.getenv("BOOTSTRAP_ADMIN_IDS", "").replace(";", ",").split(",") if item.strip()
+}
+BOOTSTRAP_USER_IDS = {
+    item.strip() for item in os.getenv("BOOTSTRAP_USER_IDS", "").replace(";", ",").split(",") if item.strip()
+}
+LOG_CHAT_ID = os.getenv("LOG_CHAT_ID", "").strip()
 WEBAPP_HOST = os.getenv("WEBAPP_HOST", "0.0.0.0")
 WEBAPP_PORT = int(os.getenv("PORT", os.getenv("WEBAPP_PORT", "8080")))
 DEVICE_TTL_SECONDS = int(os.getenv("DEVICE_TTL_SECONDS", "300"))
@@ -325,6 +332,8 @@ def is_allowed_bot_user(user_id: str) -> bool:
         user_id = normalize_user_id(user_id)
     except ValueError:
         return False
+    if user_id in ADMIN_IDS or user_id in BOOTSTRAP_ADMIN_IDS or user_id in BOOTSTRAP_USER_IDS:
+        return True
     with db_connect() as connection:
         row = connection.execute(
             "SELECT user_id FROM bot_access WHERE user_id = ?",
@@ -347,6 +356,10 @@ def get_user_role(user_id: str) -> str:
         return "guest"
     if is_root_user_id(user_id):
         return "root"
+    if user_id in BOOTSTRAP_ADMIN_IDS:
+        return "admin"
+    if user_id in BOOTSTRAP_USER_IDS:
+        return "user"
     with db_connect() as connection:
         row = connection.execute(
             "SELECT role FROM bot_access WHERE user_id = ?",
@@ -692,16 +705,30 @@ def command_audit_detail(prefix: str, command_type: str, device_id: str, command
 
 
 async def notify_root_admins(event: dict) -> None:
-    if not BOT_INSTANCE or not ADMIN_IDS:
+    if not BOT_INSTANCE:
         return
-    text = "Audit event\n\n" + audit_event_text(event)
-    for admin_id in sorted(ADMIN_IDS):
+    severity = str(event.get("severity") or "info")
+    prefix = {"security": "🛡 SECURITY", "warning": "⚠️ ATTENTION", "info": "◉ EVENT"}.get(severity, "◉ EVENT")
+    text = f"{prefix}\n\n" + audit_event_text(event)
+    recipients = [LOG_CHAT_ID] if LOG_CHAT_ID else sorted(ADMIN_IDS)
+    for admin_id in recipients:
         if str(admin_id) == str(event.get("actor_id")):
             continue
         try:
             await BOT_INSTANCE.send_message(admin_id, text)
         except Exception as exc:
             print(f"Failed to send audit notification to {admin_id}: {exc}")
+
+
+async def send_chat_id(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    await message.answer(
+        "ID этого чата для LOG_CHAT_ID:\n"
+        f"`{message.chat.id}`\n\n"
+        "Добавь бота в отдельную группу, отправь там /chatid, затем сохрани ID в Railway Variables как LOG_CHAT_ID.",
+        parse_mode="Markdown",
+    )
 
 
 def schedule_root_notification(event: dict, notify: bool = True) -> None:
@@ -1038,6 +1065,8 @@ def access_text() -> str:
         "Доступ к боту",
         "",
         f"Root ADMIN_IDS: {root_ids}",
+        f"Постоянные admin из Variables: {', '.join(sorted(BOOTSTRAP_ADMIN_IDS)) or 'нет'}",
+        f"Постоянные user из Variables: {', '.join(sorted(BOOTSTRAP_USER_IDS)) or 'нет'}",
         f"Допущено через бота: {len(rows)}",
         "",
         "Команды владельца:",
@@ -1116,6 +1145,7 @@ def root_settings_text() -> str:
             f"Pairing TTL: {PAIRING_TTL_SECONDS}s",
             f"GitHub repo: {GITHUB_REPO or 'missing'}",
             f"GitHub token: {'set' if GITHUB_TOKEN else 'missing'}",
+            f"Log chat: {LOG_CHAT_ID or 'not set; root DM fallback'}",
             "",
             "Root commands:",
             "/grant_admin 123456789",
@@ -1155,6 +1185,7 @@ def root_command_center_text() -> str:
             f"💾 Данные: {'Volume защищён' if railway_storage_is_persistent() else 'КРИТИЧНО: временный диск'}",
             f"☁️ Инфраструктура: {setup_line}",
             f"🤖 Telegram polling: {BOT_POLLING_STATUS}",
+            f"📨 Логи: {'отдельный чат ' + LOG_CHAT_ID if LOG_CHAT_ID else 'личные сообщения root (fallback)'}",
             "",
             "Все действия root фиксируются в Trust Timeline без сохранения секретов и личного содержимого.",
         ]
@@ -1523,8 +1554,9 @@ async def send_grant_access(message: Message, command: CommandObject) -> None:
         )
         return
     audit_message(message, "grant_access", f"Granted user role to {user_id}", {"target_user_id": user_id, "role": "user"})
+    persistence_warning = "" if railway_storage_is_persistent() else "\n\n⚠️ Хранилище временное: доступ исчезнет после redeploy. Закрепи ID в BOOTSTRAP_USER_IDS или подключи Volume /data."
     await message.answer(
-        f"Доступ выдан пользователю `{user_id}` с ролью `user`.",
+        f"Доступ выдан пользователю `{user_id}` с ролью `user`.{persistence_warning}",
         parse_mode="Markdown",
         reply_markup=access_keyboard(),
     )
@@ -1556,7 +1588,13 @@ async def send_grant_role(message: Message, command: CommandObject, role: str | 
         f"Granted {target_role} role to {user_id}",
         {"target_user_id": user_id, "role": target_role},
     )
-    await message.answer(f"Роль `{target_role}` выдана пользователю `{user_id}`.", parse_mode="Markdown", reply_markup=access_keyboard())
+    bootstrap_variable = "BOOTSTRAP_ADMIN_IDS" if target_role == "admin" else "BOOTSTRAP_USER_IDS"
+    persistence_warning = "" if railway_storage_is_persistent() else f"\n\n⚠️ Хранилище временное: роль исчезнет после redeploy. Добавь ID в {bootstrap_variable} или подключи Volume /data."
+    await message.answer(
+        f"Роль `{target_role}` выдана пользователю `{user_id}`.{persistence_warning}",
+        parse_mode="Markdown",
+        reply_markup=access_keyboard(),
+    )
 
 
 async def send_grant_admin(message: Message, command: CommandObject) -> None:
@@ -1757,6 +1795,9 @@ def railway_env_template_text() -> str:
         "BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN\n"
         "BOT_POLLING_ENABLED=true\n"
         "ADMIN_IDS=YOUR_TELEGRAM_ID\n"
+        "BOOTSTRAP_ADMIN_IDS=\n"
+        "BOOTSTRAP_USER_IDS=\n"
+        "LOG_CHAT_ID=-1001234567890\n"
         f"PUBLIC_BASE_URL={public_url}\n"
         f"MINI_APP_URL={public_url}\n"
         "GITHUB_REPO=playtowin328-lab/HunterAPIK\n"
@@ -5138,6 +5179,7 @@ async def run_bot() -> None:
     dp.message.register(send_guide, Command("guide"))
     dp.message.register(send_settings, Command("settings"))
     dp.message.register(send_my_id, Command("myid"))
+    dp.message.register(send_chat_id, Command("chatid"))
     dp.message.register(send_admins, Command("admins"))
     dp.message.register(send_roles, Command("roles"))
     dp.message.register(send_root_settings, Command("root_settings"))

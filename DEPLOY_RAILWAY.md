@@ -43,6 +43,9 @@ Set these variables:
 BOT_TOKEN=YOUR_BOT_TOKEN
 BOT_POLLING_ENABLED=true
 ADMIN_IDS=YOUR_TELEGRAM_ID
+BOOTSTRAP_ADMIN_IDS=
+BOOTSTRAP_USER_IDS=
+LOG_CHAT_ID=-1001234567890
 PUBLIC_BASE_URL=https://YOUR_APP.up.railway.app
 MINI_APP_URL=https://YOUR_APP.up.railway.app
 AGENT_APK_URL=https://github.com/playtowin328-lab/HunterAPIK/releases/download/android-agent-latest/apk-agent.apk

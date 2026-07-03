@@ -166,6 +166,17 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertNotIn("◆ Root Command Center", regular_labels)
         self.assertIn("◆ Root Command Center", root_labels)
 
+    def test_bootstrap_access_survives_empty_database(self) -> None:
+        with (
+            patch.object(main, "ADMIN_IDS", {"1"}),
+            patch.object(main, "BOOTSTRAP_ADMIN_IDS", {"200"}),
+            patch.object(main, "BOOTSTRAP_USER_IDS", {"300"}),
+        ):
+            self.assertTrue(main.is_allowed_bot_user("200"))
+            self.assertTrue(main.is_allowed_bot_user("300"))
+            self.assertEqual("admin", main.get_user_role("200"))
+            self.assertEqual("user", main.get_user_role("300"))
+
 
 if __name__ == "__main__":
     unittest.main()
