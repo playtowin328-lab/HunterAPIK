@@ -177,6 +177,19 @@ class DevicePersistenceTests(unittest.TestCase):
             self.assertEqual("admin", main.get_user_role("200"))
             self.assertEqual("user", main.get_user_role("300"))
 
+    def test_device_access_matrix_enforces_roles(self) -> None:
+        with (
+            patch.object(main, "ADMIN_IDS", {"1"}),
+            patch.object(main, "BOOTSTRAP_ADMIN_IDS", {"200"}),
+            patch.object(main, "BOOTSTRAP_USER_IDS", {"300", "301"}),
+        ):
+            self.assertTrue(main.can_access_owner("1", "999"))
+            self.assertTrue(main.can_access_owner("200", "999"))
+            self.assertTrue(main.can_access_owner("300", "300"))
+            self.assertFalse(main.can_access_owner("300", "301"))
+            self.assertFalse(main.can_access_owner("", "300"))
+            self.assertFalse(main.can_access_owner("999", "999"))
+
 
 if __name__ == "__main__":
     unittest.main()

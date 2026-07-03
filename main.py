@@ -70,6 +70,7 @@ BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 MINI_APP_DIR = BASE_DIR / "mini_app"
+ALERT_COVER_PATH = MINI_APP_DIR / "assets" / "hunter-alert-cover.png"
 AGENT_APK_NAME = "apk-agent.apk"
 AGENT_LITE_APK_NAME = "apk-agent-lite.apk"
 AGENT_FULL_APK_NAME = "apk-agent-full.apk"
@@ -720,11 +721,29 @@ async def notify_root_admins(event: dict) -> None:
         }.get(kind, "◉")
         device_name = metadata.get("name") or "Устройство"
         created = datetime.fromtimestamp(int(event.get("created_at") or now_ts())).strftime("%d.%m · %H:%M")
+        recommendation = {
+            "online": "Связь восстановлена. Дополнительных действий не требуется.",
+            "offline": "Проверь питание, интернет и фоновую работу Hunter Agent.",
+            "battery": "Подключи устройство к зарядке или проверь питание удалённой точки.",
+            "charging": "Проверь, ожидаемо ли изменился режим зарядки.",
+            "network": "Убедись, что новая сеть стабильна и не блокирует HTTPS-соединение.",
+            "lost_mode": "Открой пульт защиты и проверь текущее состояние Lost Mode.",
+            "blackout": "Проверь защитный экран и при необходимости отключи его из пульта.",
+            "accessibility": "На телефоне нужно повторно включить Hunter Agent в Accessibility.",
+            "screen": "Проверь, ожидаемо ли началась или завершилась трансляция экрана.",
+            "agent_error": "Открой диагностику устройства и запусти восстановление связи.",
+            "screen_error": "Повтори разрешение записи экрана на самом телефоне.",
+            "command_queue": "Проверь Online-статус и очисти очередь, если команды устарели.",
+            "health": "Открой карточку устройства — система покажет проблемный компонент.",
+        }.get(kind, "Открой Hunter Control и проверь подробную диагностику.")
+        owner_id = metadata.get("owner_id") or "—"
+        device_id = str(metadata.get("device_id") or "—")[:32]
         text = (
-            f"{icon} {device_name}\n"
-            f"{event.get('detail', 'Новое событие')}\n\n"
-            f"{created} · {kind}\n"
-            "Открой Hunter Control для диагностики и действий."
+            f"{icon} HUNTER CONTROL · {device_name}\n\n"
+            f"Что произошло\n{event.get('detail', 'Новое событие устройства')}\n\n"
+            f"Что сделать\n{recommendation}\n\n"
+            f"Детали\n• Тип: {kind}\n• Время: {created}\n• Device ID: {device_id}\n• Owner: {owner_id}\n\n"
+            "Событие сохранено в защищённом Trust Timeline."
         )
     else:
         text = f"{prefix}\n\n" + audit_event_text(event)
@@ -733,7 +752,10 @@ async def notify_root_admins(event: dict) -> None:
         if str(admin_id) == str(event.get("actor_id")):
             continue
         try:
-            await BOT_INSTANCE.send_message(admin_id, text)
+            if event.get("action") == "device_alert" and ALERT_COVER_PATH.exists():
+                await BOT_INSTANCE.send_photo(admin_id, FSInputFile(ALERT_COVER_PATH), caption=text)
+            else:
+                await BOT_INSTANCE.send_message(admin_id, text)
         except Exception as exc:
             print(f"Failed to send audit notification to {admin_id}: {exc}")
 
@@ -3685,10 +3707,11 @@ def payload_has_webapp_auth(payload: dict) -> bool:
 
 def can_access_owner(actor_id: str, owner_id: str) -> bool:
     if not actor_id:
+        return False
+    role = get_user_role(actor_id)
+    if role in {"root", "admin"}:
         return True
-    if str(actor_id) == str(owner_id):
-        return True
-    return get_user_role(actor_id) in {"root", "admin"}
+    return role == "user" and str(actor_id) == str(owner_id)
 
 
 def rename_device(owner_id: str, device_id: str, name: str) -> bool:
@@ -3950,11 +3973,18 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 return
 
             webapp_user_id = webapp_user_id_from_query(query)
-            if query_has_webapp_auth(query) and not webapp_user_id:
+            if not webapp_user_id:
                 self.send_json({"error": "bad Telegram WebApp auth"}, HTTPStatus.UNAUTHORIZED)
                 return
-            can_view_all = bool(webapp_user_id and webapp_user_id == owner_id and get_user_role(webapp_user_id) in {"root", "admin"})
-            devices = list_all_devices() if can_view_all else list_devices_for_user(owner_id)
+            role = get_user_role(webapp_user_id)
+            if role == "guest":
+                self.send_json({"error": "bot access required"}, HTTPStatus.FORBIDDEN)
+                return
+            can_view_all = role in {"root", "admin"}
+            if not can_view_all and owner_id != webapp_user_id:
+                self.send_json({"error": "forbidden for this device owner"}, HTTPStatus.FORBIDDEN)
+                return
+            devices = list_all_devices() if can_view_all else list_devices_for_user(webapp_user_id)
             self.send_json({"devices": devices, "scope": "all" if can_view_all else "own"})
             return
 
@@ -3966,6 +3996,13 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 return
             if len(owner_id) > 64:
                 self.send_json({"error": "owner_id is too long"}, HTTPStatus.BAD_REQUEST)
+                return
+            actor_id = webapp_user_id_from_query(query)
+            if not actor_id:
+                self.send_json({"error": "bad Telegram WebApp auth"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not can_access_owner(actor_id, owner_id):
+                self.send_json({"error": "forbidden for this device owner"}, HTTPStatus.FORBIDDEN)
                 return
 
             code = create_pairing_code(owner_id)

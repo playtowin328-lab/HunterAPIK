@@ -1379,6 +1379,35 @@ body {
   z-index: 1;
 }
 
+.topbar .hero-visual {
+  position: absolute;
+  inset: 0 0 0 auto;
+  z-index: 0;
+  width: min(52%, 760px);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.hero-visual::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, #0b2334 0%, rgba(11, 35, 52, .34) 48%, rgba(4, 24, 38, .08) 100%);
+}
+
+.hero-visual img {
+  width: 100%;
+  height: 100%;
+  opacity: .58;
+  object-fit: cover;
+  object-position: center;
+  filter: saturate(.9) contrast(1.06);
+}
+
+.topbar > div:not(.hero-visual) {
+  max-width: min(64%, 760px);
+}
+
 .topbar .eyebrow,
 .topbar-subtitle {
   color: rgba(255, 255, 255, .72);
@@ -2007,6 +2036,15 @@ select:focus {
 
   .topbar h1 {
     font-size: 36px;
+  }
+
+  .topbar .hero-visual {
+    width: 100%;
+    opacity: .35;
+  }
+
+  .topbar > div:not(.hero-visual) {
+    max-width: 100%;
   }
 
   .topbar-actions {
