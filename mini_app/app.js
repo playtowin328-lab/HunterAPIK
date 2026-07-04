@@ -38,6 +38,13 @@ const installAgentButton = $("#installAgentButton");
 const openInstalledAgentButton = $("#openInstalledAgentButton");
 const openDesktopAppButton = $("#openDesktopAppButton");
 const requestPairButton = $("#requestPairButton");
+const installationProgress = $("#installationProgress");
+const installationProgressFill = $("#installationProgressFill");
+const installationProgressLabel = $("#installationProgressLabel");
+const installationProgressTitle = $("#installationProgressTitle");
+const installationProgressPercent = $("#installationProgressPercent");
+const installationProgressDetail = $("#installationProgressDetail");
+const installationStepElements = [$("#installStepApk"), $("#installStepOpen"), $("#installStepPair"), $("#installStepOnline")];
 const refreshButton = $("#refreshButton");
 const pairResult = $("#pairResult");
 const pairQrImage = $("#pairQrImage");
@@ -105,13 +112,21 @@ const companionPreview = $("#companionPreview");
 const companionVideo = $("#companionVideo");
 const companionPreviewTitle = $("#companionPreviewTitle");
 const companionDetail = $("#companionDetail");
+const timelinePanel = $("#timelinePanel");
+const timelineList = $("#timelineList");
+const timelineIntegrity = $("#timelineIntegrity");
+const timelineRefreshButton = $("#timelineRefreshButton");
 
 const telegramUser = tg?.initDataUnsafe?.user;
 const profileName = telegramUser?.first_name || telegramUser?.username || "Я";
 const urlParams = new URLSearchParams(window.location.search);
 const ownerId = String(telegramUser?.id || urlParams.get("owner_id") || localStorage.getItem("apk_owner_id") || crypto.randomUUID());
 localStorage.setItem("apk_owner_id", ownerId);
+const webSessionStorageKey = `hunter_web_session_${ownerId}`;
+let webSessionToken = localStorage.getItem(webSessionStorageKey) || "";
 const remoteLogStorageKey = `hunter_remote_log_${ownerId}`;
+const installStartedKey = "hunter_agent_install_started";
+const agentOpenAttemptKey = "hunter_agent_open_attempted";
 
 const apiBaseUrl = window.location.origin;
 const agentOpenLink = `apkagent://open?server=${encodeURIComponent(apiBaseUrl)}&owner_id=${encodeURIComponent(ownerId)}&setup=1`;
@@ -203,6 +218,7 @@ let remoteLogItems = loadRemoteLogItems();
 let activeRemoteTab = localStorage.getItem("hunter_remote_tab") || "setup";
 let deviceAlertSettings = null;
 let deviceAlertEvents = [];
+let timelineEvents = [];
 let deviceAlertKindList = [];
 let fullscreenFallbackActive = false;
 let pwaInstallPrompt = null;
@@ -246,6 +262,15 @@ async function installPwa() {
 
 function companionFeatures() {
   return [
+    {
+      key: "pairing",
+      title: "QR-подключение",
+      detail: device?.pairing_required
+        ? "APK найден. Подтверди владельца по QR — до этого команды безопасно заблокированы."
+        : "Владелец подтверждён, защищённое подключение готово.",
+      status: device?.pairing_required ? "todo" : "ready",
+      command: null,
+    },
     { label: "HTTPS", ready: window.isSecureContext },
     { label: "Экран", ready: Boolean(navigator.mediaDevices?.getDisplayMedia) },
     { label: "Камера", ready: Boolean(navigator.mediaDevices?.getUserMedia) },
@@ -381,6 +406,68 @@ function renderDeviceToolbar() {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
+}
+
+function renderInstallationProgress() {
+  if (!installationProgress) return;
+  const installStarted = localStorage.getItem(installStartedKey) === "1";
+  const agentOpened = localStorage.getItem(agentOpenAttemptKey) === "1";
+  const paired = devices.length > 0;
+  const online = devices.some((device) => device.online);
+  let step = 0;
+  if (installStarted) step = 1;
+  if (agentOpened) step = 2;
+  if (paired) step = 3;
+  if (online) step = 4;
+  const states = [
+    ["Шаг 1 из 4", "Установите Hunter Agent", "Скачайте APK на Android-устройство и подтвердите установку."],
+    ["Шаг 2 из 4", "Откройте установленный Agent", "После установки вернитесь сюда и нажмите «Открыть Agent»."],
+    ["Шаг 3 из 4", "Подключите приложение", "Agent открывается с одноразовым кодом. Подтвердите подключение на телефоне."],
+    ["Шаг 4 из 4", "Устройство подключено", "Agent зарегистрирован. Осталось дождаться первого сигнала Online."],
+    ["Готово", "Устройство Online", "Установка и подключение завершены. Устройство доступно в пульте управления."],
+  ];
+  const [label, title, detail] = states[step];
+  const percent = [0, 25, 50, 75, 100][step];
+  installationProgress.dataset.step = String(step);
+  installationProgressFill.style.width = `${percent}%`;
+  installationProgressLabel.textContent = label;
+  installationProgressTitle.textContent = title;
+  installationProgressPercent.textContent = `${percent}%`;
+  installationProgressDetail.textContent = detail;
+  installationStepElements.forEach((element, index) => {
+    element?.classList.toggle("complete", index < step);
+    element?.classList.toggle("active", index === Math.min(step, 3));
+  });
+  installAgentButton.textContent = step === 0 ? "1. Установить Agent" : "APK / страница установки";
+  openInstalledAgentButton.classList.toggle("recommended", step >= 1 && step < 3);
+}
+
+function timelineEventLabel(action) {
+  return ({ device_added: "Добавлено устройство", device_paired: "Устройство подключено", device_manage: "Изменено устройство", device_alert: "Событие устройства", device_command: "Команда отправлена", device_command_result: "Команда завершена", pairing_code_created: "Создан код подключения", grant_access: "Выдан доступ", revoke_access: "Доступ отозван", build_apk_lite: "Сборка Lite APK", build_apk_full: "Сборка Full APK" })[action] || "Системное событие";
+}
+
+function renderTimeline(payload = {}) {
+  if (!timelineList) return;
+  const events = payload.events || timelineEvents;
+  timelineList.innerHTML = events.length ? events.map((event) => {
+    const time = new Date(Number(event.created_at || 0) * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    return `<article class="timeline-event" data-severity="${escapeHtml(event.severity || "info")}"><i></i><div><strong>${escapeHtml(timelineEventLabel(event.action))}</strong><p>${escapeHtml(event.detail || "Событие зарегистрировано")}</p><small>${escapeHtml(time)}</small></div></article>`;
+  }).join("") : '<p class="hint">Событий для вашей роли пока нет.</p>';
+  if (timelineIntegrity && payload.integrity) {
+    timelineIntegrity.textContent = payload.integrity.ok ? `✓ Журнал цел · ${payload.integrity.checked}` : "⚠ Целостность нарушена";
+    timelineIntegrity.dataset.ok = String(Boolean(payload.integrity.ok));
+  }
+}
+
+async function loadTimeline() {
+  if (!tg?.initData || !timelinePanel) return;
+  try {
+    const payload = await apiJson(`/api/timeline?${apiAuthParams({ limit: 20 })}`);
+    timelineEvents = payload.events || [];
+    renderTimeline(payload);
+  } catch (error) {
+    timelineList.innerHTML = `<p class="hint">${escapeHtml(error.message)}</p>`;
+  }
 }
 
 function getLocalDeviceId() {
@@ -904,14 +991,14 @@ function renderSetupAutomation(device) {
   `).join("");
 
   if (nextSetupStepButton) {
-    nextSetupStepButton.disabled = !nextStep || remoteCommandBusy || !device?.online;
+    nextSetupStepButton.disabled = !nextStep?.command || remoteCommandBusy || !device?.online || device?.pairing_required;
     nextSetupStepButton.dataset.command = nextStep?.command || "";
     nextSetupStepButton.textContent = nextStep ? `Открыть: ${nextStep.title}` : "Все готово";
   }
 }
 
 function canControlDevice(device) {
-  return Boolean(device?.online && device?.health?.state !== "revoked");
+  return Boolean(device?.online && !device?.pairing_required && device?.health?.state !== "revoked");
 }
 
 function setTelegramTheme() {
@@ -1081,6 +1168,7 @@ async function loadSetupStatus() {
 async function loadDevicesFromApi() {
   const params = new URLSearchParams({ owner_id: ownerId });
   if (tg?.initData) params.set("init_data", tg.initData);
+  if (webSessionToken) params.set("web_token", webSessionToken);
   const payload = await apiJson(`${apiBaseUrl}/api/devices?${params.toString()}`);
   devices = payload.devices || [];
   window.currentDeviceScope = payload.scope || "own";
@@ -1091,8 +1179,7 @@ function createPairingQr() {
 }
 
 function apiAuthPayload(extra = {}) {
-  if (!tg?.initData) return { ...extra };
-  return { actor_id: ownerId, init_data: tg.initData, ...extra };
+  return { actor_id: ownerId, init_data: tg?.initData || "", web_token: webSessionToken, ...extra };
 }
 
 function apiAuthParams(extra = {}) {
@@ -1101,7 +1188,22 @@ function apiAuthParams(extra = {}) {
     params.set("actor_id", ownerId);
     params.set("init_data", tg.initData);
   }
+  if (webSessionToken) params.set("web_token", webSessionToken);
   return params;
+}
+
+async function refreshWebSession() {
+  if (!tg?.initData) return;
+  try {
+    const params = new URLSearchParams({ init_data: tg.initData });
+    const session = await apiJson(`${apiBaseUrl}/api/web-session?${params.toString()}`);
+    if (session.web_token) {
+      webSessionToken = session.web_token;
+      localStorage.setItem(webSessionStorageKey, webSessionToken);
+    }
+  } catch (_) {
+    // Existing signed session remains usable in PWA/standalone mode.
+  }
 }
 
 function escapeHtml(value) {
@@ -1844,6 +1946,7 @@ function render() {
   onlineDevices.textContent = onlineCount;
   renderFleetPulse(onlineCount);
   renderDeviceToolbar();
+  renderInstallationProgress();
   userName.textContent = profileName;
   const scopeText = window.currentDeviceScope === "all" ? "все устройства проекта" : "твои устройства";
   setupText.textContent = devices.length
@@ -1883,6 +1986,14 @@ function render() {
 
     const controlNote = $(".control-note", card);
     controlNote.textContent = formatDeviceNote(device);
+    if (device.pairing_required) {
+      card.classList.add("pairing-required");
+      controlNote.textContent = "APK установлен и запущен. Разрешения уже отслеживаются, управление откроется после QR-подключения.";
+      card.querySelectorAll("button").forEach((button) => {
+        button.disabled = true;
+        button.title = "Сначала подтвердите владельца по QR";
+      });
+    }
 
     $(".open-remote-button", card).addEventListener("click", () => {
       selectDevice(device);
@@ -1948,6 +2059,7 @@ async function refreshDevices() {
     await loadDevicesFromApi();
     render();
     loadDeviceAlerts();
+    loadTimeline();
   } catch (error) {
     if (!devices.length) {
       deviceList.innerHTML = `<p class="empty-state">${error.message}</p>`;
@@ -1996,11 +2108,15 @@ connectCurrentDevice.addEventListener("click", () => {
 });
 
 installAgentButton.addEventListener("click", () => {
+  localStorage.setItem(installStartedKey, "1");
+  renderInstallationProgress();
   setupText.textContent = "Открываю страницу установки APK...";
   openExternal(agentInstallUrl);
 });
 
 openInstalledAgentButton.addEventListener("click", () => {
+  localStorage.setItem(agentOpenAttemptKey, "1");
+  renderInstallationProgress();
   setupText.textContent = "Готовлю автономное подключение Agent...";
   openAgentWithPairing();
 });
@@ -2194,6 +2310,7 @@ refreshButton.addEventListener("click", async () => {
 
 deployRefreshButton?.addEventListener("click", loadSetupStatus);
 deviceAlertRefreshButton?.addEventListener("click", loadDeviceAlerts);
+timelineRefreshButton?.addEventListener("click", loadTimeline);
 deviceAlertSaveButton?.addEventListener("click", saveDeviceAlertSettings);
 companionScreenButton?.addEventListener("click", startCompanionScreen);
 companionCameraButton?.addEventListener("click", startCompanionCamera);
@@ -2255,7 +2372,8 @@ renderRemoteLog();
 renderCurrentDevice();
 renderSetupStatus();
 loadSetupStatus();
-refreshDevices();
+loadTimeline();
+refreshWebSession().finally(refreshDevices);
 startRefreshLoop();
 updateLocalClock();
 setInterval(updateLocalClock, 1000);

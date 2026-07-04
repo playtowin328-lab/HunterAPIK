@@ -25,6 +25,22 @@ final class DeviceApiClient {
     private DeviceApiClient() {
     }
 
+    static String discover(Context context) throws Exception {
+        SharedPreferences prefs = AgentConfig.prefs(context);
+        String serverUrl = prefs.getString(AgentConfig.KEY_SERVER_URL, "").trim();
+        if (serverUrl.isEmpty()) {
+            throw new IllegalStateException("Server URL is empty");
+        }
+        JSONObject payload = new JSONObject()
+                .put("device_id", AgentConfig.getDeviceId(context))
+                .put("name", prefs.getString(AgentConfig.KEY_DEVICE_NAME, AgentConfig.defaultDeviceName()).trim())
+                .put("platform", AgentConfig.platformLabel())
+                .put("agent", "android-agent")
+                .put("telemetry", new JSONObject(AgentTelemetry.toJson(context)));
+        HttpURLConnection connection = openConnection(endpoint(serverUrl, "/api/devices/discover"), "POST");
+        return sendJson(connection, payload);
+    }
+
     static String heartbeat(Context context) throws Exception {
         SharedPreferences prefs = AgentConfig.prefs(context);
         String serverUrl = prefs.getString(AgentConfig.KEY_SERVER_URL, "").trim();

@@ -56,6 +56,17 @@
         </div>
       </section>
 
+      <section class="timeline-panel" id="timelinePanel" aria-label="Лента событий">
+        <div class="section-head">
+          <div><p class="eyebrow">Trust Timeline</p><h2>Что происходит сейчас</h2></div>
+          <div class="timeline-head-actions">
+            <span class="timeline-integrity" id="timelineIntegrity">Проверяю журнал</span>
+            <button class="ghost-button neutral" id="timelineRefreshButton" type="button">Обновить</button>
+          </div>
+        </div>
+        <div class="timeline-list" id="timelineList"><p class="hint">Загружаю последние события…</p></div>
+      </section>
+
       <nav class="quick-nav" aria-label="Основные разделы">
         <a class="active" href="#overview"><span>Обзор</span><small>Статус</small></a>
         <a href="#devices"><span>Устройства</span><small>Список</small></a>
@@ -73,10 +84,19 @@
         </div>
 
         <div class="setup-steps" aria-label="Шаги подключения">
-          <span><strong>1</strong> Установить Agent</span>
-          <span><strong>2</strong> Сканировать QR</span>
-          <span><strong>3</strong> Подтвердить доступ</span>
-          <span><strong>4</strong> Проверить связь</span>
+          <span id="installStepApk"><strong>1</strong> Установить Agent</span>
+          <span id="installStepOpen"><strong>2</strong> Открыть приложение</span>
+          <span id="installStepPair"><strong>3</strong> Подключить</span>
+          <span id="installStepOnline"><strong>4</strong> Выйти Online</span>
+        </div>
+
+        <div class="installation-progress" id="installationProgress" data-step="0">
+          <div class="installation-progress-track"><span id="installationProgressFill"></span></div>
+          <div class="installation-progress-copy">
+            <div><span id="installationProgressLabel">Подготовка</span><strong id="installationProgressTitle">Установите Hunter Agent</strong></div>
+            <b id="installationProgressPercent">0%</b>
+          </div>
+          <p id="installationProgressDetail">Скачайте APK на Android-устройство. После первого запуска Agent автоматически продолжит подключение.</p>
         </div>
 
         <div class="setup-actions">
@@ -466,6 +486,7 @@
           <button data-palette-label="подключить добавить qr agent" data-target="#setupPanel" type="button"><span>＋</span><div><strong>Подключить устройство</strong><small>APK, QR и первый запуск</small></div></button>
           <button data-palette-label="браузер companion камера геолокация" data-target="#browserCompanion" type="button"><span>◎</span><div><strong>Browser Companion</strong><small>Временный доступ без APK</small></div></button>
           <button data-palette-label="обновить синхронизировать" data-action="refresh" type="button"><span>↻</span><div><strong>Обновить данные</strong><small>Устройства и инфраструктура</small></div></button>
+          <button data-palette-label="события логи timeline журнал" data-target="#timelinePanel" type="button"><span>◉</span><div><strong>Лента событий</strong><small>Действия, ошибки и состояние</small></div></button>
           <button data-palette-label="тема темная светлая" data-action="theme" type="button"><span>◐</span><div><strong>Сменить тему</strong><small>Светлый или тёмный режим</small></div></button>
         </div>
         <p class="command-palette-empty hidden" id="commandPaletteEmpty">Ничего не найдено</p>

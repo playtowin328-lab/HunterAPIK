@@ -18,7 +18,29 @@ class DevicePersistenceTests(unittest.TestCase):
         with main.db_connect() as connection:
             connection.execute("DELETE FROM commands")
             connection.execute("DELETE FROM devices")
+            connection.execute("DELETE FROM pending_devices")
             connection.execute("DELETE FROM audit_events")
+
+    def test_unpaired_agent_is_visible_only_in_project_scope(self) -> None:
+        pending = main.upsert_pending_device({
+            "device_id": "phone-pending",
+            "name": "New phone",
+            "platform": "Android 16",
+            "telemetry": {"notifications_ready": True, "accessibility": False},
+        })
+
+        self.assertTrue(pending["pairing_required"])
+        self.assertEqual([], main.list_devices_for_user("100"))
+        project_devices = main.list_all_devices()
+        self.assertEqual(1, len(project_devices))
+        self.assertTrue(project_devices[0]["pairing_required"])
+        self.assertTrue(project_devices[0]["telemetry"]["notifications_ready"])
+
+    def test_web_session_token_restores_webapp_identity(self) -> None:
+        with patch.object(main, "BOT_TOKEN", "test-bot-token"):
+            token = main.create_web_session_token("100")
+            self.assertEqual("100", main.validate_web_session_token(token))
+            self.assertEqual("100", main.webapp_user_id_from_query({"web_token": [token]}))
 
     def test_heartbeat_update_preserves_existing_pairing_secret(self) -> None:
         main.upsert_device(
@@ -217,6 +239,19 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertEqual("backup-phone", main.list_devices_for_user("100")[0]["device_id"])
         with patch.object(main, "ADMIN_IDS", {"100"}):
             self.assertEqual("admin", main.get_user_role("200"))
+
+    def test_timeline_scope_matches_user_role(self) -> None:
+        main.save_audit_event("system", "device_alert", "Owner 300", {"owner_id": "300"})
+        main.save_audit_event("system", "device_alert", "Owner 301", {"owner_id": "301"})
+        with (
+            patch.object(main, "ADMIN_IDS", {"1"}),
+            patch.object(main, "BOOTSTRAP_ADMIN_IDS", {"200"}),
+            patch.object(main, "BOOTSTRAP_USER_IDS", {"300", "301"}),
+        ):
+            user_rows = main.timeline_events_for_user("300", 20)
+            admin_rows = main.timeline_events_for_user("200", 20)
+        self.assertEqual(["300"], [row["owner_id"] for row in user_rows])
+        self.assertEqual({"300", "301"}, {row["owner_id"] for row in admin_rows})
 
 
 if __name__ == "__main__":

@@ -115,11 +115,23 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        reportInstallationStage();
         if (AgentConfig.prefs(this).getBoolean(AgentConfig.KEY_ENABLED, false)) {
             AgentStarter.start(this);
         }
         renderStatus();
         continuePermissionWizardIfReady();
+    }
+
+    private void reportInstallationStage() {
+        if (!AgentConfig.prefs(this).getString(AgentConfig.KEY_DEVICE_SECRET, "").isEmpty()) return;
+        executor.execute(() -> {
+            try {
+                DeviceApiClient.discover(this);
+            } catch (Exception ignored) {
+                // Best effort until the server address is supplied by the install/deep link.
+            }
+        });
     }
 
     @Override
@@ -899,6 +911,7 @@ public class MainActivity extends Activity {
                 ownerIdInput.setText(ownerId.trim());
             }
             savePrefs();
+            reportInstallationStage();
             if (AgentConfig.prefs(this).getBoolean(AgentConfig.KEY_ENABLED, false)) {
                 startAgentService();
             }
