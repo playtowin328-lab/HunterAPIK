@@ -39,6 +39,9 @@ final class AgentConfig {
     static final String KEY_ACTIVE_APP_PACKAGE = "active_app_package";
     static final String KEY_ACTIVE_APP_LABEL = "active_app_label";
     static final String KEY_ACTIVE_APP_TIME = "active_app_time";
+    static final String KEY_BOOT_RECOVERY_COUNT = "boot_recovery_count";
+    static final String KEY_BOOT_RECOVERY_TIME = "boot_recovery_time";
+    static final String KEY_BOOT_RECOVERY_ACTION = "boot_recovery_action";
 
     private AgentConfig() {
     }

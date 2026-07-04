@@ -10,6 +10,12 @@ public class BootReceiver extends BroadcastReceiver {
             return;
         }
 
+        android.content.SharedPreferences prefs = AgentConfig.prefs(context);
+        prefs.edit()
+                .putInt(AgentConfig.KEY_BOOT_RECOVERY_COUNT, prefs.getInt(AgentConfig.KEY_BOOT_RECOVERY_COUNT, 0) + 1)
+                .putLong(AgentConfig.KEY_BOOT_RECOVERY_TIME, System.currentTimeMillis())
+                .putString(AgentConfig.KEY_BOOT_RECOVERY_ACTION, intent.getAction() == null ? "unknown" : intent.getAction())
+                .apply();
         AgentStarter.restartIfEnabled(context);
     }
 

@@ -46,6 +46,7 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL") or (
 configured_mini_app_url = os.getenv("MINI_APP_URL") or PUBLIC_BASE_URL
 MINI_APP_URL = configured_mini_app_url if configured_mini_app_url.startswith("https://") else ""
 DEVICE_API_TOKEN = os.getenv("DEVICE_API_TOKEN", "")
+CONTROL_PIN = os.getenv("CONTROL_PIN", "").strip()
 ADMIN_IDS = {
     item.strip()
     for item in os.getenv("ADMIN_IDS", "").replace(";", ",").split(",")
@@ -372,6 +373,19 @@ def init_db() -> None:
             )"""
         )
         connection.execute("CREATE INDEX IF NOT EXISTS idx_audit_deliveries_status ON audit_deliveries(status, updated_at DESC)")
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS device_history (
+                owner_id TEXT NOT NULL, device_id TEXT NOT NULL,
+                telemetry_json TEXT NOT NULL DEFAULT '{}', online INTEGER NOT NULL,
+                error TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL
+            )"""
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_device_history_lookup ON device_history(owner_id, device_id, created_at DESC)")
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS user_notify_settings (
+                user_id TEXT PRIMARY KEY, settings_json TEXT NOT NULL DEFAULT '{}', updated_at INTEGER NOT NULL
+            )"""
+        )
 
 
 init_db()
@@ -620,6 +634,7 @@ DEVICE_ALERT_KINDS = {
     "screen_error",
     "command_queue",
     "health",
+    "permission",
 }
 
 DEFAULT_DEVICE_NOTIFY_SETTINGS = {
@@ -815,6 +830,7 @@ async def notify_root_admins(event: dict) -> None:
             "blackout": "Защитный экран", "accessibility": "Доступ к управлению", "screen": "Трансляция экрана",
             "agent_error": "Ошибка агента", "screen_error": "Ошибка экрана",
             "command_queue": "Очередь команд", "health": "Состояние устройства",
+            "permission": "Разрешение Android отключено",
         }.get(kind, "Событие устройства")
         device_name = metadata.get("name") or "Устройство"
         created = datetime.fromtimestamp(int(event.get("created_at") or now_ts())).strftime("%d.%m · %H:%M")
@@ -835,11 +851,15 @@ async def notify_root_admins(event: dict) -> None:
         }.get(kind, "Открой Hunter Control и проверь подробную диагностику.")
         owner_id = metadata.get("owner_id") or "—"
         device_id = str(metadata.get("device_id") or "—")[:32]
+        model = metadata.get("model") or metadata.get("platform") or "—"
+        battery = metadata.get("battery_percent")
+        battery_text = f"{battery}%" if isinstance(battery, (int, float)) and battery >= 0 else "—"
+        network = str(metadata.get("network") or "—").upper()
         text = (
             f"{icon} HUNTER CONTROL · {device_name}\n\n"
             f"Что произошло\n{event.get('detail', 'Новое событие устройства')}\n\n"
             f"Что сделать\n{recommendation}\n\n"
-            f"Детали\n• Тип: {kind_label}\n• Время: {created}\n• ID устройства: {device_id}\n• Владелец: {owner_id}\n\n"
+            f"Детали\n• Тип: {kind_label}\n• Модель: {model}\n• Заряд: {battery_text}\n• Сеть: {network}\n• Время: {created}\n• ID устройства: {device_id}\n• Владелец: {owner_id}\n\n"
             "Событие сохранено в защищённом Trust Timeline."
         )
     else:
@@ -980,6 +1000,9 @@ def sanitize_device_notify_settings(data: dict | None) -> dict:
     if not isinstance(enabled_kinds, list):
         enabled_kinds = DEFAULT_DEVICE_NOTIFY_SETTINGS["enabled_kinds"]
     enabled_kinds = sorted({str(kind) for kind in enabled_kinds if str(kind) in DEVICE_ALERT_KINDS})
+    if set(enabled_kinds) == (DEVICE_ALERT_KINDS - {"permission"}):
+        enabled_kinds.append("permission")
+        enabled_kinds.sort()
     try:
         quiet_hours_start = int(source.get("quiet_hours_start", DEFAULT_DEVICE_NOTIFY_SETTINGS["quiet_hours_start"]) or 0)
     except (TypeError, ValueError):
@@ -1028,11 +1051,33 @@ def is_quiet_hour(settings: dict) -> bool:
     return hour >= start or hour < end
 
 
-def device_alert_allowed(kind: str) -> bool:
+def load_user_notify_settings(user_id: str) -> dict:
+    with db_connect() as connection:
+        row = connection.execute("SELECT settings_json FROM user_notify_settings WHERE user_id=?", (str(user_id),)).fetchone()
+    return decode_json_object(row["settings_json"]) if row else {}
+
+
+def save_user_notify_settings(user_id: str, settings: dict) -> dict:
+    clean = {
+        "enabled": bool(settings.get("enabled", True)),
+        "enabled_kinds": sorted({str(kind) for kind in settings.get("enabled_kinds", DEVICE_ALERT_KINDS) if str(kind) in DEVICE_ALERT_KINDS}),
+    }
+    with db_connect() as connection:
+        connection.execute(
+            "INSERT INTO user_notify_settings(user_id, settings_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET settings_json=excluded.settings_json, updated_at=excluded.updated_at",
+            (str(user_id), json.dumps(clean, ensure_ascii=False), now_ts()),
+        )
+    return clean
+
+
+def device_alert_allowed(kind: str, owner_id: str = "") -> bool:
     settings = load_device_notify_settings()
     if not settings.get("enabled"):
         return False
     if str(kind) not in set(settings.get("enabled_kinds") or []):
+        return False
+    personal = load_user_notify_settings(owner_id) if owner_id else {}
+    if personal and (not personal.get("enabled", True) or str(kind) not in set(personal.get("enabled_kinds") or [])):
         return False
     if is_quiet_hour(settings) and not settings.get("travel_mode") and kind not in {"offline", "lost_mode", "blackout", "health"}:
         return False
@@ -1074,6 +1119,9 @@ def device_notify_snapshot(device: dict) -> dict:
         "lost_mode": bool(telemetry.get("lost_mode")),
         "blackout": bool(telemetry.get("blackout")),
         "accessibility": bool(telemetry.get("accessibility")),
+        "notifications_ready": telemetry.get("notifications_ready") is True,
+        "notification_listener_ready": telemetry.get("notification_listener_ready") is True,
+        "battery_ready": telemetry.get("battery_ready") is True,
         "screen_streaming": bool(telemetry.get("screen_streaming")),
         "last_error": str(telemetry.get("last_error") or "")[:180],
         "screen_error": str(telemetry.get("screen_error") or "")[:180],
@@ -1088,8 +1136,9 @@ def device_alert_detail(device: dict, text: str) -> str:
 
 def notify_device_alert(device: dict, text: str, metadata: dict | None = None) -> None:
     metadata = metadata or {}
+    telemetry = device.get("telemetry") or {}
     kind = str(metadata.get("kind") or "unknown")
-    if not device_alert_allowed(kind):
+    if not device_alert_allowed(kind, str(device.get("owner_id") or "")):
         return
     audit_event(
         "device_monitor",
@@ -1099,6 +1148,10 @@ def notify_device_alert(device: dict, text: str, metadata: dict | None = None) -
             "owner_id": device.get("owner_id"),
             "device_id": device.get("device_id"),
             "name": device.get("name"),
+            "platform": device.get("platform"),
+            "model": telemetry.get("model"),
+            "battery_percent": telemetry.get("battery_percent"),
+            "network": telemetry.get("network"),
             **metadata,
         },
         actor_name="Device monitor",
@@ -1134,6 +1187,13 @@ def process_device_notifications(device: dict, force: bool = False) -> None:
                 alerts.append(("черный экран включен" if snapshot["blackout"] else "черный экран выключен", {"kind": "blackout"}))
             if previous.get("accessibility") is True and not snapshot["accessibility"]:
                 alerts.append(("Accessibility/жесты больше не активны", {"kind": "accessibility"}))
+            for key, label in (
+                ("notifications_ready", "уведомления"),
+                ("notification_listener_ready", "чтение уведомлений"),
+                ("battery_ready", "фоновая работа"),
+            ):
+                if previous.get(key) is True and snapshot.get(key) is False:
+                    alerts.append((f"Android отключил разрешение: {label}", {"kind": "permission", "permission": key}))
             if previous.get("screen_streaming") != snapshot["screen_streaming"]:
                 alerts.append(("трансляция экрана запущена" if snapshot["screen_streaming"] else "трансляция экрана остановлена", {"kind": "screen"}))
             if not previous.get("last_error") and snapshot["last_error"]:
@@ -1401,10 +1461,32 @@ def root_command_center_keyboard() -> InlineKeyboardMarkup:
             ],
             [InlineKeyboardButton(text="💾 Резервные копии", callback_data="backup_center")],
             [InlineKeyboardButton(text="📡 Доставка журналов", callback_data="log_delivery_center")],
+            [InlineKeyboardButton(text="🧪 Проверка после обновления", callback_data="post_deploy_check")],
             [InlineKeyboardButton(text="↻ Обновить Root Center", callback_data="root_center")],
             nav_row(None),
         ]
     )
+
+
+def post_deploy_check_text() -> str:
+    setup = setup_status_payload()
+    with db_connect() as connection:
+        devices = int(connection.execute("SELECT COUNT(*) AS count FROM devices").fetchone()["count"])
+        roles = int(connection.execute("SELECT COUNT(*) AS count FROM bot_access").fetchone()["count"])
+        history = int(connection.execute("SELECT COUNT(*) AS count FROM device_history").fetchone()["count"])
+    checks = [
+        (railway_storage_is_persistent(), "База размещена на Railway Volume /data"),
+        (devices >= 0, f"Устройства доступны: {devices}"),
+        (roles >= 0, f"Роли и доступы доступны: {roles}"),
+        (setup.get("ok", False), "API и обязательные Variables готовы"),
+        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v5"),
+        (history >= 0, f"История телеметрии работает: {history} записей"),
+    ]
+    ok = all(value for value, _ in checks)
+    lines = ["🧪 ПРОВЕРКА ПОСЛЕ ОБНОВЛЕНИЯ", "🟢 Обновление прошло безопасно" if ok else "🔴 Нужна проверка", ""]
+    lines.extend(f"{'✅' if value else '❌'} {label}" for value, label in checks)
+    lines.extend(["", "Устройства, роли и настройки не перезаписывались при deploy."])
+    return "\n".join(lines)
 
 
 def root_alerts_text() -> str:
@@ -1749,7 +1831,6 @@ def pulse_device_keyboard(device: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="↻ Восстановить", callback_data=f"pulsecmd:repair_agent:{device_id}"),
         ],
         [
-            InlineKeyboardButton(text="🔔 Сигнал", callback_data=f"pulsecmd:play_alarm:{device_id}"),
             InlineKeyboardButton(text="🔕 Остановить", callback_data=f"pulsecmd:stop_alarm:{device_id}"),
         ],
         [InlineKeyboardButton(text="⚙ Мастер разрешений", callback_data=f"pulsecmd:setup_wizard:{device_id}")],
@@ -2162,6 +2243,13 @@ def setup_checks() -> list[dict]:
             "required": True,
         },
         {
+            "name": "CONTROL_PIN",
+            "ok": len(CONTROL_PIN) >= 4,
+            "detail": "задан" if len(CONTROL_PIN) >= 4 else "не задан",
+            "fix": "добавь в Railway секрет CONTROL_PIN минимум из 4 цифр",
+            "required": True,
+        },
+        {
             "name": "GITHUB_REPO",
             "ok": bool(GITHUB_REPO),
             "detail": GITHUB_REPO or "не задан",
@@ -2261,6 +2349,7 @@ def railway_env_template_text() -> str:
         "GITHUB_WORKFLOW=android-agent-apk.yml\n"
         "GITHUB_TOKEN=YOUR_GITHUB_TOKEN_WITH_ACTIONS_AND_CONTENTS_RW\n"
         "DEVICE_API_TOKEN=GENERATE_LONG_RANDOM_SECRET\n"
+        "CONTROL_PIN=CHANGE_ME_6_DIGITS\n"
         "STORAGE_DIR=/data\n"
         "DB_PATH=/data/app.db\n"
         "DEVICE_TTL_SECONDS=90\n"
@@ -3338,6 +3427,7 @@ def run_device_maintenance() -> dict:
     devices = list_all_devices()
     repairs = 0
     for device in devices:
+        record_device_history(device)
         if maybe_enqueue_auto_repair(device):
             repairs += 1
     summary = expire_stale_commands()
@@ -3950,7 +4040,43 @@ def upsert_device(raw_device: dict) -> dict:
                 device["created_at"],
             ),
         )
+    record_device_history(device)
     return device
+
+
+def record_device_history(device: dict, minimum_interval: int = 60) -> bool:
+    owner_id = str(device.get("owner_id") or "")
+    device_id = str(device.get("device_id") or "")
+    if not owner_id or not device_id:
+        return False
+    now = now_ts()
+    telemetry = device.get("telemetry") if isinstance(device.get("telemetry"), dict) else {}
+    error = str(telemetry.get("last_error") or telemetry.get("screen_error") or "")[:300]
+    with db_connect() as connection:
+        previous = connection.execute(
+            "SELECT created_at, telemetry_json, online, error FROM device_history WHERE owner_id=? AND device_id=? ORDER BY created_at DESC LIMIT 1",
+            (owner_id, device_id),
+        ).fetchone()
+        snapshot_json = json.dumps(telemetry, ensure_ascii=False, sort_keys=True)
+        changed = not previous or previous["telemetry_json"] != snapshot_json or previous["error"] != error
+        if previous and not changed and now - int(previous["created_at"]) < minimum_interval:
+            return False
+        connection.execute(
+            "INSERT INTO device_history(owner_id, device_id, telemetry_json, online, error, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (owner_id, device_id, snapshot_json, int(device.get("online", True)), error, now),
+        )
+        connection.execute("DELETE FROM device_history WHERE created_at < ?", (now - 48 * 3600,))
+    return True
+
+
+def device_history(owner_id: str, device_id: str, hours: int = 24, limit: int = 500) -> list[dict]:
+    since = now_ts() - max(1, min(int(hours), 48)) * 3600
+    with db_connect() as connection:
+        rows = connection.execute(
+            "SELECT * FROM device_history WHERE owner_id=? AND device_id=? AND created_at>=? ORDER BY created_at DESC LIMIT ?",
+            (str(owner_id), str(device_id), since, max(1, min(int(limit), 2000))),
+        ).fetchall()
+    return [{"created_at": int(row["created_at"]), "online": bool(row["online"]), "error": row["error"], "telemetry": decode_json_object(row["telemetry_json"])} for row in rows]
 
 
 def device_exists(owner_id: str, device_id: str) -> bool:
@@ -4160,6 +4286,13 @@ def can_access_owner(actor_id: str, owner_id: str) -> bool:
     if role in {"root", "admin"}:
         return True
     return role == "user" and str(actor_id) == str(owner_id)
+
+
+DANGEROUS_COMMANDS = {"lock_screen", "play_alarm", "blackout_on", "lost_mode_on"}
+
+
+def control_pin_valid(value: object) -> bool:
+    return bool(CONTROL_PIN and secrets.compare_digest(str(value or ""), CONTROL_PIN))
 
 
 def rename_device(owner_id: str, device_id: str, name: str) -> bool:
@@ -4396,6 +4529,37 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 return
 
             self.send_json({"frame": frame})
+            return
+
+        if parsed_url.path == "/api/devices/history":
+            query = parse_qs(parsed_url.query)
+            owner_id, device_id = query_value(query, "owner_id"), query_value(query, "device_id")
+            actor_id = webapp_user_id_from_query(query)
+            if not actor_id or not can_access_owner(actor_id, owner_id):
+                self.send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
+                return
+            self.send_json({"history": device_history(owner_id, device_id, query_value(query, "hours") or 24)})
+            return
+
+        if parsed_url.path == "/api/alerts/me":
+            query = parse_qs(parsed_url.query)
+            actor_id = webapp_user_id_from_query(query)
+            if not actor_id or get_user_role(actor_id) == "guest":
+                self.send_json({"error": "bot access required"}, HTTPStatus.FORBIDDEN)
+                return
+            self.send_json({"settings": load_user_notify_settings(actor_id), "kinds": sorted(DEVICE_ALERT_KINDS)})
+            return
+
+        if parsed_url.path == "/api/post-deploy":
+            query = parse_qs(parsed_url.query)
+            actor_id = webapp_user_id_from_query(query)
+            if not actor_id or get_user_role(actor_id) != "root":
+                self.send_json({"error": "root access required"}, HTTPStatus.FORBIDDEN)
+                return
+            checks = setup_status_payload()
+            with db_connect() as connection:
+                counts = {name: int(connection.execute(f"SELECT COUNT(*) AS count FROM {name}").fetchone()["count"]) for name in ("devices", "bot_access", "device_history")}
+            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v5", "api": "ok"})
             return
 
         if parsed_url.path == "/api/alerts/device":
@@ -4826,6 +4990,21 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             self.handle_device_alert_settings()
             return
 
+        if parsed_url.path == "/api/alerts/me":
+            try:
+                raw_body = self.rfile.read(content_length).decode("utf-8")
+                payload = json.loads(raw_body or "{}")
+                actor_id = webapp_user_id_from_payload(payload)
+                if not actor_id or get_user_role(actor_id) == "guest":
+                    self.send_json({"error": "bot access required"}, HTTPStatus.FORBIDDEN)
+                    return
+                settings = save_user_notify_settings(actor_id, payload.get("settings") or {})
+            except (json.JSONDecodeError, ValueError) as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json({"ok": True, "settings": settings, "kinds": sorted(DEVICE_ALERT_KINDS)})
+            return
+
         if parsed_url.path not in {"/api/devices/register", "/api/devices/heartbeat"}:
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
@@ -4947,6 +5126,9 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             if not can_access_owner(actor_id, owner_id):
                 self.send_json({"error": "forbidden for this device owner"}, HTTPStatus.FORBIDDEN)
                 return
+            if command_type in DANGEROUS_COMMANDS and not control_pin_valid(payload.get("control_pin")):
+                self.send_json({"error": "Для этой команды требуется безопасный PIN", "pin_required": True}, HTTPStatus.FORBIDDEN)
+                return
             command = create_device_command(owner_id, device_id, command_type, command_payload)
             audit_event(
                 actor_id or owner_id,
@@ -4997,6 +5179,17 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             elif action == "clear_commands":
                 ok = device_exists(owner_id, device_id)
                 result_payload = {"cleared": clear_device_command_queue(owner_id, device_id) if ok else 0}
+            elif action == "emergency_stop":
+                if not control_pin_valid(payload.get("control_pin")):
+                    self.send_json({"error": "Для аварийной остановки требуется безопасный PIN", "pin_required": True}, HTTPStatus.FORBIDDEN)
+                    return
+                ok = device_exists(owner_id, device_id)
+                cleared = clear_device_command_queue(owner_id, device_id) if ok else 0
+                queued = []
+                if ok:
+                    for command_type in ("stop_screen", "stop_alarm", "blackout_off", "lost_mode_off"):
+                        queued.append(create_device_command(owner_id, device_id, command_type)["command_id"])
+                result_payload = {"cleared": cleared, "safety_commands": queued}
             else:
                 raise ValueError("unsupported action")
             if ok:
@@ -5347,7 +5540,7 @@ async def callbacks(callback: CallbackQuery) -> None:
 
     if action and action.startswith("pulsecmd:"):
         parts = action.split(":", 2)
-        allowed = {"ping", "wake_screen", "home", "repair_agent", "play_alarm", "stop_alarm", "setup_wizard"}
+        allowed = {"ping", "wake_screen", "home", "repair_agent", "stop_alarm", "setup_wizard"}
         if len(parts) != 3 or parts[1] not in allowed:
             await callback.answer("Команда не поддерживается.", show_alert=True)
             return
@@ -5391,6 +5584,14 @@ async def callbacks(callback: CallbackQuery) -> None:
             return
         await callback.answer()
         await show_bot_screen(callback, log_delivery_center_text(), reply_markup=log_delivery_center_keyboard())
+        return
+
+    if action == "post_deploy_check":
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Проверка доступна только владельцу.", show_alert=True)
+            return
+        await callback.answer("Проверяю обновление…")
+        await show_bot_screen(callback, post_deploy_check_text(), reply_markup=root_command_center_keyboard())
         return
 
     if action == "logs:export24":

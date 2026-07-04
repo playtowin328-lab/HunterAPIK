@@ -44,6 +44,9 @@ final class AgentTelemetry {
                     .put("blackout", prefs.getBoolean(AgentConfig.KEY_BLACKOUT_ENABLED, false))
                     .put("lost_mode", prefs.getBoolean(AgentConfig.KEY_LOST_MODE_ENABLED, false))
                     .put("agent_enabled", prefs.getBoolean(AgentConfig.KEY_ENABLED, false))
+                    .put("boot_recovery_count", prefs.getInt(AgentConfig.KEY_BOOT_RECOVERY_COUNT, 0))
+                    .put("boot_recovery_age", recoveryAge(prefs))
+                    .put("boot_recovery_action", prefs.getString(AgentConfig.KEY_BOOT_RECOVERY_ACTION, ""))
                     .put("last_success_age", lastSuccess > 0 ? Math.max(0, (System.currentTimeMillis() - lastSuccess) / 1000) : -1)
                     .put("setup_wizard", prefs.getBoolean(AgentConfig.KEY_SETUP_WIZARD_ACTIVE, false))
                     .put("setup_waiting_for", prefs.getString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, ""))
@@ -91,6 +94,11 @@ final class AgentTelemetry {
 
     private static long activeAppAge(android.content.SharedPreferences prefs) {
         long timestamp = prefs.getLong(AgentConfig.KEY_ACTIVE_APP_TIME, 0);
+        return timestamp > 0 ? Math.max(0, (System.currentTimeMillis() - timestamp) / 1000) : -1;
+    }
+
+    private static long recoveryAge(android.content.SharedPreferences prefs) {
+        long timestamp = prefs.getLong(AgentConfig.KEY_BOOT_RECOVERY_TIME, 0);
         return timestamp > 0 ? Math.max(0, (System.currentTimeMillis() - timestamp) / 1000) : -1;
     }
 

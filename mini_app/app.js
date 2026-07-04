@@ -77,7 +77,11 @@ const remoteConnectionStatus = $("#remoteConnectionStatus");
 const remoteBatteryStatus = $("#remoteBatteryStatus");
 const remoteSecurityStatus = $("#remoteSecurityStatus");
 const remoteCommandStatus = $("#remoteCommandStatus");
+const remoteNowTitle = $("#remoteNowTitle");
+const remoteNowDetail = $("#remoteNowDetail");
+const deviceHistoryStrip = $("#deviceHistoryStrip");
 const quickActionButtons = $$(".quick-action-button");
+const emergencyStopButton = $(".emergency-stop-button");
 const remoteHealthCard = $("#remoteHealthCard");
 const remoteHealthStatus = $("#remoteHealthStatus");
 const remoteHealthTitle = $("#remoteHealthTitle");
@@ -102,6 +106,10 @@ const deviceAlertsQuietStart = $("#deviceAlertsQuietStart");
 const deviceAlertsQuietEnd = $("#deviceAlertsQuietEnd");
 const deviceAlertKinds = $("#deviceAlertKinds");
 const deviceAlertLog = $("#deviceAlertLog");
+const personalAlertsPanel = $("#personalAlertsPanel");
+const personalAlertsEnabled = $("#personalAlertsEnabled");
+const personalAlertKinds = $("#personalAlertKinds");
+const personalAlertsSave = $("#personalAlertsSave");
 const companionState = $("#companionState");
 const companionCapabilities = $("#companionCapabilities");
 const companionScreenButton = $("#companionScreenButton");
@@ -1303,6 +1311,34 @@ function renderDeviceAlerts() {
     : '<li class="muted-log"><p>Пока нет уведомлений по устройствам.</p></li>';
 }
 
+async function loadPersonalAlerts() {
+  if ((!tg?.initData && !webSessionToken) || !personalAlertsPanel) return;
+  try {
+    const payload = await apiJson(`${apiBaseUrl}/api/alerts/me?${apiAuthParams().toString()}`);
+    const settings = payload.settings || {};
+    const enabled = new Set(settings.enabled_kinds || payload.kinds || []);
+    personalAlertsEnabled.checked = settings.enabled !== false;
+    personalAlertKinds.innerHTML = (payload.kinds || []).map((kind) => `<label class="alert-kind"><input type="checkbox" value="${escapeHtml(kind)}" ${enabled.has(kind) ? "checked" : ""}><span>${escapeHtml(deviceAlertKindLabels[kind] || kind)}</span></label>`).join("");
+  } catch (_) {
+    personalAlertsPanel.classList.add("hidden");
+  }
+}
+
+async function savePersonalAlerts() {
+  const enabledKinds = $$("input:checked", personalAlertKinds).map((input) => input.value);
+  personalAlertsSave.disabled = true;
+  try {
+    await apiJson(`${apiBaseUrl}/api/alerts/me`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(apiAuthPayload({ settings: { enabled: personalAlertsEnabled.checked, enabled_kinds: enabledKinds } })),
+    });
+    personalAlertsSave.textContent = "Сохранено ✓";
+    setTimeout(() => { personalAlertsSave.textContent = "Сохранить"; }, 1500);
+  } finally {
+    personalAlertsSave.disabled = false;
+  }
+}
+
 function deviceOwnerId(device) {
   return String(device?.owner_id || ownerId);
 }
@@ -1316,10 +1352,13 @@ function registerDevice(device) {
 }
 
 function sendCommand(device, type, payload = {}) {
+  const dangerous = new Set(["lock_screen", "play_alarm", "blackout_on", "lost_mode_on"]);
+  const controlPin = dangerous.has(type) ? prompt("Введите безопасный PIN для подтверждения команды") : "";
+  if (dangerous.has(type) && !controlPin) return Promise.reject(new Error("Команда отменена: PIN не введён."));
   return apiJson(`${apiBaseUrl}/api/devices/command`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(apiAuthPayload({ owner_id: deviceOwnerId(device), device_id: device.device_id, type, payload })),
+    body: JSON.stringify(apiAuthPayload({ owner_id: deviceOwnerId(device), device_id: device.device_id, type, payload, control_pin: controlPin })),
   });
 }
 
@@ -1812,6 +1851,13 @@ function renderRemotePanel(restartScreen = false) {
   remoteSecurityStatus.textContent = remoteStatus.security;
   remoteCommandStatus.textContent = remoteStatus.commands;
   remoteDeviceMeta.textContent = `${device.platform || "unknown"} · ${device.agent || "agent"} · ${device.health?.label || (device.online ? "Online" : "Offline")}`;
+  const telemetry = device.telemetry || {};
+  const activeCommand = device.diagnostics?.last_command;
+  remoteNowTitle.textContent = telemetry.active_app_label || telemetry.active_app_package || (device.online ? "Агент работает в фоне" : "Устройство не на связи");
+  remoteNowDetail.textContent = activeCommand
+    ? `Команда: ${activeCommand.type} · ${activeCommand.status}. Агент: ${telemetry.agent_enabled === false ? "выключен" : "активен"}.`
+    : `Активных команд нет. Агент: ${telemetry.agent_enabled === false ? "выключен" : "активен"}.`;
+  loadDeviceHistory(device);
   updateQualityButtons(device, remotePanel, ".remote-quality-button");
   setRemoteTab(activeRemoteTab);
   renderSetupAutomation(device);
@@ -1820,6 +1866,23 @@ function renderRemotePanel(restartScreen = false) {
 
   if (restartScreen && device.online) {
     startScreenPolling(device, remoteScreenPreview, remoteScreenImage, remoteControlNote);
+  }
+}
+
+async function loadDeviceHistory(device) {
+  if (!deviceHistoryStrip) return;
+  try {
+    const params = apiAuthParams({ owner_id: deviceOwnerId(device), device_id: device.device_id, hours: "24" });
+    const payload = await apiJson(`${apiBaseUrl}/api/devices/history?${params.toString()}`);
+    const history = (payload.history || []).slice(0, 10);
+    deviceHistoryStrip.innerHTML = history.length ? history.map((item) => {
+      const telemetry = item.telemetry || {};
+      const battery = telemetry.battery_percent;
+      const title = item.error || `${item.online ? "Online" : "Offline"}${Number.isFinite(Number(battery)) ? ` · ${battery}%` : ""}`;
+      return `<span data-status="${item.error ? "error" : (item.online ? "online" : "offline")}" title="${escapeHtml(title)}"></span>`;
+    }).join("") : '<small>История начнёт заполняться после новых heartbeat.</small>';
+  } catch (_) {
+    deviceHistoryStrip.innerHTML = '<small>История временно недоступна.</small>';
   }
 }
 
@@ -2306,6 +2369,23 @@ remotePanelTextInput.addEventListener("keydown", (event) => {
 
 bindScreenGestures(remoteScreenImage, selectedDevice, remoteControlNote);
 
+emergencyStopButton?.addEventListener("click", async () => {
+  const device = selectedDevice();
+  if (!device) return;
+  const controlPin = prompt("Аварийная остановка: введите безопасный PIN");
+  if (!controlPin) return;
+  try {
+    setRemoteBusy(true);
+    const result = await manageDevice(device, "emergency_stop", { control_pin: controlPin });
+    remoteControlNote.textContent = `Аварийная остановка выполнена. Очередь очищена: ${Number(result.cleared || 0)}.`;
+    addRemoteLog("Аварийная остановка", "Команды и трансляции остановлены.", "done", { device });
+  } catch (error) {
+    remoteControlNote.textContent = error.message;
+  } finally {
+    setRemoteBusy(false);
+  }
+});
+
 refreshButton.addEventListener("click", async () => {
   setupText.textContent = "Обновляю список устройств...";
   await Promise.all([refreshDevices(), loadSetupStatus()]);
@@ -2315,6 +2395,7 @@ deployRefreshButton?.addEventListener("click", loadSetupStatus);
 deviceAlertRefreshButton?.addEventListener("click", loadDeviceAlerts);
 timelineRefreshButton?.addEventListener("click", loadTimeline);
 deviceAlertSaveButton?.addEventListener("click", saveDeviceAlertSettings);
+personalAlertsSave?.addEventListener("click", savePersonalAlerts);
 companionScreenButton?.addEventListener("click", startCompanionScreen);
 companionCameraButton?.addEventListener("click", startCompanionCamera);
 companionLocationButton?.addEventListener("click", requestCompanionLocation);
@@ -2376,7 +2457,10 @@ renderCurrentDevice();
 renderSetupStatus();
 loadSetupStatus();
 loadTimeline();
-refreshWebSession().finally(refreshDevices);
+refreshWebSession().finally(() => {
+  refreshDevices();
+  loadPersonalAlerts();
+});
 startRefreshLoop();
 updateLocalClock();
 setInterval(updateLocalClock, 1000);

@@ -217,6 +217,14 @@
         </div>
       </section>
 
+      <section class="alert-panel" id="personalAlertsPanel" aria-label="Мои уведомления">
+        <div class="section-head"><div><p class="eyebrow">Личный профиль</p><h2>Мои уведомления</h2></div><button class="secondary-button" id="personalAlertsSave" type="button">Сохранить</button></div>
+        <div class="alert-settings-grid">
+          <label class="toggle-row"><input id="personalAlertsEnabled" type="checkbox" checked><span>Получать уведомления</span></label>
+        </div>
+        <div class="alert-kind-grid" id="personalAlertKinds"></div>
+      </section>
+
       <section class="remote-panel hidden" id="remotePanel" aria-label="Пульт выбранного устройства">
         <div class="remote-head">
           <div>
@@ -247,6 +255,11 @@
             <strong id="remoteCommandStatus">-</strong>
           </div>
         </div>
+        <section class="now-card" aria-label="Что происходит сейчас">
+          <div><span>Что происходит сейчас</span><strong id="remoteNowTitle">Ожидание данных</strong></div>
+          <p id="remoteNowDetail">Активная команда, приложение и состояние агента появятся здесь.</p>
+          <div class="history-strip" id="deviceHistoryStrip"></div>
+        </section>
 
         <div class="quick-action-grid" aria-label="Быстрые действия пульта">
           <button class="quick-action-button" data-action="screen" type="button">
@@ -352,6 +365,7 @@
             <small>Текст показывается крупно на чёрном фоне. Не указывай пароли или секретные данные.</small>
           </div>
           <div class="remote-grid protection-controls">
+            <button class="secondary-button danger-soft emergency-stop-button" type="button">⛔ Аварийно остановить всё</button>
             <button class="secondary-button danger-soft remote-command-button" data-command="lost_mode_on" type="button">Режим кражи</button>
             <button class="secondary-button remote-command-button" data-command="lost_mode_off" type="button">Снять режим</button>
             <button class="ghost-button neutral remote-command-button" data-command="blackout_on" type="button">Черный экран</button>

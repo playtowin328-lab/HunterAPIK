@@ -23,6 +23,8 @@ class DevicePersistenceTests(unittest.TestCase):
             connection.execute("DELETE FROM audit_events")
             connection.execute("DELETE FROM bot_access")
             connection.execute("DELETE FROM audit_deliveries")
+            connection.execute("DELETE FROM device_history")
+            connection.execute("DELETE FROM user_notify_settings")
 
     def test_unpaired_agent_is_visible_only_in_project_scope(self) -> None:
         pending = main.upsert_pending_device({
@@ -117,6 +119,22 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertEqual(1, stats["failed"])
         self.assertFalse(exported["root_actions_included"])
         self.assertEqual("Телефон offline", exported["events"][0]["detail"])
+
+    def test_device_history_and_personal_notifications(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "history-phone", "telemetry": {"battery_percent": 64, "network": "wifi"}})
+        history = main.device_history("100", "history-phone")
+        settings = main.save_user_notify_settings("100", {"enabled": True, "enabled_kinds": ["offline", "permission"]})
+        self.assertEqual(64, history[0]["telemetry"]["battery_percent"])
+        self.assertEqual(["offline", "permission"], settings["enabled_kinds"])
+        self.assertTrue(main.device_alert_allowed("permission", "100"))
+        self.assertFalse(main.device_alert_allowed("battery", "100"))
+
+    def test_dangerous_commands_require_configured_pin(self) -> None:
+        with patch.object(main, "CONTROL_PIN", "482915"):
+            self.assertTrue(main.control_pin_valid("482915"))
+            self.assertFalse(main.control_pin_valid("000000"))
+        with patch.object(main, "CONTROL_PIN", ""):
+            self.assertFalse(main.control_pin_valid("482915"))
 
     def test_bad_telemetry_does_not_hide_all_devices(self) -> None:
         main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Phone"})

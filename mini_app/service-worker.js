@@ -1,4 +1,4 @@
-const CACHE = "hunter-control-v4";
+const CACHE = "hunter-control-v5";
 const STATIC = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest", "./assets/hunter-pwa-icon.svg", "./assets/hunter-alert-cover.png"];
 self.addEventListener("install", (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(STATIC))));
 self.addEventListener("activate", (event) => event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))));
