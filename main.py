@@ -611,6 +611,7 @@ DEVICE_ALERT_KINDS = {
 
 DEFAULT_DEVICE_NOTIFY_SETTINGS = {
     "enabled": True,
+    "travel_mode": False,
     "quiet_hours_enabled": False,
     "quiet_hours_start": 23,
     "quiet_hours_end": 8,
@@ -940,6 +941,7 @@ def sanitize_device_notify_settings(data: dict | None) -> dict:
         quiet_hours_end = DEFAULT_DEVICE_NOTIFY_SETTINGS["quiet_hours_end"]
     return {
         "enabled": bool(source.get("enabled", DEFAULT_DEVICE_NOTIFY_SETTINGS["enabled"])),
+        "travel_mode": bool(source.get("travel_mode", DEFAULT_DEVICE_NOTIFY_SETTINGS["travel_mode"])),
         "quiet_hours_enabled": bool(source.get("quiet_hours_enabled", DEFAULT_DEVICE_NOTIFY_SETTINGS["quiet_hours_enabled"])),
         "quiet_hours_start": max(0, min(23, quiet_hours_start)),
         "quiet_hours_end": max(0, min(23, quiet_hours_end)),
@@ -983,7 +985,7 @@ def device_alert_allowed(kind: str) -> bool:
         return False
     if str(kind) not in set(settings.get("enabled_kinds") or []):
         return False
-    if is_quiet_hour(settings) and kind not in {"offline", "lost_mode", "blackout", "health"}:
+    if is_quiet_hour(settings) and not settings.get("travel_mode") and kind not in {"offline", "lost_mode", "blackout", "health"}:
         return False
     return True
 
@@ -1397,6 +1399,10 @@ def root_alerts_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(
                 text="🌙 Выключить тихие часы" if settings.get("quiet_hours_enabled") else "🌙 Включить тихие часы 23–08",
                 callback_data="alerts:quiet",
+            )],
+            [InlineKeyboardButton(
+                text="🧳 Выключить режим командировки" if settings.get("travel_mode") else "🧳 Включить режим командировки",
+                callback_data="alerts:travel",
             )],
             [InlineKeyboardButton(text="↻ Обновить", callback_data="root_alerts")],
             [InlineKeyboardButton(text="⬅️ Root Command Center", callback_data="root_center")],
@@ -3741,13 +3747,14 @@ def upsert_pending_device(raw_device: dict) -> dict:
 
 def list_pending_devices() -> list[dict]:
     now = int(time.time())
+    online_ttl = 45 if load_device_notify_settings().get("travel_mode") else DEVICE_TTL_SECONDS
     with db_connect() as connection:
         rows = connection.execute("SELECT * FROM pending_devices ORDER BY last_seen DESC").fetchall()
     return [{
         "owner_id": "", "device_id": row["device_id"], "name": row["name"], "type": "phone",
         "platform": row["platform"], "agent": row["agent"],
         "telemetry": decode_json_object(row["telemetry_json"]), "last_seen": int(row["last_seen"]),
-        "created_at": int(row["created_at"]), "online": now - int(row["last_seen"]) <= DEVICE_TTL_SECONDS,
+        "created_at": int(row["created_at"]), "online": now - int(row["last_seen"]) <= online_ttl,
         "pairing_required": True, "diagnostics": {}, "health": {"state": "setup", "label": "Требуется QR"},
     } for row in rows]
 
@@ -3762,6 +3769,7 @@ def list_all_devices() -> list[dict]:
 
 def list_devices(owner_id: str = "") -> list[dict]:
     now = int(time.time())
+    online_ttl = 45 if load_device_notify_settings().get("travel_mode") else DEVICE_TTL_SECONDS
     result = []
 
     with db_connect() as connection:
@@ -3788,7 +3796,7 @@ def list_devices(owner_id: str = "") -> list[dict]:
             "last_seen": int(row["last_seen"]),
             "created_at": int(row["created_at"]),
         }
-        item["online"] = now - item["last_seen"] <= DEVICE_TTL_SECONDS
+        item["online"] = now - item["last_seen"] <= online_ttl
         item["diagnostics"] = device_diagnostics(item["owner_id"], item["device_id"])
         item["health"] = device_health(item, item["diagnostics"])
         item.pop("secret", None)
@@ -3811,7 +3819,7 @@ def enrich_device_runtime(device: dict) -> dict:
     return item
 
 
-def validate_telegram_init_data(init_data: str) -> dict | None:
+def validate_telegram_init_data(init_data: str, max_age_seconds: int = 24 * 60 * 60) -> dict | None:
     if not BOT_TOKEN or not init_data:
         return None
     parsed = parse_qs(init_data, keep_blank_values=True)
@@ -3837,7 +3845,7 @@ def validate_telegram_init_data(init_data: str) -> dict | None:
     except json.JSONDecodeError:
         user = {}
     auth_date = int(parsed.get("auth_date", ["0"])[0] or 0)
-    if auth_date and now_ts() - auth_date > 24 * 60 * 60:
+    if auth_date and now_ts() - auth_date > max(60, int(max_age_seconds)):
         return None
     return {"user": user, "auth_date": auth_date}
 
@@ -4180,7 +4188,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         if parsed_url.path == "/api/web-session":
             query = parse_qs(parsed_url.query)
             init_data = query.get("init_data", [""])[0]
-            validated = validate_telegram_init_data(init_data)
+            validated = validate_telegram_init_data(init_data, 30 * 24 * 60 * 60)
             user_id = str(((validated or {}).get("user") or {}).get("id") or "").strip()
             if not user_id.isdigit() or get_user_role(user_id) == "guest":
                 self.send_json({"error": "fresh Telegram WebApp auth required"}, HTTPStatus.UNAUTHORIZED)
@@ -5082,6 +5090,10 @@ async def callbacks(callback: CallbackQuery) -> None:
             settings["quiet_hours_enabled"] = not settings.get("quiet_hours_enabled")
             settings["quiet_hours_start"] = 23
             settings["quiet_hours_end"] = 8
+        elif mode == "travel":
+            settings["travel_mode"] = not settings.get("travel_mode")
+            settings["enabled"] = True
+            settings["enabled_kinds"] = sorted(important)
         elif mode == "critical":
             settings["enabled"] = True
             settings["enabled_kinds"] = sorted(critical)
@@ -5099,7 +5111,7 @@ async def callbacks(callback: CallbackQuery) -> None:
             callback,
             "device_alert_settings",
             f"Notification profile changed: {mode}",
-            {"enabled": saved["enabled"], "enabled_kinds": saved["enabled_kinds"], "quiet_hours_enabled": saved["quiet_hours_enabled"]},
+            {"enabled": saved["enabled"], "enabled_kinds": saved["enabled_kinds"], "quiet_hours_enabled": saved["quiet_hours_enabled"], "travel_mode": saved["travel_mode"]},
             notify=False,
         )
         await callback.answer("Настройки сохранены")

@@ -485,6 +485,11 @@ h2 {
   font-weight: 800;
 }
 
+.travel-mode-toggle {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line)) !important;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 14%, var(--panel)), var(--panel)) !important;
+}
+
 .toggle-row,
 .alert-kind {
   display: flex;

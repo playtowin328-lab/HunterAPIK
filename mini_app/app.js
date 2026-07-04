@@ -97,6 +97,7 @@ const deviceAlertRefreshButton = $("#deviceAlertRefreshButton");
 const deviceAlertSaveButton = $("#deviceAlertSaveButton");
 const deviceAlertsEnabled = $("#deviceAlertsEnabled");
 const deviceAlertsQuietEnabled = $("#deviceAlertsQuietEnabled");
+const deviceAlertsTravelMode = $("#deviceAlertsTravelMode");
 const deviceAlertsQuietStart = $("#deviceAlertsQuietStart");
 const deviceAlertsQuietEnd = $("#deviceAlertsQuietEnd");
 const deviceAlertKinds = $("#deviceAlertKinds");
@@ -1227,7 +1228,7 @@ function formatAlertTime(timestamp) {
 }
 
 async function loadDeviceAlerts() {
-  if (!tg?.initData || !deviceAlertPanel) return;
+  if ((!tg?.initData && !webSessionToken) || !deviceAlertPanel) return;
   const params = apiAuthParams({ limit: "30" });
   try {
     const payload = await apiJson(`${apiBaseUrl}/api/alerts/device?${params.toString()}`);
@@ -1244,6 +1245,7 @@ function currentDeviceAlertSettingsFromForm() {
   const checkedKinds = $$(".alert-kind-grid input:checked", deviceAlertPanel).map((input) => input.value);
   return {
     enabled: Boolean(deviceAlertsEnabled?.checked),
+    travel_mode: Boolean(deviceAlertsTravelMode?.checked),
     quiet_hours_enabled: Boolean(deviceAlertsQuietEnabled?.checked),
     quiet_hours_start: Number(deviceAlertsQuietStart?.value || 23),
     quiet_hours_end: Number(deviceAlertsQuietEnd?.value || 8),
@@ -1275,6 +1277,7 @@ function renderDeviceAlerts() {
   deviceAlertPanel.classList.remove("hidden");
   deviceAlertsEnabled.checked = Boolean(deviceAlertSettings.enabled);
   deviceAlertsQuietEnabled.checked = Boolean(deviceAlertSettings.quiet_hours_enabled);
+  deviceAlertsTravelMode.checked = Boolean(deviceAlertSettings.travel_mode);
   deviceAlertsQuietStart.value = deviceAlertSettings.quiet_hours_start ?? 23;
   deviceAlertsQuietEnd.value = deviceAlertSettings.quiet_hours_end ?? 8;
 

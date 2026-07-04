@@ -42,6 +42,11 @@ class DevicePersistenceTests(unittest.TestCase):
             self.assertEqual("100", main.validate_web_session_token(token))
             self.assertEqual("100", main.webapp_user_id_from_query({"web_token": [token]}))
 
+    def test_travel_mode_is_preserved_in_alert_settings(self) -> None:
+        settings = main.sanitize_device_notify_settings({"travel_mode": True})
+        self.assertTrue(settings["travel_mode"])
+        self.assertTrue(settings["enabled"])
+
     def test_heartbeat_update_preserves_existing_pairing_secret(self) -> None:
         main.upsert_device(
             {
