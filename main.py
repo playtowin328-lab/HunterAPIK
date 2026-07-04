@@ -65,6 +65,7 @@ DEVICE_MONITOR_INTERVAL_SECONDS = int(os.getenv("DEVICE_MONITOR_INTERVAL_SECONDS
 COMMAND_PENDING_TIMEOUT_SECONDS = int(os.getenv("COMMAND_PENDING_TIMEOUT_SECONDS", "120"))
 COMMAND_DELIVERED_TIMEOUT_SECONDS = int(os.getenv("COMMAND_DELIVERED_TIMEOUT_SECONDS", "180"))
 COMMAND_HISTORY_TTL_SECONDS = int(os.getenv("COMMAND_HISTORY_TTL_SECONDS", "86400"))
+AUDIT_RETENTION_DAYS = max(7, int(os.getenv("AUDIT_RETENTION_DAYS", "30")))
 AUTO_REPAIR_COOLDOWN_SECONDS = int(os.getenv("AUTO_REPAIR_COOLDOWN_SECONDS", "300"))
 BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
@@ -359,6 +360,18 @@ def init_db() -> None:
             if column not in audit_columns:
                 connection.execute(f"ALTER TABLE audit_events ADD COLUMN {column} {declaration}")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_owner_created ON audit_events(owner_id, created_at DESC)")
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS audit_deliveries (
+                event_id TEXT NOT NULL,
+                recipient_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 1,
+                error TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(event_id, recipient_id)
+            )"""
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_audit_deliveries_status ON audit_deliveries(status, updated_at DESC)")
 
 
 init_db()
@@ -749,6 +762,39 @@ def command_audit_detail(prefix: str, command_type: str, device_id: str, command
     return " · ".join(parts)
 
 
+def save_audit_delivery(event_id: str, recipient_id: str, status: str, error: str = "") -> None:
+    with db_connect() as connection:
+        connection.execute(
+            """INSERT INTO audit_deliveries(event_id, recipient_id, status, attempts, error, updated_at)
+               VALUES (?, ?, ?, 1, ?, ?)
+               ON CONFLICT(event_id, recipient_id) DO UPDATE SET
+                 status=excluded.status, attempts=audit_deliveries.attempts + CASE WHEN excluded.status='pending' THEN 1 ELSE 0 END,
+                 error=excluded.error, updated_at=excluded.updated_at""",
+            (str(event_id), str(recipient_id), str(status), str(error)[:500], now_ts()),
+        )
+
+
+def audit_delivery_stats(hours: int = 24) -> dict:
+    since = now_ts() - max(1, int(hours)) * 3600
+    with db_connect() as connection:
+        rows = connection.execute(
+            "SELECT status, COUNT(*) AS count FROM audit_deliveries WHERE updated_at >= ? GROUP BY status", (since,)
+        ).fetchall()
+    result = {"delivered": 0, "failed": 0, "pending": 0}
+    for row in rows:
+        result[str(row["status"])] = int(row["count"])
+    return result
+
+
+def failed_audit_deliveries(limit: int = 20) -> list[sqlite3.Row]:
+    with db_connect() as connection:
+        return list(connection.execute(
+            """SELECT d.*, e.action, e.detail, e.created_at
+               FROM audit_deliveries d LEFT JOIN audit_events e ON e.event_id=d.event_id
+               WHERE d.status='failed' ORDER BY d.updated_at DESC LIMIT ?""", (max(1, min(int(limit), 100)),)
+        ))
+
+
 async def notify_root_admins(event: dict) -> None:
     if not BOT_INSTANCE:
         return
@@ -828,12 +874,15 @@ async def notify_root_admins(event: dict) -> None:
     for admin_id in recipients:
         if str(admin_id) == str(event.get("actor_id")):
             continue
+        save_audit_delivery(event.get("event_id", ""), str(admin_id), "pending")
         try:
             if event.get("action") == "device_alert" and ALERT_COVER_PATH.exists():
                 await BOT_INSTANCE.send_photo(admin_id, FSInputFile(ALERT_COVER_PATH), caption=text)
             else:
                 await BOT_INSTANCE.send_message(admin_id, text)
+            save_audit_delivery(event.get("event_id", ""), str(admin_id), "delivered")
         except Exception as exc:
+            save_audit_delivery(event.get("event_id", ""), str(admin_id), "failed", str(exc))
             print(f"Failed to send audit notification to {admin_id}: {exc}")
 
 
@@ -1322,7 +1371,7 @@ def root_command_center_text() -> str:
             f"🤖 Telegram polling: {BOT_POLLING_STATUS}",
             f"📨 Логи: {'отдельный чат ' + LOG_CHAT_ID if LOG_CHAT_ID else 'личные сообщения root (fallback)'}",
             "",
-            "Все действия root фиксируются в Trust Timeline без сохранения секретов и личного содержимого.",
+            "Действия root остаются приватными: они не записываются в журнал и не отправляются в канал логов.",
         ]
     )
 
@@ -1351,6 +1400,7 @@ def root_command_center_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="▣ PC Agent", callback_data="pc_agent_info"),
             ],
             [InlineKeyboardButton(text="💾 Резервные копии", callback_data="backup_center")],
+            [InlineKeyboardButton(text="📡 Доставка журналов", callback_data="log_delivery_center")],
             [InlineKeyboardButton(text="↻ Обновить Root Center", callback_data="root_center")],
             nav_row(None),
         ]
@@ -1381,6 +1431,60 @@ def root_alerts_text() -> str:
         created = datetime.fromtimestamp(event["created_at"]).strftime("%d.%m %H:%M")
         lines.append(f"• {created} · {event['detail'][:240]}")
     return "\n".join(lines)
+
+
+def log_delivery_center_text() -> str:
+    stats = audit_delivery_stats(24)
+    failed = failed_audit_deliveries(8)
+    lines = [
+        "📡 ЦЕНТР ДОСТАВКИ ЖУРНАЛОВ",
+        "Контроль уведомлений за последние 24 часа",
+        "",
+        f"✅ Доставлено: {stats.get('delivered', 0)}",
+        f"⏳ В процессе: {stats.get('pending', 0)}",
+        f"❌ Не доставлено: {stats.get('failed', 0)}",
+        f"📍 Канал: {'отдельный чат ' + LOG_CHAT_ID if LOG_CHAT_ID else 'личные сообщения владельца'}",
+        f"🗄 Срок служебных записей доставки: {AUDIT_RETENTION_DAYS} дней",
+        "",
+        "Последние ошибки доставки:",
+    ]
+    if not failed:
+        lines.append("Ошибок нет — канал работает стабильно.")
+    for row in failed:
+        created = datetime.fromtimestamp(int(row["updated_at"])).strftime("%d.%m %H:%M")
+        lines.append(f"• {created} · получатель {row['recipient_id']} · {str(row['error'] or 'неизвестная ошибка')[:160]}")
+    lines.extend(["", "Действия root не записываются и не попадают в экспорт."])
+    return "\n".join(lines)
+
+
+def log_delivery_center_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬇️ Экспорт журнала за 24 часа", callback_data="logs:export24")],
+        [InlineKeyboardButton(text="🧹 Очистить старые статусы доставки", callback_data="logs:cleanup")],
+        [InlineKeyboardButton(text="↻ Обновить", callback_data="log_delivery_center")],
+        [InlineKeyboardButton(text="⬅️ Root Command Center", callback_data="root_center")],
+        nav_row(None),
+    ])
+
+
+def export_audit_events_json(hours: int = 24) -> bytes:
+    since = now_ts() - max(1, int(hours)) * 3600
+    with db_connect() as connection:
+        rows = connection.execute("SELECT * FROM audit_events WHERE created_at >= ? ORDER BY created_at DESC", (since,)).fetchall()
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "period_hours": hours,
+        "root_actions_included": False,
+        "events": [audit_row_to_dict(row) for row in rows],
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def cleanup_old_delivery_records() -> int:
+    before = now_ts() - AUDIT_RETENTION_DAYS * 86400
+    with db_connect() as connection:
+        cursor = connection.execute("DELETE FROM audit_deliveries WHERE updated_at < ?", (before,))
+    return int(cursor.rowcount)
 
 
 def root_alerts_keyboard() -> InlineKeyboardMarkup:
@@ -3238,6 +3342,7 @@ def run_device_maintenance() -> dict:
             repairs += 1
     summary = expire_stale_commands()
     summary["auto_repairs"] = repairs
+    summary["delivery_records_cleaned"] = cleanup_old_delivery_records()
     return summary
 
 
@@ -5278,6 +5383,36 @@ async def callbacks(callback: CallbackQuery) -> None:
         audit_callback(callback, "root_center_opened", "Opened Root Command Center", notify=False)
         await callback.answer()
         await show_bot_screen(callback, root_command_center_text(), reply_markup=root_command_center_keyboard())
+        return
+
+    if action == "log_delivery_center":
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Центр доставки доступен только владельцу.", show_alert=True)
+            return
+        await callback.answer()
+        await show_bot_screen(callback, log_delivery_center_text(), reply_markup=log_delivery_center_keyboard())
+        return
+
+    if action == "logs:export24":
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Экспорт доступен только владельцу.", show_alert=True)
+            return
+        body = await asyncio.to_thread(export_audit_events_json, 24)
+        filename = f"hunter-logs-{datetime.now().strftime('%Y%m%d-%H%M')}.json"
+        await callback.message.answer_document(
+            BufferedInputFile(body, filename=filename),
+            caption="📦 Журнал Hunter Control за 24 часа. Секреты скрыты, действия root не включены.",
+        )
+        await callback.answer("Экспорт подготовлен")
+        return
+
+    if action == "logs:cleanup":
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Очистка доступна только владельцу.", show_alert=True)
+            return
+        removed = await asyncio.to_thread(cleanup_old_delivery_records)
+        await callback.answer(f"Удалено старых статусов: {removed}")
+        await show_bot_screen(callback, log_delivery_center_text(), reply_markup=log_delivery_center_keyboard())
         return
 
     if action == "root_alerts":

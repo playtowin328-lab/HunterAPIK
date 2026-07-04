@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,7 @@ class DevicePersistenceTests(unittest.TestCase):
             connection.execute("DELETE FROM pending_devices")
             connection.execute("DELETE FROM audit_events")
             connection.execute("DELETE FROM bot_access")
+            connection.execute("DELETE FROM audit_deliveries")
 
     def test_unpaired_agent_is_visible_only_in_project_scope(self) -> None:
         pending = main.upsert_pending_device({
@@ -105,6 +107,16 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertIn("HUNTER CONTROL", text)
         self.assertIn("device_pulse", callbacks)
         self.assertIn("main_menu", [button.callback_data for button in main.nav_row(None)])
+
+    def test_log_delivery_status_and_export(self) -> None:
+        event = main.save_audit_event("100", "device_alert", "Телефон offline", {"owner_id": "100", "kind": "offline"})
+        main.save_audit_delivery(event["event_id"], "-1001", "pending")
+        main.save_audit_delivery(event["event_id"], "-1001", "failed", "chat not found")
+        stats = main.audit_delivery_stats(24)
+        exported = json.loads(main.export_audit_events_json(24).decode("utf-8"))
+        self.assertEqual(1, stats["failed"])
+        self.assertFalse(exported["root_actions_included"])
+        self.assertEqual("Телефон offline", exported["events"][0]["detail"])
 
     def test_bad_telemetry_does_not_hide_all_devices(self) -> None:
         main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Phone"})
