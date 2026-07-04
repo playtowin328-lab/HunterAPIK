@@ -47,6 +47,19 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertTrue(settings["travel_mode"])
         self.assertTrue(settings["enabled"])
 
+    def test_device_pulse_uses_live_android_telemetry(self) -> None:
+        main.upsert_device({
+            "owner_id": "100", "device_id": "phone-pulse", "name": "Рабочий телефон",
+            "platform": "Android 16", "agent": "android-agent",
+            "telemetry": {"battery_percent": 73, "network": "wifi", "notifications_ready": True,
+                          "battery_ready": True, "accessibility": False},
+        })
+        text = main.device_pulse_text(100)
+        self.assertIn("HUNTER DEVICE PULSE", text)
+        self.assertIn("Рабочий телефон", text)
+        self.assertIn("73%", text)
+        self.assertIn("доступы 2/3", text)
+
     def test_heartbeat_update_preserves_existing_pairing_secret(self) -> None:
         main.upsert_device(
             {

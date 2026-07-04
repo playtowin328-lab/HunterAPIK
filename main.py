@@ -1487,7 +1487,8 @@ def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
     device_preview = []
     for device in devices[:5]:
         marker = "🟢" if device.get("online") else "⚫"
-        battery = (device.get("telemetry") or {}).get("battery")
+        telemetry = device.get("telemetry") or {}
+        battery = telemetry.get("battery_percent", telemetry.get("battery"))
         battery_text = f" · 🔋 {battery}%" if isinstance(battery, (int, float)) else ""
         device_preview.append(f"{marker} {device.get('name', 'Устройство')}{battery_text}")
     if len(devices) > 5:
@@ -1497,6 +1498,75 @@ def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
         if devices
         else "Подключи Railway Volume, затем нажми «Добавить устройство»."
     )
+
+
+def device_pulse_text(owner_id: int, project_scope: bool = False) -> str:
+    devices = list_all_devices() if project_scope else list_devices_for_user(str(owner_id))
+    settings = load_device_notify_settings()
+    online = sum(bool(device.get("online")) for device in devices)
+    pending = sum(bool(device.get("pairing_required")) for device in devices)
+    ready_permissions = 0
+    total_permissions = 0
+    cards = []
+    for device in devices[:6]:
+        telemetry = device.get("telemetry") or {}
+        checks = [
+            telemetry.get("notifications_ready") is True,
+            telemetry.get("battery_ready") is True,
+            telemetry.get("accessibility") is True,
+        ]
+        ready = sum(checks)
+        ready_permissions += ready
+        total_permissions += len(checks)
+        battery = telemetry.get("battery_percent", telemetry.get("battery"))
+        battery_label = f" · 🔋 {int(battery)}%" if isinstance(battery, (int, float)) and battery >= 0 else ""
+        network = str(telemetry.get("network") or "—").upper()
+        state = "🟢" if device.get("online") else "🔴"
+        link = " · нужен QR" if device.get("pairing_required") else ""
+        cards.append(f"{state} {device.get('name', 'Устройство')}{battery_label}\n   {network} · доступы {ready}/3{link}")
+
+    readiness = round(ready_permissions * 100 / total_permissions) if total_permissions else 0
+    if not devices:
+        headline = "⚪ Парк пока пуст"
+    elif online == len(devices) and readiness == 100 and not pending:
+        headline = "🟢 Все системы готовы"
+    elif online:
+        headline = "🟡 Парк требует внимания"
+    else:
+        headline = "🔴 Нет связи с устройствами"
+    travel = "ВКЛЮЧЁН · контроль 45 сек" if settings.get("travel_mode") else "выключен"
+    return "\n".join([
+        "◉ HUNTER DEVICE PULSE",
+        headline,
+        "",
+        f"Связь  {online}/{len(devices)}     Готовность  {readiness}%",
+        f"Командировка  {travel}",
+        *( ["", *cards] if cards else ["", "Установи Full APK и открой Agent — устройство появится автоматически."] ),
+        "",
+        "Обновляется по живым heartbeat-сигналам.",
+    ])
+
+
+def device_pulse_keyboard(owner_id: int, project_scope: bool, show_root: bool) -> InlineKeyboardMarkup:
+    devices = list_all_devices() if project_scope else list_devices_for_user(str(owner_id))
+    settings = load_device_notify_settings()
+    rows = []
+    if MINI_APP_URL:
+        rows.append([InlineKeyboardButton(text="📱 Открыть живой пульт", web_app=WebAppInfo(url=MINI_APP_URL))])
+    if not devices:
+        rows.append([InlineKeyboardButton(text="＋ Подключить устройство", callback_data="connect_wizard")])
+    elif any(device.get("pairing_required") for device in devices):
+        rows.append([InlineKeyboardButton(text="🔑 Завершить QR-подключение", callback_data="pair_device")])
+    else:
+        rows.append([InlineKeyboardButton(text="◉ Все устройства", callback_data="my_devices")])
+    if show_root:
+        rows.append([InlineKeyboardButton(
+            text="🧳 Командировка: ВКЛ" if settings.get("travel_mode") else "🧳 Командировка: ВЫКЛ",
+            callback_data="pulse:travel",
+        )])
+    rows.append([InlineKeyboardButton(text="↻ Обновить Pulse", callback_data="device_pulse")])
+    rows.append(nav_row(None))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
     return "\n".join(
         [
             "◈ HUNTER CONTROL",
@@ -1551,6 +1621,7 @@ def main_menu(show_root: bool = False) -> InlineKeyboardMarkup:
     )
 
     rows = [
+            [InlineKeyboardButton(text="◉ Device Pulse · живой статус", callback_data="device_pulse")],
             [mini_app_button],
             [
                 InlineKeyboardButton(text="＋ Добавить устройство", callback_data="connect_wizard"),
@@ -5056,6 +5127,37 @@ async def callbacks(callback: CallbackQuery) -> None:
             callback,
             dashboard_text(callback.from_user.id, is_project_admin_user(callback.from_user)),
             reply_markup=main_menu(is_root_admin_user(callback.from_user)),
+        )
+        return
+
+    if action == "device_pulse":
+        project_scope = is_project_admin_user(callback.from_user)
+        await callback.answer("Pulse обновлён")
+        await show_bot_screen(
+            callback,
+            device_pulse_text(callback.from_user.id, project_scope),
+            reply_markup=device_pulse_keyboard(
+                callback.from_user.id,
+                project_scope,
+                is_root_admin_user(callback.from_user),
+            ),
+        )
+        return
+
+    if action == "pulse:travel":
+        if not is_root_admin_user(callback.from_user):
+            await callback.answer("Режим командировки доступен только владельцу.", show_alert=True)
+            return
+        settings = load_device_notify_settings()
+        settings["travel_mode"] = not settings.get("travel_mode")
+        settings["enabled"] = True
+        saved = save_device_notify_settings(settings)
+        audit_callback(callback, "device_alert_settings", "Travel mode toggled", {"travel_mode": saved["travel_mode"]}, notify=False)
+        await callback.answer("Режим командировки включён" if saved["travel_mode"] else "Режим командировки выключен")
+        await show_bot_screen(
+            callback,
+            device_pulse_text(callback.from_user.id, True),
+            reply_markup=device_pulse_keyboard(callback.from_user.id, True, True),
         )
         return
 
