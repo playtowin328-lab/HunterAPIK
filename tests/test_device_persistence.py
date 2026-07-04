@@ -20,6 +20,7 @@ class DevicePersistenceTests(unittest.TestCase):
             connection.execute("DELETE FROM devices")
             connection.execute("DELETE FROM pending_devices")
             connection.execute("DELETE FROM audit_events")
+            connection.execute("DELETE FROM bot_access")
 
     def test_unpaired_agent_is_visible_only_in_project_scope(self) -> None:
         pending = main.upsert_pending_device({
@@ -60,6 +61,14 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertIn("73%", text)
         self.assertIn("доступы 2/3", text)
 
+    def test_quick_control_uses_short_scoped_device_key(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "phone-with-a-very-long-stable-id", "name": "Phone"})
+        key = main.pulse_device_key("phone-with-a-very-long-stable-id")
+        self.assertEqual(12, len(key))
+        with patch.object(main, "ADMIN_IDS", {"999"}):
+            self.assertEqual("phone-with-a-very-long-stable-id", main.pulse_accessible_device(100, key)["device_id"])
+            self.assertIsNone(main.pulse_accessible_device(200, key))
+
     def test_heartbeat_update_preserves_existing_pairing_secret(self) -> None:
         main.upsert_device(
             {
@@ -86,6 +95,16 @@ class DevicePersistenceTests(unittest.TestCase):
                 ("100", "phone-1"),
             ).fetchone()
         self.assertEqual("paired-secret", row["secret"])
+
+    def test_start_dashboard_and_main_menu_are_renderable(self) -> None:
+        with patch.object(main, "setup_checks", return_value=[]), patch.object(main, "railway_storage_is_persistent", return_value=True):
+            text = main.dashboard_text(100)
+        menu = main.main_menu(show_root=True)
+        callbacks = [button.callback_data for row in menu.inline_keyboard for button in row if button.callback_data]
+        self.assertIsInstance(text, str)
+        self.assertIn("HUNTER CONTROL", text)
+        self.assertIn("device_pulse", callbacks)
+        self.assertIn("main_menu", [button.callback_data for button in main.nav_row(None)])
 
     def test_bad_telemetry_does_not_hide_all_devices(self) -> None:
         main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Phone"})

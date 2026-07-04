@@ -1500,6 +1500,21 @@ def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
     )
 
 
+    return "\n".join([
+        "◀ HUNTER CONTROL",
+        "Ваш персональный центр устройств",
+        "",
+        fleet_state,
+        f"📱 Всего: {len(devices)} · 🟢 Online: {online} · ⚠ Внимание: {attention}",
+        f"☁️ Инфраструктура: {setup_line} · 🛡 Данные: {storage_line}",
+        *(["", "Быстрый обзор:", *device_preview] if device_preview else []),
+        "",
+        f"→ {next_step}",
+        "",
+        "Управление, диагностика и подключение — в кнопках ниже.",
+    ])
+
+
 def device_pulse_text(owner_id: int, project_scope: bool = False) -> str:
     devices = list_all_devices() if project_scope else list_devices_for_user(str(owner_id))
     settings = load_device_notify_settings()
@@ -1559,6 +1574,12 @@ def device_pulse_keyboard(owner_id: int, project_scope: bool, show_root: bool) -
         rows.append([InlineKeyboardButton(text="🔑 Завершить QR-подключение", callback_data="pair_device")])
     else:
         rows.append([InlineKeyboardButton(text="◉ Все устройства", callback_data="my_devices")])
+    for device in [item for item in devices if item.get("owner_id")][:5]:
+        marker = "🟢" if device.get("online") else "🔴"
+        rows.append([InlineKeyboardButton(
+            text=f"{marker} {str(device.get('name') or 'Устройство')[:28]}",
+            callback_data=f"pulse_device:{pulse_device_key(device['device_id'])}",
+        )])
     if show_root:
         rows.append([InlineKeyboardButton(
             text="🧳 Командировка: ВКЛ" if settings.get("travel_mode") else "🧳 Командировка: ВЫКЛ",
@@ -1567,21 +1588,70 @@ def device_pulse_keyboard(owner_id: int, project_scope: bool, show_root: bool) -
     rows.append([InlineKeyboardButton(text="↻ Обновить Pulse", callback_data="device_pulse")])
     rows.append(nav_row(None))
     return InlineKeyboardMarkup(inline_keyboard=rows)
-    return "\n".join(
+
+
+def pulse_device_key(device_id: str) -> str:
+    return hashlib.sha256(str(device_id).encode("utf-8")).hexdigest()[:12]
+
+
+def pulse_accessible_device(user_id: int, device_key: str) -> dict | None:
+    devices = list_all_devices() if get_user_role(str(user_id)) in {"root", "admin"} else list_devices_for_user(str(user_id))
+    return next((device for device in devices if pulse_device_key(device.get("device_id", "")) == device_key and device.get("owner_id")), None)
+
+
+def pulse_device_text(device: dict) -> str:
+    telemetry = device.get("telemetry") or {}
+    battery = telemetry.get("battery_percent", telemetry.get("battery"))
+    battery_label = f"{int(battery)}%" if isinstance(battery, (int, float)) and battery >= 0 else "—"
+    permissions = sum([
+        telemetry.get("notifications_ready") is True,
+        telemetry.get("battery_ready") is True,
+        telemetry.get("accessibility") is True,
+    ])
+    status = "🟢 ONLINE" if device.get("online") else "🔴 OFFLINE · команда останется в очереди"
+    return "\n".join([
+        "⌁ HUNTER QUICK CONTROL",
+        f"{device.get('name', 'Устройство')} · {status}",
+        "",
+        f"🔋 Заряд: {battery_label}",
+        f"⌁ Сеть: {str(telemetry.get('network') or '—').upper()}",
+        f"✓ Разрешения: {permissions}/3",
+        f"◷ Последний сигнал: {format_last_seen_ru(int(device.get('last_seen') or 0))}",
+        "",
+        "Выбери действие — результат придёт в журнал и Device Pulse.",
+    ])
+
+
+def format_last_seen_ru(timestamp: int) -> str:
+    age = max(0, now_ts() - int(timestamp or 0))
+    if age < 10:
+        return "только что"
+    if age < 60:
+        return f"{age} сек назад"
+    if age < 3600:
+        return f"{age // 60} мин назад"
+    return datetime.fromtimestamp(timestamp).strftime("%d.%m %H:%M")
+
+
+def pulse_device_keyboard(device: dict) -> InlineKeyboardMarkup:
+    device_id = pulse_device_key(device["device_id"])
+    rows = [
         [
-            "◈ HUNTER CONTROL",
-            "Ваш персональный центр устройств",
-            "",
-            f"{fleet_state}",
-            f"📱 Всего: {len(devices)}  ·  🟢 Online: {online}  ·  ⚠ Внимание: {attention}",
-            f"☁️ Инфраструктура: {setup_line}  ·  🛡 Данные: {storage_line}",
-            *( ["", "Быстрый обзор:", *device_preview] if device_preview else [] ),
-            "",
-            f"→ {next_step}",
-            "",
-            "Управление, диагностика и подключение — в кнопках ниже.",
-        ]
-    )
+            InlineKeyboardButton(text="⌁ Проверить связь", callback_data=f"pulsecmd:ping:{device_id}"),
+            InlineKeyboardButton(text="☀ Разбудить", callback_data=f"pulsecmd:wake_screen:{device_id}"),
+        ],
+        [
+            InlineKeyboardButton(text="⌂ Домой", callback_data=f"pulsecmd:home:{device_id}"),
+            InlineKeyboardButton(text="↻ Восстановить", callback_data=f"pulsecmd:repair_agent:{device_id}"),
+        ],
+        [
+            InlineKeyboardButton(text="🔔 Сигнал", callback_data=f"pulsecmd:play_alarm:{device_id}"),
+            InlineKeyboardButton(text="🔕 Остановить", callback_data=f"pulsecmd:stop_alarm:{device_id}"),
+        ],
+        [InlineKeyboardButton(text="⚙ Мастер разрешений", callback_data=f"pulsecmd:setup_wizard:{device_id}")],
+        [InlineKeyboardButton(text="‹ Назад в Device Pulse", callback_data="device_pulse")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 SETTINGS_TEXT = (
     "Настройки бота\n\n"
@@ -5159,6 +5229,46 @@ async def callbacks(callback: CallbackQuery) -> None:
             device_pulse_text(callback.from_user.id, True),
             reply_markup=device_pulse_keyboard(callback.from_user.id, True, True),
         )
+        return
+
+    if action and action.startswith("pulse_device:"):
+        device = pulse_accessible_device(callback.from_user.id, action.split(":", 1)[1])
+        if not device:
+            await callback.answer("Устройство недоступно или удалено.", show_alert=True)
+            return
+        await callback.answer()
+        await show_bot_screen(callback, pulse_device_text(device), reply_markup=pulse_device_keyboard(device))
+        return
+
+    if action and action.startswith("pulsecmd:"):
+        parts = action.split(":", 2)
+        allowed = {"ping", "wake_screen", "home", "repair_agent", "play_alarm", "stop_alarm", "setup_wizard"}
+        if len(parts) != 3 or parts[1] not in allowed:
+            await callback.answer("Команда не поддерживается.", show_alert=True)
+            return
+        device = pulse_accessible_device(callback.from_user.id, parts[2])
+        if not device:
+            await callback.answer("Нет доступа к этому устройству.", show_alert=True)
+            return
+        command = create_device_command(device["owner_id"], device["device_id"], parts[1])
+        audit_event(
+            str(callback.from_user.id), "device_command",
+            command_audit_detail("Bot Quick Control", parts[1], device["device_id"], command["command_id"]),
+            {"owner_id": device["owner_id"], "device_id": device["device_id"], "command_id": command["command_id"], "type": parts[1]},
+            user_display_name(callback.from_user), notify=False,
+        )
+        result_label = {
+            "ping": "Проверка связи отправлена",
+            "wake_screen": "Команда пробуждения отправлена",
+            "home": "Открываю главный экран",
+            "repair_agent": "Восстановление агента запущено",
+            "play_alarm": "Звуковой сигнал запущен",
+            "stop_alarm": "Останавливаю звуковой сигнал",
+            "setup_wizard": "Мастер разрешений открывается на телефоне",
+        }[parts[1]]
+        await callback.answer(result_label, show_alert=parts[1] in {"play_alarm", "repair_agent"})
+        refreshed = pulse_accessible_device(callback.from_user.id, parts[2]) or device
+        await show_bot_screen(callback, f"{pulse_device_text(refreshed)}\n\n✓ {result_label}.", reply_markup=pulse_device_keyboard(refreshed))
         return
 
     if action == "root_center":
