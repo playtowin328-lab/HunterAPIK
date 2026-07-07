@@ -1479,7 +1479,7 @@ def post_deploy_check_text() -> str:
         (devices >= 0, f"Устройства доступны: {devices}"),
         (roles >= 0, f"Роли и доступы доступны: {roles}"),
         (setup.get("ok", False), "API и обязательные Variables готовы"),
-        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v5"),
+        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v7"),
         (history >= 0, f"История телеметрии работает: {history} записей"),
     ]
     ok = all(value for value, _ in checks)
@@ -1753,7 +1753,7 @@ def device_pulse_keyboard(owner_id: int, project_scope: bool, show_root: bool) -
     settings = load_device_notify_settings()
     rows = []
     if MINI_APP_URL:
-        rows.append([InlineKeyboardButton(text="📱 Открыть живой пульт", web_app=WebAppInfo(url=MINI_APP_URL))])
+        rows.append([InlineKeyboardButton(text="📱 Открыть живой пульт", web_app=WebAppInfo(url=mini_app_url_for_user(owner_id)))])
     if not devices:
         rows.append([InlineKeyboardButton(text="＋ Подключить устройство", callback_data="connect_wizard")])
     elif any(device.get("pairing_required") for device in devices):
@@ -1878,7 +1878,7 @@ def mini_app_url_for_user(user_id: str | int | None = None) -> str:
     separator = "&" if "?" in MINI_APP_URL else "?"
     return (
         f"{MINI_APP_URL}{separator}"
-        f"owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
+        f"v=7&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
     )
 
 
@@ -2211,6 +2211,28 @@ async def send_status(message: Message) -> None:
         f"DB: {DB_PATH}",
     ]
     await message.answer("\n".join(lines))
+
+
+async def send_web_panel(message: Message) -> None:
+    if not await ensure_message_admin(message):
+        return
+    audit_message(message, "command_web", "Requested signed web panel link")
+    if not MINI_APP_URL:
+        await message.answer("Веб‑панель не настроена: укажи HTTPS адрес в MINI_APP_URL.", reply_markup=nav_keyboard(None))
+        return
+    url = mini_app_url_for_user(message.from_user.id)
+    await message.answer(
+        "Веб‑панель готова.\n\n"
+        "Открой по кнопке ниже: ссылка уже содержит короткую защищённую сессию именно для твоего Telegram ID. "
+        "Если обычный домен показывает пусто, используй эту кнопку — она синхронизирует веб с ботом.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="📱 Открыть веб‑пульт", web_app=WebAppInfo(url=url))],
+                [InlineKeyboardButton(text="🔗 Открыть как ссылку", url=url)],
+                nav_row(None),
+            ]
+        ),
+    )
 
 
 def setup_check_line(name: str, ok: bool, detail: str, fix: str = "") -> str:
@@ -4398,6 +4420,16 @@ def is_authorized_device_request(headers, payload: dict) -> bool:
 
 
 class MiniAppRequestHandler(SimpleHTTPRequestHandler):
+    extensions_map = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        ".html": "text/html; charset=utf-8",
+        ".js": "application/javascript; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".webmanifest": "application/manifest+json; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".svg": "image/svg+xml; charset=utf-8",
+    }
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(MINI_APP_DIR), **kwargs)
 
@@ -4420,7 +4452,13 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         )
         if PUBLIC_BASE_URL.startswith("https://"):
             self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-        if self.path.startswith("/api/") or self.path.startswith("/health") or self.path.startswith("/setup-status"):
+        static_path = urlparse(self.path).path
+        if (
+            self.path.startswith("/api/")
+            or self.path.startswith("/health")
+            or self.path.startswith("/setup-status")
+            or static_path in {"/", "/index.html", "/app.js", "/styles.css", "/manifest.webmanifest", "/service-worker.js"}
+        ):
             self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
@@ -4576,7 +4614,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             checks = setup_status_payload()
             with db_connect() as connection:
                 counts = {name: int(connection.execute(f"SELECT COUNT(*) AS count FROM {name}").fetchone()["count"]) for name in ("devices", "bot_access", "device_history")}
-            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v5", "api": "ok"})
+            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v7", "api": "ok"})
             return
 
         if parsed_url.path == "/api/alerts/device":
@@ -6168,6 +6206,7 @@ async def run_bot() -> None:
     dp.message.register(send_set_role, Command("role"))
     dp.message.register(send_revoke_access, Command("revoke"))
     dp.message.register(send_status, Command("status"))
+    dp.message.register(send_web_panel, Command("web"))
     dp.message.register(send_setup, Command("setup"))
     dp.message.register(send_check, Command("check"))
     dp.message.register(send_connect, Command("connect"))

@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Hunter Agent</title>
     <meta name="theme-color" content="#0b2334">
-    <link rel="manifest" href="./manifest.webmanifest">
-    <link rel="stylesheet" href="./styles.css">
+    <link rel="manifest" href="./manifest.webmanifest?v=7">
+    <link rel="stylesheet" href="./styles.css?v=7">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -511,7 +511,15 @@
       </section>
     </div>
 
-    <script src="./app.js"></script>
-    <script>if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('./service-worker.js'));</script>
+    <script src="./app.js?v=7"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', async () => {
+          const registration = await navigator.serviceWorker.register('./service-worker.js?v=7');
+          registration.update?.();
+          if (registration.waiting) registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+        });
+      }
+    </script>
   </body>
 </html>
