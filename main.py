@@ -225,7 +225,17 @@ async def ensure_callback_admin(callback: CallbackQuery) -> bool:
 async def ensure_root_message(message: Message) -> bool:
     if is_root_admin_user(message.from_user):
         return True
-    await message.answer("Этим разделом может управлять только владелец из ADMIN_IDS.")
+    await message.answer("🔒 Это зона владельца. Настройки программы, Railway, инфраструктура и глобальная диагностика доступны только root-администратору.")
+    return False
+
+
+async def ensure_callback_root(callback: CallbackQuery) -> bool:
+    if is_root_admin_user(callback.from_user):
+        return True
+    await callback.answer(
+        "🔒 Только root-администратор может открывать настройки программы, Railway и инфраструктуру.",
+        show_alert=True,
+    )
     return False
 
 
@@ -385,6 +395,14 @@ def init_db() -> None:
         connection.execute(
             """CREATE TABLE IF NOT EXISTS user_notify_settings (
                 user_id TEXT PRIMARY KEY, settings_json TEXT NOT NULL DEFAULT '{}', updated_at INTEGER NOT NULL
+            )"""
+        )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS user_web_pins (
+                user_id TEXT PRIMARY KEY,
+                pin_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
             )"""
         )
         rows = connection.execute(
@@ -692,6 +710,13 @@ DEVICE_ALERT_COOLDOWNS_SECONDS = {
 }
 
 DEVICE_ALERT_PRIORITY_WEIGHT = {"critical": 0, "important": 1, "info": 2}
+ROOT_ONLY_PROGRAM_CALLBACKS = {
+    "settings",
+    "setup_wizard",
+    "railway_env_help",
+    "railway_info",
+    "connect_check",
+}
 
 DEFAULT_DEVICE_NOTIFY_SETTINGS = {
     "enabled": True,
@@ -987,7 +1012,7 @@ async def notify_root_admins(event: dict) -> None:
 
 
 async def send_chat_id(message: Message) -> None:
-    if not await ensure_message_admin(message):
+    if not await ensure_root_message(message):
         return
     await message.answer(
         "ID этого чата для LOG_CHAT_ID:\n"
@@ -1670,7 +1695,7 @@ def post_deploy_check_text() -> str:
         (devices >= 0, f"Устройства доступны: {devices}"),
         (roles >= 0, f"Роли и доступы доступны: {roles}"),
         (setup.get("ok", False), "API и обязательные Variables готовы"),
-        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v10"),
+        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v11"),
         (history >= 0, f"История телеметрии работает: {history} записей"),
     ]
     ok = all(value for value, _ in checks)
@@ -2069,7 +2094,7 @@ def mini_app_url_for_user(user_id: str | int | None = None) -> str:
     separator = "&" if "?" in MINI_APP_URL else "?"
     return (
         f"{MINI_APP_URL}{separator}"
-        f"v=10&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
+        f"v=11&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
     )
 
 
@@ -2090,16 +2115,12 @@ def main_menu(show_root: bool = False, user_id: str | int | None = None) -> Inli
                 InlineKeyboardButton(text="＋ Добавить устройство", callback_data="connect_wizard"),
                 InlineKeyboardButton(text="◉ Устройства", callback_data="my_devices"),
             ],
-            [
-                InlineKeyboardButton(text="⌁ Центр управления", callback_data="control_info"),
-                InlineKeyboardButton(text="✓ Диагностика", callback_data="connect_check"),
-            ],
+            [InlineKeyboardButton(text="⌁ Центр управления", callback_data="control_info")],
             [InlineKeyboardButton(text="◉ Trust Timeline", callback_data="trust_timeline")],
             [
                 InlineKeyboardButton(text="⬡ Android Agent", callback_data="apk_list"),
                 InlineKeyboardButton(text="▣ PC Agent", callback_data="pc_agent_info"),
             ],
-            [InlineKeyboardButton(text="⚡ Мастер инфраструктуры", callback_data="setup_wizard")],
             [
                 InlineKeyboardButton(text="PDF", callback_data="make_pdf"),
                 InlineKeyboardButton(text="PNG", callback_data="make_png"),
@@ -2109,15 +2130,19 @@ def main_menu(show_root: bool = False, user_id: str | int | None = None) -> Inli
                 InlineKeyboardButton(text="✦ Улучшить изображение", callback_data="enhance_photo"),
                 InlineKeyboardButton(text="Архив ZIP", callback_data="make_zip"),
             ],
+            [InlineKeyboardButton(text="? Помощь и сценарии", callback_data="guide")],
+        ]
+    if show_root:
+        rows.insert(0, [InlineKeyboardButton(text="◆ Root Command Center", callback_data="root_center")])
+        rows.insert(7, [InlineKeyboardButton(text="⚡ Мастер инфраструктуры", callback_data="setup_wizard")])
+        rows.insert(
+            10,
             [
                 InlineKeyboardButton(text="Railway", callback_data="railway_info"),
                 InlineKeyboardButton(text="Доступ", callback_data="access_info"),
                 InlineKeyboardButton(text="Настройки", callback_data="settings"),
             ],
-            [InlineKeyboardButton(text="? Помощь и сценарии", callback_data="guide")],
-        ]
-    if show_root:
-        rows.insert(0, [InlineKeyboardButton(text="◆ Root Command Center", callback_data="root_center")])
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -2213,7 +2238,7 @@ async def send_start(message: Message) -> None:
 
 
 async def send_settings(message: Message) -> None:
-    if not await ensure_message_admin(message):
+    if not await ensure_root_message(message):
         return
     audit_message(message, "command_settings", "Opened settings")
     await message.answer(SETTINGS_TEXT, reply_markup=nav_keyboard(None))
@@ -2223,7 +2248,7 @@ async def send_guide(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
     audit_message(message, "command_guide", "Opened guide")
-    await message.answer(GUIDE_TEXT, reply_markup=connect_keyboard(), parse_mode="Markdown")
+    await message.answer(GUIDE_TEXT, reply_markup=connect_keyboard(is_root_admin_user(message.from_user)), parse_mode="Markdown")
 
 
 async def send_my_id(message: Message) -> None:
@@ -2384,7 +2409,7 @@ async def send_revoke_access(message: Message, command: CommandObject) -> None:
 
 
 async def send_status(message: Message) -> None:
-    if not await ensure_message_admin(message):
+    if not await ensure_root_message(message):
         return
     audit_message(message, "command_status", "Requested bot status")
     apk_ready, apk_url, apk_detail = apk_download_status()
@@ -2590,15 +2615,14 @@ def railway_env_template_text() -> str:
 
 
 async def send_setup(message: Message) -> None:
-    if not await ensure_message_admin(message):
+    if not await ensure_root_message(message):
         return
     audit_message(message, "command_setup", "Opened setup wizard")
     await message.answer(setup_text(), reply_markup=setup_keyboard())
 
 
-def connect_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def connect_keyboard(show_root: bool = False) -> InlineKeyboardMarkup:
+    rows = [
             [InlineKeyboardButton(text="📥 Скачать / установить APK", url=f"{public_server_url()}/agent")],
             [InlineKeyboardButton(text="🔑 Получить QR и код", callback_data="pair_device")],
             [InlineKeyboardButton(text="📦 Lite / Full APK", callback_data="apk_list")],
@@ -2608,14 +2632,15 @@ def connect_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🎛 Собрать Full", callback_data="connect_build_full"),
             ],
             [InlineKeyboardButton(text="🤔 Что выбрать: Lite или Full", callback_data="apk_mode_compare")],
-            [InlineKeyboardButton(text="✅ Полная проверка", callback_data="connect_check")],
             [
                 InlineKeyboardButton(text="📡 Мои устройства", callback_data="my_devices"),
                 InlineKeyboardButton(text="📊 Статус", callback_data="connect_status"),
             ],
             nav_row(None),
         ]
-    )
+    if show_root:
+        rows.insert(6, [InlineKeyboardButton(text="✅ Полная проверка", callback_data="connect_check")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def connect_text(owner_id: int) -> str:
@@ -2643,7 +2668,7 @@ async def send_connect(message: Message) -> None:
     if not await ensure_message_admin(message):
         return
     audit_message(message, "command_connect", "Opened connect wizard")
-    await message.answer(connect_text(message.from_user.id), reply_markup=connect_keyboard())
+    await message.answer(connect_text(message.from_user.id), reply_markup=connect_keyboard(is_root_admin_user(message.from_user)))
 
 
 async def send_devices(message: Message) -> None:
@@ -2652,7 +2677,7 @@ async def send_devices(message: Message) -> None:
     can_view_all = is_project_admin_user(message.from_user)
     audit_message(message, "command_devices", "Opened all devices" if can_view_all else "Opened own device list")
     text = format_all_devices_text() if can_view_all else format_devices_text(message.from_user.id)
-    await message.answer(text, reply_markup=connect_keyboard())
+    await message.answer(text, reply_markup=connect_keyboard(is_root_admin_user(message.from_user)))
 
 
 async def send_apk_list(message: Message) -> None:
@@ -2842,7 +2867,7 @@ def run_deploy_checks(owner_id: int) -> str:
 
 
 async def send_check(message: Message) -> None:
-    if not await ensure_message_admin(message):
+    if not await ensure_root_message(message):
         return
     audit_message(message, "command_check", "Started deployment check")
     await message.answer("Running deployment check...")
@@ -4527,14 +4552,16 @@ def validate_telegram_init_data(init_data: str, max_age_seconds: int = 24 * 60 *
     return {"user": user, "auth_date": auth_date}
 
 
-def webapp_user_id_from_query(query: dict) -> str:
+def webapp_user_id_from_query(query: dict, require_pin: bool = True) -> str:
     init_data = query.get("init_data", [""])[0]
     validated = validate_telegram_init_data(init_data)
     user = (validated or {}).get("user") or {}
     user_id = str(user.get("id") or "").strip()
-    if user_id.isdigit():
-        return user_id
-    return validate_web_session_token(query_value(query, "web_token"))
+    if not user_id.isdigit():
+        user_id = validate_web_session_token(query_value(query, "web_token"))
+    if require_pin and user_id and web_pin_required_and_missing(user_id, query_value(query, "web_pin_token")):
+        return ""
+    return user_id
 
 
 def create_web_session_token(user_id: str, ttl_seconds: int = 30 * 24 * 60 * 60) -> str:
@@ -4558,7 +4585,91 @@ def validate_web_session_token(token: str) -> str:
     return parts[0]
 
 
-def webapp_user_id_from_payload(payload: dict) -> str:
+def normalize_web_pin(pin: str) -> str:
+    value = str(pin or "").strip()
+    if not value.isdigit() or not 4 <= len(value) <= 12:
+        raise ValueError("PIN должен состоять из 4–12 цифр")
+    return value
+
+
+def web_pin_hash(user_id: str, pin: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        f"{user_id}:{pin}".encode("utf-8"),
+        salt.encode("utf-8"),
+        120_000,
+    ).hex()
+
+
+def load_web_pin_row(user_id: str) -> sqlite3.Row | None:
+    with db_connect() as connection:
+        return connection.execute(
+            "SELECT * FROM user_web_pins WHERE user_id = ?",
+            (str(user_id),),
+        ).fetchone()
+
+
+def web_pin_is_set(user_id: str) -> bool:
+    return load_web_pin_row(str(user_id)) is not None
+
+
+def verify_web_pin(user_id: str, pin: str) -> bool:
+    try:
+        clean_pin = normalize_web_pin(pin)
+    except ValueError:
+        return False
+    row = load_web_pin_row(str(user_id))
+    if not row:
+        return False
+    expected = web_pin_hash(str(user_id), clean_pin, str(row["salt"]))
+    return hmac.compare_digest(expected, str(row["pin_hash"]))
+
+
+def save_web_pin(user_id: str, pin: str) -> None:
+    clean_pin = normalize_web_pin(pin)
+    salt = secrets.token_hex(16)
+    pin_hash = web_pin_hash(str(user_id), clean_pin, salt)
+    with db_connect() as connection:
+        connection.execute(
+            """INSERT INTO user_web_pins(user_id, pin_hash, salt, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET pin_hash=excluded.pin_hash, salt=excluded.salt, updated_at=excluded.updated_at""",
+            (str(user_id), pin_hash, salt, now_ts()),
+        )
+
+
+def create_web_pin_session_token(user_id: str, ttl_seconds: int = 12 * 60 * 60) -> str:
+    if not BOT_TOKEN or not str(user_id).isdigit():
+        return ""
+    payload = f"pin.{user_id}.{now_ts() + ttl_seconds}.{secrets.token_hex(8)}"
+    signature = hmac.new(BOT_TOKEN.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload}.{signature}"
+
+
+def validate_web_pin_session_token(token: str) -> str:
+    if not BOT_TOKEN:
+        return ""
+    parts = str(token or "").split(".")
+    if len(parts) != 5 or parts[0] != "pin" or not parts[1].isdigit() or not parts[2].isdigit():
+        return ""
+    payload = ".".join(parts[:4])
+    expected = hmac.new(BOT_TOKEN.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, parts[4]) or int(parts[2]) <= now_ts():
+        return ""
+    return parts[1]
+
+
+def web_pin_unlocked(user_id: str, token: str) -> bool:
+    if not web_pin_is_set(user_id):
+        return False
+    return validate_web_pin_session_token(token) == str(user_id)
+
+
+def web_pin_required_and_missing(user_id: str, pin_token: str) -> bool:
+    return bool(user_id and web_pin_is_set(user_id) and validate_web_pin_session_token(pin_token) != str(user_id))
+
+
+def webapp_user_id_from_payload(payload: dict, require_pin: bool = True) -> str:
     validated = validate_telegram_init_data(str(payload.get("init_data", "")))
     user = (validated or {}).get("user") or {}
     user_id = str(user.get("id") or "").strip()
@@ -4568,6 +4679,8 @@ def webapp_user_id_from_payload(payload: dict) -> str:
     if not user_id:
         return ""
     if actor_id and actor_id != user_id:
+        return ""
+    if require_pin and web_pin_required_and_missing(user_id, str(payload.get("web_pin_token", ""))):
         return ""
     return user_id
 
@@ -4774,6 +4887,11 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed_url.path == "/setup-status":
+            query = parse_qs(parsed_url.query)
+            actor_id = webapp_user_id_from_query(query)
+            if not actor_id or get_user_role(actor_id) != "root":
+                self.send_json({"error": "root access required"}, HTTPStatus.FORBIDDEN)
+                return
             self.send_json(setup_status_payload())
             return
 
@@ -4871,6 +4989,23 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             self.send_json({"settings": load_user_notify_settings(actor_id), "kinds": sorted(DEVICE_ALERT_KINDS)})
             return
 
+        if parsed_url.path == "/api/web-pin/status":
+            query = parse_qs(parsed_url.query)
+            actor_id = webapp_user_id_from_query(query, require_pin=False)
+            if not actor_id or get_user_role(actor_id) == "guest":
+                self.send_json({"error": "bot access required"}, HTTPStatus.FORBIDDEN)
+                return
+            pin_token = query_value(query, "web_pin_token")
+            has_pin = web_pin_is_set(actor_id)
+            self.send_json(
+                {
+                    "has_pin": has_pin,
+                    "verified": bool(has_pin and validate_web_pin_session_token(pin_token) == actor_id),
+                    "role": get_user_role(actor_id),
+                }
+            )
+            return
+
         if parsed_url.path == "/api/post-deploy":
             query = parse_qs(parsed_url.query)
             actor_id = webapp_user_id_from_query(query)
@@ -4880,7 +5015,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             checks = setup_status_payload()
             with db_connect() as connection:
                 counts = {name: int(connection.execute(f"SELECT COUNT(*) AS count FROM {name}").fetchone()["count"]) for name in ("devices", "bot_access", "device_history")}
-            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v10", "api": "ok"})
+            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v11", "api": "ok"})
             return
 
         if parsed_url.path == "/api/alerts/device":
@@ -5275,6 +5410,34 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": "request body too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             return
         parsed_url = urlparse(self.path)
+        if parsed_url.path in {"/api/web-pin/set", "/api/web-pin/verify"}:
+            try:
+                raw_body = self.rfile.read(content_length).decode("utf-8")
+                payload = json.loads(raw_body or "{}")
+                actor_id = webapp_user_id_from_payload(payload, require_pin=False)
+                if not actor_id or get_user_role(actor_id) == "guest":
+                    self.send_json({"error": "bot access required"}, HTTPStatus.FORBIDDEN)
+                    return
+                has_pin = web_pin_is_set(actor_id)
+                if parsed_url.path == "/api/web-pin/verify":
+                    if not has_pin or not verify_web_pin(actor_id, str(payload.get("pin") or "")):
+                        self.send_json({"error": "Неверный PIN"}, HTTPStatus.FORBIDDEN)
+                        return
+                    self.send_json({"ok": True, "web_pin_token": create_web_pin_session_token(actor_id), "has_pin": True})
+                    return
+                if has_pin:
+                    old_pin_ok = verify_web_pin(actor_id, str(payload.get("old_pin") or ""))
+                    token_ok = validate_web_pin_session_token(str(payload.get("web_pin_token") or "")) == actor_id
+                    if not old_pin_ok and not token_ok:
+                        self.send_json({"error": "Для смены PIN нужно подтвердить текущий PIN"}, HTTPStatus.FORBIDDEN)
+                        return
+                save_web_pin(actor_id, str(payload.get("pin") or ""))
+                self.send_json({"ok": True, "web_pin_token": create_web_pin_session_token(actor_id), "has_pin": True})
+                return
+            except (json.JSONDecodeError, ValueError) as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+
         if parsed_url.path == "/api/pair/claim":
             self.handle_pair_claim()
             return
@@ -5809,6 +5972,9 @@ async def callbacks(callback: CallbackQuery) -> None:
     action = callback.data
     audit_callback(callback, "callback", f"Pressed: {action}", {"callback_data": action})
 
+    if action in ROOT_ONLY_PROGRAM_CALLBACKS and not await ensure_callback_root(callback):
+        return
+
     if action == "main_menu":
         await callback.answer()
         await show_bot_screen(
@@ -6107,7 +6273,7 @@ async def callbacks(callback: CallbackQuery) -> None:
 
     if action == "guide":
         await callback.answer()
-        await show_bot_screen(callback, GUIDE_TEXT, reply_markup=connect_keyboard(), parse_mode="Markdown")
+        await show_bot_screen(callback, GUIDE_TEXT, reply_markup=connect_keyboard(is_root_admin_user(callback.from_user)), parse_mode="Markdown")
         return
 
     if action == "pc_agent_info":
@@ -6127,7 +6293,7 @@ async def callbacks(callback: CallbackQuery) -> None:
 
     if action == "connect_wizard":
         await callback.answer()
-        await show_bot_screen(callback, connect_text(callback.from_user.id), reply_markup=connect_keyboard())
+        await show_bot_screen(callback, connect_text(callback.from_user.id), reply_markup=connect_keyboard(is_root_admin_user(callback.from_user)))
         return
 
     if action == "connect_status":
@@ -6138,7 +6304,7 @@ async def callbacks(callback: CallbackQuery) -> None:
             f"{connect_text(callback.from_user.id)}\n\n"
             f"Install page: {public_server_url()}/agent\n"
             f"APK link: {release_apk_url()}",
-            reply_markup=connect_keyboard(),
+            reply_markup=connect_keyboard(is_root_admin_user(callback.from_user)),
         )
         return
 
@@ -6146,7 +6312,7 @@ async def callbacks(callback: CallbackQuery) -> None:
         await callback.answer("Running check...")
         await show_bot_screen(callback, "Проверяю Railway, мини-апп, APK и GitHub workflow...", reply_markup=nav_keyboard("connect_wizard"))
         result = await asyncio.to_thread(run_deploy_checks, callback.from_user.id)
-        await show_bot_screen(callback, result, reply_markup=connect_keyboard())
+        await show_bot_screen(callback, result, reply_markup=connect_keyboard(is_root_admin_user(callback.from_user)))
         return
 
     if action == "connect_build_help":
@@ -6159,7 +6325,7 @@ async def callbacks(callback: CallbackQuery) -> None:
             "3. Бот запустит GitHub Actions и пришлет ссылку на готовый APK.\n\n"
             "По умолчанию собирается Lite APK для Android 10+: подключение, QR и статус устройства. "
             "Полная сборка запускается командой `/build_apk_full Hunter Agent Full` и может требовать больше разрешений на телефоне.",
-            reply_markup=connect_keyboard(),
+            reply_markup=connect_keyboard(is_root_admin_user(callback.from_user)),
             parse_mode="Markdown",
         )
         return
@@ -6190,7 +6356,7 @@ async def callbacks(callback: CallbackQuery) -> None:
             "*Full APK* — если нужно видеть экран, нажимать, свайпать, Back/Home/Recent, вводить текст и открывать системные разделы. "
             "После установки на телефоне нужно вручную включить Accessibility, работу в фоне и подтвердить запись экрана.\n\n"
             "Для твоей задачи с управлением телефоном выбирай *Full APK*.",
-            reply_markup=connect_keyboard(),
+            reply_markup=connect_keyboard(is_root_admin_user(callback.from_user)),
             parse_mode="Markdown",
         )
         return
@@ -6217,7 +6383,7 @@ async def callbacks(callback: CallbackQuery) -> None:
     if action == "my_devices":
         await callback.answer()
         text = format_all_devices_text() if is_project_admin_user(callback.from_user) else format_devices_text(callback.from_user.id)
-        await show_bot_screen(callback, text, reply_markup=connect_keyboard())
+        await show_bot_screen(callback, text, reply_markup=connect_keyboard(is_root_admin_user(callback.from_user)))
         return
 
     if action == "control_info":
@@ -6277,7 +6443,7 @@ async def callbacks(callback: CallbackQuery) -> None:
 
     if action == "guide":
         await callback.answer()
-        await callback.message.answer(GUIDE_TEXT, reply_markup=connect_keyboard(), parse_mode="Markdown")
+        await callback.message.answer(GUIDE_TEXT, reply_markup=connect_keyboard(is_root_admin_user(callback.from_user)), parse_mode="Markdown")
         return
 
     if action == "pc_agent_info":
@@ -6292,7 +6458,7 @@ async def callbacks(callback: CallbackQuery) -> None:
 
     if action == "connect_wizard":
         await callback.answer()
-        await callback.message.answer(connect_text(callback.from_user.id), reply_markup=connect_keyboard())
+        await callback.message.answer(connect_text(callback.from_user.id), reply_markup=connect_keyboard(is_root_admin_user(callback.from_user)))
         return
 
     if action == "connect_status":

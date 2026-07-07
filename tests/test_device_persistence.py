@@ -25,6 +25,7 @@ class DevicePersistenceTests(unittest.TestCase):
             connection.execute("DELETE FROM audit_deliveries")
             connection.execute("DELETE FROM device_history")
             connection.execute("DELETE FROM user_notify_settings")
+            connection.execute("DELETE FROM user_web_pins")
 
     def test_unpaired_agent_is_visible_only_in_project_scope(self) -> None:
         pending = main.upsert_pending_device({
@@ -332,9 +333,27 @@ class DevicePersistenceTests(unittest.TestCase):
 
     def test_root_menu_is_hidden_from_regular_menu(self) -> None:
         regular_labels = [button.text for row in main.main_menu(False).inline_keyboard for button in row]
+        regular_callbacks = [button.callback_data for row in main.main_menu(False).inline_keyboard for button in row if button.callback_data]
         root_labels = [button.text for row in main.main_menu(True).inline_keyboard for button in row]
         self.assertNotIn("◆ Root Command Center", regular_labels)
+        self.assertNotIn("Railway", regular_labels)
+        self.assertNotIn("Настройки", regular_labels)
+        self.assertNotIn("setup_wizard", regular_callbacks)
+        self.assertNotIn("connect_check", regular_callbacks)
         self.assertIn("◆ Root Command Center", root_labels)
+        self.assertIn("Railway", root_labels)
+
+    def test_web_pin_blocks_web_session_until_verified(self) -> None:
+        with patch.object(main, "BOT_TOKEN", "test-bot-token"):
+            main.save_web_pin("100", "482915")
+            web_token = main.create_web_session_token("100")
+            self.assertEqual("", main.webapp_user_id_from_query({"web_token": [web_token]}))
+            self.assertFalse(main.verify_web_pin("100", "000000"))
+            self.assertTrue(main.verify_web_pin("100", "482915"))
+            pin_token = main.create_web_pin_session_token("100")
+            self.assertEqual("100", main.webapp_user_id_from_query({"web_token": [web_token], "web_pin_token": [pin_token]}))
+            row = main.load_web_pin_row("100")
+            self.assertNotIn("482915", row["pin_hash"])
 
     def test_bootstrap_access_survives_empty_database(self) -> None:
         with (

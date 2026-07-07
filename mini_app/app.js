@@ -58,6 +58,7 @@ const deployReadyStatus = $("#deployReadyStatus");
 const deployFixCount = $("#deployFixCount");
 const deployPublicUrl = $("#deployPublicUrl");
 const deployChecklist = $("#deployChecklist");
+deployPanel?.classList.add("hidden");
 const totalDevices = $("#totalDevices");
 const onlineDevices = $("#onlineDevices");
 const userName = $("#userName");
@@ -148,6 +149,8 @@ let webSessionToken = incomingWebSessionToken || localStorage.getItem(webSession
 if (incomingWebSessionToken) {
   localStorage.setItem(webSessionStorageKey, incomingWebSessionToken);
 }
+const webPinSessionStorageKey = `hunter_web_pin_session_${ownerId}`;
+let webPinToken = sessionStorage.getItem(webPinSessionStorageKey) || "";
 const remoteLogStorageKey = `hunter_remote_log_${ownerId}`;
 const installStartedKey = "hunter_agent_install_started";
 const agentOpenAttemptKey = "hunter_agent_open_attempted";
@@ -1234,6 +1237,7 @@ async function loadDevicesFromApi() {
   const params = new URLSearchParams({ owner_id: ownerId });
   if (tg?.initData) params.set("init_data", tg.initData);
   if (webSessionToken) params.set("web_token", webSessionToken);
+  if (webPinToken) params.set("web_pin_token", webPinToken);
   const payload = await apiJson(`${apiBaseUrl}/api/devices?${params.toString()}`);
   devices = payload.devices || [];
   window.currentDeviceScope = payload.scope || "own";
@@ -1241,11 +1245,11 @@ async function loadDevicesFromApi() {
 }
 
 function createPairingQr() {
-  return apiJson(`${apiBaseUrl}/api/pair/new?owner_id=${encodeURIComponent(ownerId)}`);
+  return apiJson(`${apiBaseUrl}/api/pair/new?${apiAuthParams({ owner_id: ownerId }).toString()}`);
 }
 
 function apiAuthPayload(extra = {}) {
-  return { actor_id: ownerId, init_data: tg?.initData || "", web_token: webSessionToken, ...extra };
+  return { actor_id: ownerId, init_data: tg?.initData || "", web_token: webSessionToken, web_pin_token: webPinToken, ...extra };
 }
 
 function apiAuthParams(extra = {}) {
@@ -1255,6 +1259,7 @@ function apiAuthParams(extra = {}) {
     params.set("init_data", tg.initData);
   }
   if (webSessionToken) params.set("web_token", webSessionToken);
+  if (webPinToken) params.set("web_pin_token", webPinToken);
   return params;
 }
 
@@ -1270,6 +1275,102 @@ async function refreshWebSession() {
   } catch (_) {
     // Existing signed session remains usable in PWA/standalone mode.
   }
+}
+
+async function webPinStatus() {
+  return apiJson(`${apiBaseUrl}/api/web-pin/status?${apiAuthParams().toString()}`);
+}
+
+function removeWebPinOverlay() {
+  $("#webPinLock")?.remove();
+}
+
+function renderWebPinOverlay({ hasPin = false, error = "" } = {}) {
+  removeWebPinOverlay();
+  const overlay = document.createElement("div");
+  overlay.id = "webPinLock";
+  overlay.className = "web-pin-lock";
+  overlay.innerHTML = `
+    <div class="web-pin-card">
+      <div class="web-pin-orb">🛡</div>
+      <p class="eyebrow">HUNTER CONTROL · WEB ACCESS</p>
+      <h2>${hasPin ? "Введите PIN веб‑доступа" : "Создайте PIN веб‑доступа"}</h2>
+      <p>${hasPin ? "Это дополнительная защита панели: даже при открытой Telegram-сессии веб‑пульт не покажет устройства без PIN." : "PIN будет запрашиваться при входе в веб‑пульт и хранится на сервере только в виде защищённого хеша."}</p>
+      <form id="webPinForm">
+        <input id="webPinInput" inputmode="numeric" autocomplete="one-time-code" minlength="4" maxlength="12" pattern="[0-9]{4,12}" placeholder="${hasPin ? "Ваш PIN" : "Новый PIN, 4–12 цифр"}" type="password" required>
+        ${hasPin ? "" : '<input id="webPinConfirm" inputmode="numeric" autocomplete="one-time-code" minlength="4" maxlength="12" pattern="[0-9]{4,12}" placeholder="Повторите PIN" type="password" required>'}
+        <button type="submit">${hasPin ? "Разблокировать веб‑пульт" : "Создать PIN и открыть"}</button>
+      </form>
+      <small id="webPinError">${escapeHtml(error)}</small>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  setTimeout(() => $("#webPinInput")?.focus(), 50);
+  return overlay;
+}
+
+function storeWebPinToken(token) {
+  webPinToken = token || "";
+  if (webPinToken) {
+    sessionStorage.setItem(webPinSessionStorageKey, webPinToken);
+  } else {
+    sessionStorage.removeItem(webPinSessionStorageKey);
+  }
+}
+
+async function ensureWebPinUnlocked() {
+  if (!tg?.initData && !webSessionToken) {
+    showWebRuntimeError("нужна Telegram-сессия или защищённая ссылка /web");
+    return false;
+  }
+  let status;
+  try {
+    status = await webPinStatus();
+  } catch (error) {
+    showWebRuntimeError(error.message);
+    return false;
+  }
+  if (status.verified) {
+    removeWebPinOverlay();
+    return true;
+  }
+
+  return new Promise((resolve) => {
+    const overlay = renderWebPinOverlay({ hasPin: status.has_pin });
+    const form = $("#webPinForm", overlay);
+    const errorBox = $("#webPinError", overlay);
+    form?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const pin = $("#webPinInput", overlay)?.value.trim() || "";
+      const confirm = $("#webPinConfirm", overlay)?.value.trim() || "";
+      if (!/^\d{4,12}$/.test(pin)) {
+        errorBox.textContent = "PIN должен состоять из 4–12 цифр.";
+        return;
+      }
+      if (!status.has_pin && pin !== confirm) {
+        errorBox.textContent = "PIN и повтор PIN не совпадают.";
+        return;
+      }
+      const submitButton = $("button[type='submit']", overlay);
+      submitButton.disabled = true;
+      submitButton.textContent = status.has_pin ? "Проверяю..." : "Создаю...";
+      try {
+        const endpoint = status.has_pin ? "/api/web-pin/verify" : "/api/web-pin/set";
+        const payload = await apiJson(`${apiBaseUrl}${endpoint}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(apiAuthPayload({ pin })),
+        });
+        storeWebPinToken(payload.web_pin_token);
+        removeWebPinOverlay();
+        resolve(true);
+      } catch (error) {
+        errorBox.textContent = error.message || "Не удалось подтвердить PIN.";
+        submitButton.disabled = false;
+        submitButton.textContent = status.has_pin ? "Разблокировать веб‑пульт" : "Создать PIN и открыть";
+      }
+    });
+  });
 }
 
 function escapeHtml(value) {
@@ -2073,6 +2174,9 @@ function render() {
   userName.textContent = profileName;
   const scopeText = window.currentDeviceScope === "all" ? "все устройства проекта" : "твои устройства";
   const meta = window.currentDeviceMeta || {};
+  const isRoot = meta.role === "root";
+  deployPanel?.classList.toggle("hidden", !isRoot);
+  if (isRoot && !setupStatus && !setupStatusLoading) loadSetupStatus();
   const authSummary = meta.role
     ? `Access: ${meta.role}, scope: ${window.currentDeviceScope}, API: ${meta.returned_count ?? devices.length}/${meta.server_total_count ?? "?"}.`
     : "";
@@ -2460,7 +2564,9 @@ emergencyStopButton?.addEventListener("click", async () => {
 
 refreshButton.addEventListener("click", async () => {
   setupText.textContent = "Обновляю список устройств...";
-  await Promise.all([refreshDevices(), loadSetupStatus()]);
+  const tasks = [refreshDevices()];
+  if (window.currentDeviceMeta?.role === "root") tasks.push(loadSetupStatus());
+  await Promise.all(tasks);
 });
 
 deployRefreshButton?.addEventListener("click", loadSetupStatus);
@@ -2489,7 +2595,11 @@ commandPaletteInput?.addEventListener("input", filterCommandPalette);
 commandPaletteItems.forEach((item) => item.addEventListener("click", async () => {
   setCommandPalette(false);
   if (item.dataset.target) document.querySelector(item.dataset.target)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  if (item.dataset.action === "refresh") await Promise.all([refreshDevices(), loadSetupStatus()]);
+  if (item.dataset.action === "refresh") {
+    const tasks = [refreshDevices()];
+    if (window.currentDeviceMeta?.role === "root") tasks.push(loadSetupStatus());
+    await Promise.all(tasks);
+  }
   if (item.dataset.action === "theme") themeButton.click();
 }));
 document.addEventListener("keydown", (event) => {
@@ -2527,12 +2637,14 @@ syncFullscreenState();
 renderRemoteLog();
 renderCurrentDevice();
 renderSetupStatus();
-loadSetupStatus();
-loadTimeline();
-refreshWebSession().finally(() => {
-  refreshDevices();
+async function bootMiniApp() {
+  await refreshWebSession();
+  const unlocked = await ensureWebPinUnlocked();
+  if (!unlocked) return;
+  await refreshDevices();
   loadPersonalAlerts();
-});
-startRefreshLoop();
+  startRefreshLoop();
+}
+bootMiniApp();
 updateLocalClock();
 setInterval(updateLocalClock, 1000);
