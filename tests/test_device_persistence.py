@@ -112,6 +112,48 @@ class DevicePersistenceTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual("paired-secret", row["secret"])
 
+    def test_heartbeat_does_not_overwrite_saved_device_name(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Рабочий телефон"})
+        self.assertTrue(main.rename_device("100", "phone-1", "Командировочный Xiaomi"))
+
+        updated = main.upsert_device(
+            {
+                "owner_id": "100",
+                "device_id": "phone-1",
+                "name": "Android device",
+                "platform": "Android 16",
+                "telemetry": {"model": "Xiaomi 2410"},
+            }
+        )
+
+        self.assertEqual("Командировочный Xiaomi", updated["name"])
+        self.assertEqual("Командировочный Xiaomi", main.list_devices_for_user("100")[0]["name"])
+
+    def test_new_devices_with_same_reported_name_get_unique_names(self) -> None:
+        first = main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Android device", "telemetry": {"model": "Xiaomi"}})
+        second = main.upsert_device({"owner_id": "100", "device_id": "phone-2", "name": "Android device", "telemetry": {"model": "Xiaomi"}})
+        third = main.upsert_pending_device({"device_id": "phone-3", "name": "Android device", "telemetry": {"model": "Xiaomi"}})
+
+        self.assertEqual("Xiaomi", first["name"])
+        self.assertEqual("Xiaomi 2", second["name"])
+        self.assertEqual("Xiaomi 3", third["name"])
+
+    def test_init_db_repairs_existing_duplicate_device_names(self) -> None:
+        with main.db_connect() as connection:
+            now = main.now_ts()
+            for device_id in ("phone-1", "phone-2", "phone-3"):
+                connection.execute(
+                    """INSERT INTO devices(owner_id, device_id, name, type, platform, agent, secret, telemetry_json, last_seen, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ("100", device_id, "Xiaomi", "phone", "Android", "android-agent", "", "{}", now, now),
+                )
+
+        main.init_db()
+        names = [device["name"] for device in main.list_devices_for_user("100")]
+
+        self.assertEqual(len(names), len(set(names)))
+        self.assertIn("Xiaomi 2", names)
+
     def test_start_dashboard_and_main_menu_are_renderable(self) -> None:
         with patch.object(main, "setup_checks", return_value=[]), patch.object(main, "railway_storage_is_persistent", return_value=True):
             text = main.dashboard_text(100)
@@ -193,6 +235,33 @@ class DevicePersistenceTests(unittest.TestCase):
 
         self.assertEqual(1, notify.call_count)
         self.assertEqual("agent_error", notify.call_args.args[2]["kind"])
+
+    def test_duplicate_device_alerts_are_throttled_by_fingerprint(self) -> None:
+        state = {"devices": {}, "alerts": {}}
+        device = {"owner_id": "100", "device_id": "phone-1", "telemetry": {}}
+        first = {"kind": "agent_error"}
+        duplicate = {"kind": "agent_error"}
+        later = {"kind": "agent_error"}
+
+        self.assertTrue(main.device_alert_should_send(state, device, "ошибка агента: timeout", first, now=1000))
+        self.assertFalse(main.device_alert_should_send(state, device, "ошибка агента: timeout", duplicate, now=1010))
+        self.assertTrue(
+            main.device_alert_should_send(
+                state,
+                device,
+                "ошибка агента: timeout",
+                later,
+                now=1000 + main.DEVICE_ALERT_COOLDOWNS_SECONDS["agent_error"] + 1,
+            )
+        )
+        self.assertEqual("important", first["priority"])
+        self.assertEqual(1, later["suppressed_since_last"])
+
+    def test_device_alert_priorities_and_cooldowns_are_typed(self) -> None:
+        self.assertEqual("critical", main.device_alert_priority("offline"))
+        self.assertEqual("important", main.device_alert_priority("battery"))
+        self.assertEqual("info", main.device_alert_priority("network"))
+        self.assertGreater(main.device_alert_cooldown_seconds("battery"), main.device_alert_cooldown_seconds("offline"))
 
     def test_railway_rejects_relative_ephemeral_storage(self) -> None:
         with (

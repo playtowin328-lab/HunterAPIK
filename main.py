@@ -386,6 +386,34 @@ def init_db() -> None:
                 user_id TEXT PRIMARY KEY, settings_json TEXT NOT NULL DEFAULT '{}', updated_at INTEGER NOT NULL
             )"""
         )
+        rows = connection.execute(
+            "SELECT owner_id, device_id, name FROM devices ORDER BY owner_id, name, created_at, device_id"
+        ).fetchall()
+        seen_names: dict[str, set[str]] = {}
+        base_counts: dict[tuple[str, str], int] = {}
+        for row in rows:
+            owner_id = str(row["owner_id"])
+            device_id = str(row["device_id"])
+            original_name = str(row["name"] or "Android device").strip() or "Android device"
+            owner_seen = seen_names.setdefault(owner_id, set())
+            if original_name not in owner_seen:
+                owner_seen.add(original_name)
+                base_counts[(owner_id, original_name)] = 1
+                continue
+            base_counts[(owner_id, original_name)] = base_counts.get((owner_id, original_name), 1) + 1
+            index = base_counts[(owner_id, original_name)]
+            while True:
+                suffix = f" {index}"
+                candidate = f"{original_name[:80 - len(suffix)]}{suffix}"
+                if candidate not in owner_seen:
+                    break
+                index += 1
+            owner_seen.add(candidate)
+            base_counts[(owner_id, original_name)] = index
+            connection.execute(
+                "UPDATE devices SET name = ? WHERE owner_id = ? AND device_id = ?",
+                (candidate, owner_id, device_id),
+            )
 
 
 init_db()
@@ -517,9 +545,10 @@ def sanitize_audit_value(value: object, key: str = "", depth: int = 0) -> object
 def audit_event_policy(action: str, metadata: dict) -> tuple[str, str]:
     action = str(action or "")
     kind = str(metadata.get("kind") or "")
+    priority = str(metadata.get("priority") or device_alert_priority(kind))
     if action in {"grant_access", "revoke_access", "device_alert_settings"} or action.startswith("command_root"):
         return "security", "root"
-    if action == "device_alert" and kind in {"offline", "health", "agent_error", "screen_error", "command_queue"}:
+    if action == "device_alert" and priority in {"critical", "important"}:
         return "warning", "admin"
     if action in {"device_command_result", "device_manage"} and str(metadata.get("status") or "") in {"failed", "rejected", "error"}:
         return "warning", "admin"
@@ -636,6 +665,32 @@ DEVICE_ALERT_KINDS = {
     "health",
     "permission",
 }
+
+DEVICE_ALERT_PRIORITIES = {
+    "critical": {"offline", "lost_mode", "blackout", "permission"},
+    "important": {"battery", "accessibility", "agent_error", "screen_error", "command_queue", "health"},
+    "info": {"online", "charging", "network", "screen", "monitor_started"},
+}
+
+DEVICE_ALERT_COOLDOWNS_SECONDS = {
+    "offline": 30 * 60,
+    "online": 10 * 60,
+    "battery": 3 * 60 * 60,
+    "charging": 6 * 60 * 60,
+    "network": 2 * 60 * 60,
+    "lost_mode": 5 * 60,
+    "blackout": 10 * 60,
+    "accessibility": 2 * 60 * 60,
+    "permission": 2 * 60 * 60,
+    "screen": 30 * 60,
+    "agent_error": 30 * 60,
+    "screen_error": 30 * 60,
+    "command_queue": 30 * 60,
+    "health": 60 * 60,
+    "monitor_started": 24 * 60 * 60,
+}
+
+DEVICE_ALERT_PRIORITY_WEIGHT = {"critical": 0, "important": 1, "info": 2}
 
 DEFAULT_DEVICE_NOTIFY_SETTINGS = {
     "enabled": True,
@@ -855,12 +910,30 @@ async def notify_root_admins(event: dict) -> None:
         battery = metadata.get("battery_percent")
         battery_text = f"{battery}%" if isinstance(battery, (int, float)) and battery >= 0 else "—"
         network = str(metadata.get("network") or "—").upper()
+        priority = str(metadata.get("priority") or device_alert_priority(kind))
+        priority_label = {
+            "critical": "🚨 Критичное",
+            "important": "⭐ Важное",
+            "info": "ℹ️ Информационное",
+        }.get(priority, "ℹ️ Информационное")
+        cooldown_text = human_duration_ru(metadata.get("cooldown_seconds"))
+        suppressed = int(metadata.get("suppressed_since_last") or 0)
+        anti_spam_lines = [
+            f"• Вид уведомления: {priority_label}",
+            f"• Повтор такого события: не чаще чем раз в {cooldown_text}",
+        ]
+        if suppressed > 0:
+            anti_spam_lines.append(f"• Тихо скрыто повторов до этого сообщения: {suppressed}")
         text = (
             f"{icon} HUNTER CONTROL · {device_name}\n\n"
             f"Что произошло\n{event.get('detail', 'Новое событие устройства')}\n\n"
             f"Что сделать\n{recommendation}\n\n"
             f"Детали\n• Тип: {kind_label}\n• Модель: {model}\n• Заряд: {battery_text}\n• Сеть: {network}\n• Время: {created}\n• ID устройства: {device_id}\n• Владелец: {owner_id}\n\n"
             "Событие сохранено в защищённом Trust Timeline."
+        )
+        text = text.replace(
+            "\n\nСобытие сохранено",
+            "\n" + "\n".join(anti_spam_lines) + "\n\nСобытие сохранено",
         )
     else:
         action = str(event.get("action") or "")
@@ -982,9 +1055,14 @@ def audit_callback(callback: CallbackQuery, action: str, detail: str = "", metad
 
 def load_device_notify_state() -> dict:
     try:
-        return json.loads(DEVICE_NOTIFY_STATE_PATH.read_text(encoding="utf-8"))
+        data = json.loads(DEVICE_NOTIFY_STATE_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("devices", {})
+            data.setdefault("alerts", {})
+            return data
     except (OSError, ValueError, json.JSONDecodeError):
-        return {"devices": {}}
+        pass
+    return {"devices": {}, "alerts": {}}
 
 
 def save_device_notify_state(data: dict) -> None:
@@ -1070,6 +1148,105 @@ def save_user_notify_settings(user_id: str, settings: dict) -> dict:
     return clean
 
 
+def device_alert_priority(kind: str) -> str:
+    kind = str(kind or "")
+    for priority, kinds in DEVICE_ALERT_PRIORITIES.items():
+        if kind in kinds:
+            return priority
+    return "info"
+
+
+def device_alert_cooldown_seconds(kind: str, priority: str = "") -> int:
+    kind = str(kind or "")
+    if kind in DEVICE_ALERT_COOLDOWNS_SECONDS:
+        return DEVICE_ALERT_COOLDOWNS_SECONDS[kind]
+    return {"critical": 10 * 60, "important": 30 * 60, "info": 2 * 60 * 60}.get(str(priority or ""), 60 * 60)
+
+
+def human_duration_ru(seconds: int | float | None) -> str:
+    try:
+        seconds = int(seconds or 0)
+    except (TypeError, ValueError):
+        seconds = 0
+    if seconds <= 0:
+        return "без задержки"
+    if seconds < 60:
+        return f"{seconds} сек."
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} мин."
+    hours = minutes // 60
+    rest = minutes % 60
+    if rest:
+        return f"{hours} ч. {rest} мин."
+    return f"{hours} ч."
+
+
+def device_alert_fingerprint(device: dict, text: str, metadata: dict | None = None) -> str:
+    metadata = metadata or {}
+    kind = str(metadata.get("kind") or "unknown")
+    if kind == "battery":
+        stable_part = str(metadata.get("bucket") or "")
+    elif kind == "permission":
+        stable_part = str(metadata.get("permission") or "")
+    elif kind == "network":
+        stable_part = str((device.get("telemetry") or {}).get("network") or "")
+    elif kind in {"agent_error", "screen_error"}:
+        stable_part = hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()[:16]
+    elif kind == "command_queue":
+        stable_part = "pending"
+    else:
+        stable_part = str(text or "")[:120]
+    return ":".join(
+        [
+            str(device.get("owner_id") or ""),
+            str(device.get("device_id") or ""),
+            kind,
+            stable_part,
+        ]
+    )
+
+
+def device_alert_enrich_metadata(device: dict, text: str, metadata: dict | None = None) -> dict:
+    enriched = dict(metadata or {})
+    kind = str(enriched.get("kind") or "unknown")
+    priority = device_alert_priority(kind)
+    enriched.setdefault("priority", priority)
+    enriched.setdefault("notification_type", priority)
+    enriched.setdefault("cooldown_seconds", device_alert_cooldown_seconds(kind, priority))
+    enriched.setdefault("fingerprint", device_alert_fingerprint(device, text, enriched))
+    return enriched
+
+
+def device_alert_should_send(state: dict, device: dict, text: str, metadata: dict, now: int | None = None) -> bool:
+    now = int(now or now_ts())
+    enriched = device_alert_enrich_metadata(device, text, metadata)
+    metadata.update(enriched)
+    fingerprint = str(enriched.get("fingerprint") or device_alert_fingerprint(device, text, enriched))
+    cooldown = int(enriched.get("cooldown_seconds") or 0)
+    alerts_state = state.setdefault("alerts", {})
+    previous = alerts_state.get(fingerprint) if isinstance(alerts_state.get(fingerprint), dict) else {}
+    last_sent = int(previous.get("last_sent") or 0) if previous else 0
+    if last_sent and now - last_sent < cooldown:
+        previous["suppressed"] = int(previous.get("suppressed") or 0) + 1
+        previous["last_suppressed_at"] = now
+        previous["last_detail"] = str(text or "")[:240]
+        alerts_state[fingerprint] = previous
+        return False
+    suppressed = int(previous.get("suppressed") or 0) if previous else 0
+    if suppressed:
+        metadata["suppressed_since_last"] = suppressed
+    alerts_state[fingerprint] = {
+        "last_sent": now,
+        "last_detail": str(text or "")[:240],
+        "kind": str(enriched.get("kind") or "unknown"),
+        "priority": str(enriched.get("priority") or "info"),
+        "cooldown_seconds": cooldown,
+        "suppressed": 0,
+    }
+    return True
+
+
 def device_alert_allowed(kind: str, owner_id: str = "") -> bool:
     settings = load_device_notify_settings()
     if not settings.get("enabled"):
@@ -1135,7 +1312,7 @@ def device_alert_detail(device: dict, text: str) -> str:
 
 
 def notify_device_alert(device: dict, text: str, metadata: dict | None = None) -> None:
-    metadata = metadata or {}
+    metadata = device_alert_enrich_metadata(device, text, metadata or {})
     telemetry = device.get("telemetry") or {}
     kind = str(metadata.get("kind") or "unknown")
     if not device_alert_allowed(kind, str(device.get("owner_id") or "")):
@@ -1162,6 +1339,7 @@ def notify_device_alert(device: dict, text: str, metadata: dict | None = None) -
 def process_device_notifications(device: dict, force: bool = False) -> None:
     if not device.get("owner_id") or not device.get("device_id"):
         return
+    filtered_alerts: list[tuple[str, dict]] = []
     with DEVICE_NOTIFY_LOCK:
         state = load_device_notify_state()
         devices_state = state.setdefault("devices", {})
@@ -1214,9 +1392,15 @@ def process_device_notifications(device: dict, force: bool = False) -> None:
         elif force:
             alerts.append(("устройство добавлено в мониторинг уведомлений", {"kind": "monitor_started"}))
 
+        alerts.sort(key=lambda item: DEVICE_ALERT_PRIORITY_WEIGHT.get(device_alert_priority(str(item[1].get("kind") or "")), 9))
+        for detail, metadata in alerts:
+            enriched = device_alert_enrich_metadata(device, detail, metadata)
+            if device_alert_should_send(state, device, detail, enriched):
+                filtered_alerts.append((detail, enriched))
+
         devices_state[key] = {**snapshot, "updated_at": now_ts()}
         save_device_notify_state(state)
-    for detail, metadata in alerts[:6]:
+    for detail, metadata in filtered_alerts[:3]:
         notify_device_alert(device, detail, metadata)
 
 
@@ -4030,6 +4214,44 @@ def normalize_device(raw_device: dict) -> dict:
     }
 
 
+def device_base_name(raw_name: str, platform: str = "", telemetry: dict | None = None) -> str:
+    telemetry = telemetry or {}
+    name = str(raw_name or "").strip()
+    model = str(telemetry.get("model") or "").strip()
+    if not name or name.lower() in {"unknown device", "android device", "device", "unknown"}:
+        name = model or str(platform or "").strip() or "Android device"
+    return name[:80] or "Android device"
+
+
+def unique_device_name(connection: sqlite3.Connection, owner_id: str, device_id: str, base_name: str, include_pending: bool = False) -> str:
+    base = (base_name or "Android device").strip()[:72] or "Android device"
+    if str(owner_id):
+        rows = connection.execute(
+            "SELECT name FROM devices WHERE owner_id = ? AND device_id != ?",
+            (str(owner_id), str(device_id)),
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            "SELECT name FROM devices WHERE device_id != ?",
+            (str(device_id),),
+        ).fetchall()
+    names = {str(row["name"]) for row in rows}
+    if include_pending:
+        pending_rows = connection.execute(
+            "SELECT name FROM pending_devices WHERE device_id != ?",
+            (str(device_id),),
+        ).fetchall()
+        names.update(str(row["name"]) for row in pending_rows)
+    if base not in names:
+        return base[:80]
+    for index in range(2, 1000):
+        suffix = f" {index}"
+        candidate = f"{base[:80 - len(suffix)]}{suffix}"
+        if candidate not in names:
+            return candidate
+    return f"{base[:68]} {secrets.token_hex(3)}"[:80]
+
+
 def decode_json_object(value: str | None) -> dict:
     """Decode persisted JSON without letting one damaged row break the API."""
     try:
@@ -4047,18 +4269,28 @@ def upsert_device(raw_device: dict) -> dict:
     now = int(time.time())
     with db_connect() as connection:
         row = connection.execute(
-            "SELECT created_at, secret FROM devices WHERE owner_id = ? AND device_id = ?",
+            "SELECT created_at, secret, name FROM devices WHERE owner_id = ? AND device_id = ?",
             (device["owner_id"], device["device_id"]),
         ).fetchone()
         device["created_at"] = int(row["created_at"]) if row else now
         device["secret"] = device["secret"] or (str(row["secret"]) if row else "")
+        if row:
+            device["name"] = str(row["name"] or device["name"])
+        else:
+            pending_row = connection.execute(
+                "SELECT name FROM pending_devices WHERE device_id = ?",
+                (device["device_id"],),
+            ).fetchone()
+            pending_name = str(pending_row["name"]) if pending_row else ""
+            base_name = device_base_name(pending_name or device["name"], device["platform"], device["telemetry"])
+            device["name"] = unique_device_name(connection, device["owner_id"], device["device_id"], base_name, include_pending=False)
         device["last_seen"] = now
         connection.execute(
             """
             INSERT INTO devices(owner_id, device_id, name, type, platform, agent, secret, telemetry_json, last_seen, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(owner_id, device_id) DO UPDATE SET
-                name = excluded.name,
+                name = CASE WHEN devices.name = '' THEN excluded.name ELSE devices.name END,
                 type = excluded.type,
                 platform = excluded.platform,
                 agent = excluded.agent,
@@ -4143,13 +4375,17 @@ def upsert_pending_device(raw_device: dict) -> dict:
         "last_seen": now, "created_at": now, "online": True, "pairing_required": True,
     }
     with db_connect() as connection:
-        row = connection.execute("SELECT created_at FROM pending_devices WHERE device_id = ?", (device_id,)).fetchone()
+        row = connection.execute("SELECT created_at, name FROM pending_devices WHERE device_id = ?", (device_id,)).fetchone()
         if row:
             device["created_at"] = int(row["created_at"])
+            device["name"] = str(row["name"] or device["name"])
+        else:
+            base_name = device_base_name(device["name"], device["platform"], telemetry)
+            device["name"] = unique_device_name(connection, "", device_id, base_name, include_pending=True)
         connection.execute(
             """INSERT INTO pending_devices(device_id, name, platform, agent, telemetry_json, last_seen, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(device_id) DO UPDATE SET name=excluded.name, platform=excluded.platform,
+               ON CONFLICT(device_id) DO UPDATE SET name=CASE WHEN pending_devices.name = '' THEN excluded.name ELSE pending_devices.name END, platform=excluded.platform,
                agent=excluded.agent, telemetry_json=excluded.telemetry_json, last_seen=excluded.last_seen""",
             (device_id, device["name"], device["platform"], device["agent"], json.dumps(telemetry, ensure_ascii=False), now, device["created_at"]),
         )
