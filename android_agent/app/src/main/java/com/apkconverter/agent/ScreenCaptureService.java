@@ -121,8 +121,14 @@ public class ScreenCaptureService extends Service {
         }
         windowManager.getDefaultDisplay().getRealMetrics(metrics);
 
-        int width = metrics.widthPixels;
-        int height = metrics.heightPixels;
+        int sourceWidth = metrics.widthPixels;
+        int sourceHeight = metrics.heightPixels;
+        int maxSize = AgentConfig.prefs(this).getInt(AgentConfig.KEY_SCREEN_MAX_SIZE, 960);
+        maxSize = Math.max(360, Math.min(1440, maxSize));
+        int longestSide = Math.max(sourceWidth, sourceHeight);
+        float displayScale = longestSide <= maxSize ? 1f : (float) maxSize / longestSide;
+        int width = Math.max(1, Math.round(sourceWidth * displayScale));
+        int height = Math.max(1, Math.round(sourceHeight * displayScale));
         int density = metrics.densityDpi;
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
@@ -155,7 +161,14 @@ public class ScreenCaptureService extends Service {
                 image.close();
                 return;
             }
-            uploadExecutor.execute(() -> captureAndUpload(image));
+            try {
+                uploadExecutor.execute(() -> captureAndUpload(image));
+            } catch (RuntimeException exc) {
+                droppedFrames.incrementAndGet();
+                lastError = String.valueOf(exc.getMessage());
+                image.close();
+                uploadInProgress.set(false);
+            }
         }, handler);
 
         virtualDisplay = mediaProjection.createVirtualDisplay(
@@ -173,6 +186,9 @@ public class ScreenCaptureService extends Service {
 
     private void captureAndUpload(Image image) {
         long started = System.currentTimeMillis();
+        Bitmap bitmap = null;
+        Bitmap cropped = null;
+        Bitmap scaled = null;
         try {
             Image.Plane[] planes = image.getPlanes();
             ByteBuffer buffer = planes[0].getBuffer();
@@ -180,21 +196,21 @@ public class ScreenCaptureService extends Service {
             int rowStride = planes[0].getRowStride();
             int rowPadding = rowStride - pixelStride * image.getWidth();
 
-            Bitmap bitmap = Bitmap.createBitmap(
+            bitmap = Bitmap.createBitmap(
                     image.getWidth() + rowPadding / pixelStride,
                     image.getHeight(),
                     Bitmap.Config.ARGB_8888
             );
             bitmap.copyPixelsFromBuffer(buffer);
 
-            Bitmap cropped = Bitmap.createBitmap(bitmap, 0, 0, image.getWidth(), image.getHeight());
+            cropped = Bitmap.createBitmap(bitmap, 0, 0, image.getWidth(), image.getHeight());
             int maxSize = AgentConfig.prefs(this).getInt(AgentConfig.KEY_SCREEN_MAX_SIZE, 960);
-            maxSize = Math.max(360, Math.min(2160, maxSize));
+            maxSize = Math.max(360, Math.min(1440, maxSize));
             int longestSide = Math.max(cropped.getWidth(), cropped.getHeight());
             float scale = longestSide <= maxSize ? 1f : (float) maxSize / longestSide;
             int targetWidth = Math.max(1, Math.round(cropped.getWidth() * scale));
             int targetHeight = Math.max(1, Math.round(cropped.getHeight() * scale));
-            Bitmap scaled = Bitmap.createScaledBitmap(cropped, targetWidth, targetHeight, true);
+            scaled = scale >= 0.999f ? cropped : Bitmap.createScaledBitmap(cropped, targetWidth, targetHeight, true);
             float blackRatio = blackFrameRatio(scaled);
             boolean blackFrame = blackRatio >= 0.985f;
 
@@ -209,16 +225,21 @@ public class ScreenCaptureService extends Service {
             uploadedFrames.incrementAndGet();
             lastUploadMs = System.currentTimeMillis() - started;
             lastError = "";
-
-            bitmap.recycle();
-            cropped.recycle();
-            scaled.recycle();
         } catch (Exception exc) {
             droppedFrames.incrementAndGet();
             lastError = String.valueOf(exc.getMessage());
             // The heartbeat service surfaces command state; capture upload failures are retried by next frame.
         } finally {
             image.close();
+            if (scaled != null && scaled != cropped && !scaled.isRecycled()) {
+                scaled.recycle();
+            }
+            if (cropped != null && !cropped.isRecycled()) {
+                cropped.recycle();
+            }
+            if (bitmap != null && !bitmap.isRecycled()) {
+                bitmap.recycle();
+            }
             uploadInProgress.set(false);
         }
     }

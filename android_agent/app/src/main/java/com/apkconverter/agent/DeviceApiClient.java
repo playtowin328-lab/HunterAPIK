@@ -16,11 +16,11 @@ import android.util.Base64;
 import org.json.JSONObject;
 
 final class DeviceApiClient {
-    private static final int CONNECT_TIMEOUT_MS = 12000;
-    private static final int READ_TIMEOUT_MS = 12000;
+    private static final int CONNECT_TIMEOUT_MS = 6000;
+    private static final int READ_TIMEOUT_MS = 6000;
     private static final int MAX_COMMAND_RESULT_LENGTH = 1200;
-    private static final int NETWORK_ATTEMPTS = 3;
-    private static final long RETRY_BASE_DELAY_MS = 750L;
+    private static final int NETWORK_ATTEMPTS = 2;
+    private static final long RETRY_BASE_DELAY_MS = 350L;
 
     private DeviceApiClient() {
     }
@@ -38,7 +38,11 @@ final class DeviceApiClient {
                 .put("agent", "android-agent")
                 .put("telemetry", new JSONObject(AgentTelemetry.toJson(context)));
         HttpURLConnection connection = openConnection(endpoint(serverUrl, "/api/devices/discover"), "POST");
-        return sendJson(connection, payload);
+        try {
+            return sendJson(connection, payload);
+        } finally {
+            connection.disconnect();
+        }
     }
 
     static String heartbeat(Context context) throws Exception {
@@ -67,13 +71,17 @@ final class DeviceApiClient {
                     .put("telemetry", new JSONObject(AgentTelemetry.toJson(context)));
 
             HttpURLConnection connection = openConnection(endpoint(serverUrl, "/api/devices/heartbeat"), "POST");
-            if (!token.isEmpty()) {
-                connection.setRequestProperty("Authorization", "Bearer " + token);
-            } else if (!deviceSecret.isEmpty()) {
-                connection.setRequestProperty("X-Device-Secret", deviceSecret);
-            }
+            try {
+                if (!token.isEmpty()) {
+                    connection.setRequestProperty("Authorization", "Bearer " + token);
+                } else if (!deviceSecret.isEmpty()) {
+                    connection.setRequestProperty("X-Device-Secret", deviceSecret);
+                }
 
-            return sendJson(connection, payload);
+                return sendJson(connection, payload);
+            } finally {
+                connection.disconnect();
+            }
         });
     }
 
@@ -93,9 +101,13 @@ final class DeviceApiClient {
                     + "&device_id=" + urlEncode(AgentConfig.getDeviceId(context));
 
             HttpURLConnection connection = openConnection(endpoint, "GET");
-            connection.setRequestProperty("X-Device-Secret", deviceSecret);
-
-            JSONObject response = new JSONObject(readSuccessfulResponse(connection));
+            JSONObject response;
+            try {
+                connection.setRequestProperty("X-Device-Secret", deviceSecret);
+                response = new JSONObject(readSuccessfulResponse(connection));
+            } finally {
+                connection.disconnect();
+            }
             JSONObject commandJson = response.optJSONObject("command");
             if (commandJson == null) {
                 return null;
@@ -139,9 +151,12 @@ final class DeviceApiClient {
                     .put("result", truncate(result, MAX_COMMAND_RESULT_LENGTH));
 
             HttpURLConnection connection = openConnection(endpoint(serverUrl, "/api/devices/commands/complete"), "POST");
-            connection.setRequestProperty("X-Device-Secret", deviceSecret);
-
-            sendJson(connection, payload);
+            try {
+                connection.setRequestProperty("X-Device-Secret", deviceSecret);
+                sendJson(connection, payload);
+            } finally {
+                connection.disconnect();
+            }
             return null;
         });
     }
@@ -162,9 +177,12 @@ final class DeviceApiClient {
                     .put("black_ratio", blackRatio);
 
             HttpURLConnection connection = openConnection(endpoint(serverUrl, "/api/devices/screen"), "POST");
-            connection.setRequestProperty("X-Device-Secret", deviceSecret);
-
-            sendJson(connection, payload);
+            try {
+                connection.setRequestProperty("X-Device-Secret", deviceSecret);
+                sendJson(connection, payload);
+            } finally {
+                connection.disconnect();
+            }
             return null;
         });
     }
@@ -190,7 +208,12 @@ final class DeviceApiClient {
                 .put("agent", "android-agent");
 
         HttpURLConnection connection = openConnection(endpoint(serverUrl, "/api/pair/claim"), "POST");
-        String responseText = sendJson(connection, payload);
+        String responseText;
+        try {
+            responseText = sendJson(connection, payload);
+        } finally {
+            connection.disconnect();
+        }
         JSONObject response = new JSONObject(responseText);
 
         String ownerId = response.optString("owner_id", "");

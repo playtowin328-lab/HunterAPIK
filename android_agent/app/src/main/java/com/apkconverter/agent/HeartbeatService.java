@@ -31,14 +31,16 @@ public class HeartbeatService extends Service {
 
     private static final String CHANNEL_ID = "apk_agent_connection";
     private static final int NOTIFICATION_ID = 41;
-    private static final long COMMAND_POLL_INTERVAL_MS = 500L;
-    private static final int MAX_COMMANDS_PER_TICK = 6;
+    private static final long COMMAND_POLL_INTERVAL_MS = 1500L;
+    private static final int MAX_COMMANDS_PER_TICK = 2;
     private static final long HEARTBEAT_INTERVAL_MS = 15_000L;
+    private static final long MAX_TICK_WORK_MS = 8_000L;
 
     private ScheduledExecutorService executor;
     private PowerManager.WakeLock wakeLock;
     private Ringtone activeAlarm;
     private long lastHeartbeatAt;
+    private long backoffUntilAt;
     private int consecutiveErrors;
 
     @Override
@@ -97,6 +99,9 @@ public class HeartbeatService extends Service {
 
     private void agentTick() {
         long tickStarted = System.currentTimeMillis();
+        if (tickStarted < backoffUntilAt) {
+            return;
+        }
         acquireWakeLock();
         SharedPreferences prefs = AgentConfig.prefs(this);
         SharedPreferences.Editor editor = prefs.edit();
@@ -112,12 +117,13 @@ public class HeartbeatService extends Service {
                 DeviceApiClient.heartbeat(this);
                 lastHeartbeatAt = now;
             }
-            String commandStatus = handlePendingCommands();
+            String commandStatus = handlePendingCommands(tickStarted);
             editor.putString(KEY_LAST_STATUS, "Online - " + timestamp + commandStatus);
             editor.putLong(KEY_LAST_SUCCESS, now);
             editor.putLong(AgentConfig.KEY_LAST_LOOP_MS, System.currentTimeMillis() - tickStarted);
             editor.putInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0);
             consecutiveErrors = 0;
+            backoffUntilAt = 0;
             updateNotification("Online - " + timestamp);
         } catch (Exception exc) {
             int errorCount = prefs.getInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0) + 1;
@@ -127,24 +133,24 @@ public class HeartbeatService extends Service {
             editor.putInt(AgentConfig.KEY_LAST_ERROR_COUNT, errorCount);
             editor.putString(AgentConfig.KEY_LAST_ERROR, String.valueOf(exc.getMessage()));
             updateNotification("Connection error");
-            applyErrorBackoff();
+            applyErrorBackoff(System.currentTimeMillis());
         }
 
         editor.apply();
     }
 
-    private void applyErrorBackoff() {
+    private void applyErrorBackoff(long now) {
         long delayMs = Math.min(30_000L, 1_000L * Math.max(1, consecutiveErrors));
-        try {
-            Thread.sleep(delayMs);
-        } catch (InterruptedException exc) {
-            Thread.currentThread().interrupt();
-        }
+        backoffUntilAt = now + delayMs;
     }
 
-    private String handlePendingCommands() throws Exception {
+    private String handlePendingCommands(long tickStarted) throws Exception {
         StringBuilder status = new StringBuilder();
         for (int index = 0; index < MAX_COMMANDS_PER_TICK; index++) {
+            if (System.currentTimeMillis() - tickStarted > MAX_TICK_WORK_MS) {
+                status.append("\nCommand loop paused: stability budget reached.");
+                break;
+            }
             DeviceApiClient.RemoteCommand command = DeviceApiClient.nextCommand(this);
             if (command == null) {
                 break;
