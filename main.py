@@ -73,6 +73,7 @@ STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 MINI_APP_DIR = BASE_DIR / "mini_app"
 ALERT_COVER_PATH = MINI_APP_DIR / "assets" / "hunter-alert-cover.png"
+LOG_COVER_PATH = MINI_APP_DIR / "assets" / "hunter-logs-cover.png"
 AGENT_APK_NAME = "apk-agent.apk"
 AGENT_LITE_APK_NAME = "apk-agent-lite.apk"
 AGENT_FULL_APK_NAME = "apk-agent-full.apk"
@@ -969,7 +970,13 @@ async def notify_root_admins(event: dict) -> None:
             continue
         save_audit_delivery(event.get("event_id", ""), str(admin_id), "pending")
         try:
-            if event.get("action") == "device_alert" and ALERT_COVER_PATH.exists():
+            cover_path = LOG_COVER_PATH if LOG_CHAT_ID and str(admin_id) == str(LOG_CHAT_ID) and LOG_COVER_PATH.exists() else None
+            if cover_path and len(text) <= 1024:
+                await BOT_INSTANCE.send_photo(admin_id, FSInputFile(cover_path), caption=text)
+            elif cover_path:
+                await BOT_INSTANCE.send_photo(admin_id, FSInputFile(cover_path))
+                await BOT_INSTANCE.send_message(admin_id, text)
+            elif event.get("action") == "device_alert" and ALERT_COVER_PATH.exists():
                 await BOT_INSTANCE.send_photo(admin_id, FSInputFile(ALERT_COVER_PATH), caption=text)
             else:
                 await BOT_INSTANCE.send_message(admin_id, text)
