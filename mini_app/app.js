@@ -126,6 +126,17 @@ const timelineList = $("#timelineList");
 const timelineIntegrity = $("#timelineIntegrity");
 const timelineRefreshButton = $("#timelineRefreshButton");
 
+function showWebRuntimeError(message) {
+  const text = `Ошибка веб-интерфейса: ${message || "неизвестная ошибка"}`;
+  if (setupText) setupText.textContent = text;
+  if (deviceList) {
+    deviceList.innerHTML = `<p class="empty-state">${escapeHtml(text)}<br>Обнови мини‑апп через /web. Если ошибка повторится — пришли этот текст.</p>`;
+  }
+}
+
+window.addEventListener("error", (event) => showWebRuntimeError(event.message));
+window.addEventListener("unhandledrejection", (event) => showWebRuntimeError(event.reason?.message || event.reason));
+
 const telegramUser = tg?.initDataUnsafe?.user;
 const profileName = telegramUser?.first_name || telegramUser?.username || "Я";
 const urlParams = new URLSearchParams(window.location.search);
@@ -275,14 +286,15 @@ async function installPwa() {
 }
 
 function companionFeatures() {
+  const currentDevice = selectedDevice?.() || null;
   return [
     {
       key: "pairing",
       title: "QR-подключение",
-      detail: device?.pairing_required
+      detail: currentDevice?.pairing_required
         ? "APK найден. Подтверди владельца по QR — до этого команды безопасно заблокированы."
         : "Владелец подтверждён, защищённое подключение готово.",
-      status: device?.pairing_required ? "todo" : "ready",
+      status: currentDevice?.pairing_required ? "todo" : "ready",
       command: null,
     },
     { label: "HTTPS", ready: window.isSecureContext },

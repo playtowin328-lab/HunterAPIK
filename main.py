@@ -1479,7 +1479,7 @@ def post_deploy_check_text() -> str:
         (devices >= 0, f"Устройства доступны: {devices}"),
         (roles >= 0, f"Роли и доступы доступны: {roles}"),
         (setup.get("ok", False), "API и обязательные Variables готовы"),
-        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v8"),
+        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v9"),
         (history >= 0, f"История телеметрии работает: {history} записей"),
     ]
     ok = all(value for value, _ in checks)
@@ -1878,7 +1878,7 @@ def mini_app_url_for_user(user_id: str | int | None = None) -> str:
     separator = "&" if "?" in MINI_APP_URL else "?"
     return (
         f"{MINI_APP_URL}{separator}"
-        f"v=8&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
+        f"v=9&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
     )
 
 
@@ -4637,7 +4637,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             checks = setup_status_payload()
             with db_connect() as connection:
                 counts = {name: int(connection.execute(f"SELECT COUNT(*) AS count FROM {name}").fetchone()["count"]) for name in ("devices", "bot_access", "device_history")}
-            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v8", "api": "ok"})
+            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v9", "api": "ok"})
             return
 
         if parsed_url.path == "/api/alerts/device":
