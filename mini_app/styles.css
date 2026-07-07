@@ -2020,6 +2020,133 @@ body {
   background: transparent;
 }
 
+.device-setup-progress {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 11px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 34%),
+    color-mix(in srgb, var(--surface-soft) 72%, transparent);
+}
+
+.device-setup-progress::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 0 35%, color-mix(in srgb, #fff 12%, transparent) 45%, transparent 58% 100%);
+  transform: translateX(-120%);
+  animation: setup-scan 5s ease-in-out infinite;
+}
+
+.device-setup-progress-head,
+.device-setup-progress-next,
+.device-setup-chips {
+  position: relative;
+  z-index: 1;
+}
+
+.device-setup-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.device-setup-progress-head span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.device-setup-progress-head strong {
+  color: var(--accent-strong);
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.device-setup-progress-track {
+  position: relative;
+  z-index: 1;
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
+}
+
+.device-setup-progress-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--success), var(--accent-strong));
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
+  transition: width .55s cubic-bezier(.2, .9, .2, 1);
+}
+
+.device-setup-progress-next {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.device-setup-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.device-setup-chips b {
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.device-setup-chips b[data-status="ready"] {
+  border-color: color-mix(in srgb, var(--success) 45%, var(--line));
+  color: var(--success);
+}
+
+.device-setup-chips b[data-status="todo"],
+.device-setup-chips b[data-status="blocked"] {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+  color: var(--warn);
+}
+
+.device-setup-progress[data-status="ready"] {
+  border-color: color-mix(in srgb, var(--success) 45%, var(--line));
+}
+
+.device-setup-progress[data-status="offline"] {
+  filter: saturate(.72);
+}
+
+.device-setup-progress[data-status="pairing"] .device-setup-progress-track i,
+.device-setup-progress[data-status="setup"] .device-setup-progress-track i {
+  background-size: 200% 100%;
+  animation: progress-flow 2.4s linear infinite;
+}
+
+@keyframes setup-scan {
+  0%, 55% { transform: translateX(-120%); opacity: 0; }
+  65% { opacity: 1; }
+  100% { transform: translateX(120%); opacity: 0; }
+}
+
+@keyframes progress-flow {
+  from { background-position: 0 0; }
+  to { background-position: 200% 0; }
+}
+
 .actions .open-remote-button {
   flex: 1 1 150px;
 }

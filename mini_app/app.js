@@ -997,6 +997,45 @@ function nextSetupStep(device) {
   return steps.find((step) => step.status === "blocked") || steps.find((step) => step.status === "todo") || null;
 }
 
+function deviceSetupProgress(device) {
+  const setup = setupSteps(device).filter((step) => step.status !== "skipped");
+  const pairingDone = !device?.pairing_required;
+  const total = Math.max(1, setup.length + 1);
+  const ready = setup.filter((step) => step.status === "ready").length + (pairingDone ? 1 : 0);
+  const percent = Math.max(0, Math.min(100, Math.round((ready / total) * 100)));
+  const next = device?.pairing_required
+    ? { title: "Подтвердить QR", status: "todo", detail: "Открой код подключения на телефоне и подтверди владельца." }
+    : nextSetupStep(device);
+  const status = !device?.online ? "offline" : (percent >= 100 ? "ready" : (device?.pairing_required ? "pairing" : "setup"));
+  return { setup, total, ready, percent, next, status };
+}
+
+function renderDeviceSetupProgress(device) {
+  const progress = deviceSetupProgress(device);
+  const chips = [
+    { title: "QR", status: device?.pairing_required ? "todo" : "ready" },
+    ...progress.setup.slice(0, 5),
+  ];
+  const nextText = progress.next
+    ? `Дальше: ${progress.next.title}`
+    : "Все ключевые шаги готовы";
+  return `
+    <div class="device-setup-progress" data-status="${progress.status}">
+      <div class="device-setup-progress-head">
+        <span>Готовность устройства</span>
+        <strong>${progress.percent}%</strong>
+      </div>
+      <div class="device-setup-progress-track" aria-label="Готовность ${progress.percent}%">
+        <i style="width: ${progress.percent}%"></i>
+      </div>
+      <div class="device-setup-progress-next">${escapeHtml(nextText)}</div>
+      <div class="device-setup-chips">
+        ${chips.map((step) => `<b data-status="${step.status}">${escapeHtml(step.title)}</b>`).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function renderSetupAutomation(device) {
   if (!remoteSetupAutomation || !remoteSetupChecklist || !remoteSetupProgress) return;
   const steps = setupSteps(device);
@@ -2077,6 +2116,7 @@ function render() {
     $(".meta", card).textContent = `${typeNames[device.type] || "Устройство"}${platform}${agent} · сигнал ${formatLastSeen(device.last_seen)}`;
 
     $(".telemetry", card).innerHTML = formatTelemetry(device).map((item) => `<span>${item}</span>`).join("");
+    $(".telemetry", card).insertAdjacentHTML("afterend", renderDeviceSetupProgress(device));
 
     const controlNote = $(".control-note", card);
     controlNote.textContent = formatDeviceNote(device);
