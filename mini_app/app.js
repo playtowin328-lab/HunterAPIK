@@ -242,6 +242,7 @@ const screenPollers = new Map();
 const pendingScreenRequests = new Set();
 const companionStreams = new Set();
 window.currentDeviceScope = "own";
+window.currentDeviceMeta = null;
 
 function setCommandPalette(open) {
   commandPalette?.classList.toggle("hidden", !open);
@@ -1185,6 +1186,7 @@ async function loadDevicesFromApi() {
   const payload = await apiJson(`${apiBaseUrl}/api/devices?${params.toString()}`);
   devices = payload.devices || [];
   window.currentDeviceScope = payload.scope || "own";
+  window.currentDeviceMeta = payload.meta || null;
 }
 
 function createPairingQr() {
@@ -2019,12 +2021,22 @@ function render() {
   renderInstallationProgress();
   userName.textContent = profileName;
   const scopeText = window.currentDeviceScope === "all" ? "все устройства проекта" : "твои устройства";
+  const meta = window.currentDeviceMeta || {};
+  const authSummary = meta.role
+    ? `Access: ${meta.role}, scope: ${window.currentDeviceScope}, API: ${meta.returned_count ?? devices.length}/${meta.server_total_count ?? "?"}.`
+    : "";
   setupText.textContent = devices.length
-    ? `${scopeText}: ${devices.length}, online: ${onlineCount}.`
+    ? `${scopeText}: ${devices.length}, online: ${onlineCount}. ${authSummary}`
     : "Установи APK, получи QR и запусти Android Agent на телефоне.";
 
   if (!devices.length) {
     renderRemotePanel(false);
+    const diagnostic = meta.role
+      ? `Web actor ${escapeHtml(meta.actor_id)} · role ${escapeHtml(meta.role)} · scope ${escapeHtml(window.currentDeviceScope)} · shown ${Number(meta.returned_count || 0)} of ${Number(meta.server_total_count || 0)} server devices.`
+      : "Web auth data is missing.";
+    setTimeout(() => {
+      deviceList.innerHTML = `<p class="empty-state">${diagnostic}<br>Если в боте устройства есть, открой команду /web и нажми новую кнопку веб‑пульта. Так веб получит свежий доступ именно к твоей роли.</p>`;
+    }, 0);
     deviceList.innerHTML = '<p class="empty-state">Пока нет подключённых устройств. Нажми «Скачать APK», затем «Получить QR» и открой QR-ссылку на телефоне. Экран и жесты доступны только в Full APK после явного разрешения на телефоне.</p>';
     return;
   }

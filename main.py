@@ -1479,7 +1479,7 @@ def post_deploy_check_text() -> str:
         (devices >= 0, f"Устройства доступны: {devices}"),
         (roles >= 0, f"Роли и доступы доступны: {roles}"),
         (setup.get("ok", False), "API и обязательные Variables готовы"),
-        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v7"),
+        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v8"),
         (history >= 0, f"История телеметрии работает: {history} записей"),
     ]
     ok = all(value for value, _ in checks)
@@ -1878,7 +1878,7 @@ def mini_app_url_for_user(user_id: str | int | None = None) -> str:
     separator = "&" if "?" in MINI_APP_URL else "?"
     return (
         f"{MINI_APP_URL}{separator}"
-        f"v=7&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
+        f"v=8&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
     )
 
 
@@ -4178,6 +4178,29 @@ def list_all_devices() -> list[dict]:
     return list_pending_devices() + list_devices(owner_id="")
 
 
+def web_devices_payload(actor_id: str, requested_owner_id: str) -> dict:
+    role = get_user_role(actor_id)
+    can_view_all = role in {"root", "admin"}
+    devices = list_all_devices() if can_view_all else list_devices_for_user(actor_id)
+    with db_connect() as connection:
+        total_paired = int(connection.execute("SELECT COUNT(*) AS count FROM devices").fetchone()["count"])
+        total_pending = int(connection.execute("SELECT COUNT(*) AS count FROM pending_devices").fetchone()["count"])
+    return {
+        "devices": devices,
+        "scope": "all" if can_view_all else "own",
+        "meta": {
+            "actor_id": str(actor_id),
+            "requested_owner_id": str(requested_owner_id),
+            "role": role,
+            "can_view_all": can_view_all,
+            "returned_count": len(devices),
+            "server_total_count": total_paired + total_pending,
+            "server_paired_count": total_paired,
+            "server_pending_count": total_pending,
+        },
+    }
+
+
 def list_devices(owner_id: str = "") -> list[dict]:
     now = int(time.time())
     online_ttl = 45 if load_device_notify_settings().get("travel_mode") else DEVICE_TTL_SECONDS
@@ -4614,7 +4637,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             checks = setup_status_payload()
             with db_connect() as connection:
                 counts = {name: int(connection.execute(f"SELECT COUNT(*) AS count FROM {name}").fetchone()["count"]) for name in ("devices", "bot_access", "device_history")}
-            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v7", "api": "ok"})
+            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v8", "api": "ok"})
             return
 
         if parsed_url.path == "/api/alerts/device":
@@ -4680,8 +4703,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             if not can_view_all and owner_id != webapp_user_id:
                 self.send_json({"error": "forbidden for this device owner"}, HTTPStatus.FORBIDDEN)
                 return
-            devices = list_all_devices() if can_view_all else list_devices_for_user(webapp_user_id)
-            self.send_json({"devices": devices, "scope": "all" if can_view_all else "own"})
+            self.send_json(web_devices_payload(webapp_user_id, owner_id))
             return
 
         if parsed_url.path == "/api/pair/new":

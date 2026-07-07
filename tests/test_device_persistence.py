@@ -332,6 +332,23 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertEqual(["300"], [row["owner_id"] for row in user_rows])
         self.assertEqual({"300", "301"}, {row["owner_id"] for row in admin_rows})
 
+    def test_web_devices_payload_explains_scope_and_counts(self) -> None:
+        main.upsert_device({"owner_id": "300", "device_id": "user-phone", "name": "User phone"})
+        main.upsert_device({"owner_id": "301", "device_id": "other-phone", "name": "Other phone"})
+        with (
+            patch.object(main, "ADMIN_IDS", {"1"}),
+            patch.object(main, "BOOTSTRAP_ADMIN_IDS", {"200"}),
+            patch.object(main, "BOOTSTRAP_USER_IDS", {"300"}),
+        ):
+            admin_payload = main.web_devices_payload("200", "200")
+            user_payload = main.web_devices_payload("300", "300")
+
+        self.assertEqual("all", admin_payload["scope"])
+        self.assertEqual(2, admin_payload["meta"]["server_total_count"])
+        self.assertEqual({"user-phone", "other-phone"}, {device["device_id"] for device in admin_payload["devices"]})
+        self.assertEqual("own", user_payload["scope"])
+        self.assertEqual(["user-phone"], [device["device_id"] for device in user_payload["devices"]])
+
 
 if __name__ == "__main__":
     unittest.main()
