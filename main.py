@@ -1865,11 +1865,28 @@ GUIDE_TEXT = (
     "_Подключайте только свои устройства или устройства, владелец которых явно дал согласие._"
 )
 
-def main_menu(show_root: bool = False) -> InlineKeyboardMarkup:
+def mini_app_url_for_user(user_id: str | int | None = None) -> str:
+    """Return a Mini App URL with a short signed session for reliable Telegram launches."""
+    if not MINI_APP_URL:
+        return ""
+    clean_user_id = str(user_id or "").strip()
+    if not clean_user_id.isdigit():
+        return MINI_APP_URL
+    token = create_web_session_token(clean_user_id, ttl_seconds=12 * 60 * 60)
+    if not token:
+        return MINI_APP_URL
+    separator = "&" if "?" in MINI_APP_URL else "?"
+    return (
+        f"{MINI_APP_URL}{separator}"
+        f"owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
+    )
+
+
+def main_menu(show_root: bool = False, user_id: str | int | None = None) -> InlineKeyboardMarkup:
     mini_app_button = (
         InlineKeyboardButton(
             text="📱 Мини‑апп",
-            web_app=WebAppInfo(url=MINI_APP_URL),
+            web_app=WebAppInfo(url=mini_app_url_for_user(user_id)),
         )
         if MINI_APP_URL
         else InlineKeyboardButton(text="📱 Мини‑апп", callback_data="mini_app_info")
@@ -1990,7 +2007,7 @@ async def send_start(message: Message) -> None:
         await send_branded_message(
             message,
             dashboard_text(message.from_user.id, is_project_admin_user(message.from_user)),
-            main_menu(is_root_admin_user(message.from_user)),
+            main_menu(is_root_admin_user(message.from_user), message.from_user.id),
         )
     except Exception as exc:
         print(f"Failed to send /start menu with primary markup: {exc}")
@@ -5406,7 +5423,7 @@ async def handle_photo(message: Message, bot: Bot) -> None:
 
     await message.answer(
         "Фото принято ✅\nВыбери, что сделать с ним:",
-        reply_markup=main_menu(is_root_admin_user(message.from_user)),
+        reply_markup=main_menu(is_root_admin_user(message.from_user), message.from_user.id),
     )
 
 
@@ -5445,7 +5462,7 @@ async def handle_document_image(message: Message, bot: Bot) -> None:
 
     await message.answer(
         "Картинка принята как файл ✅\nВыбери действие:",
-        reply_markup=main_menu(is_root_admin_user(message.from_user)),
+        reply_markup=main_menu(is_root_admin_user(message.from_user), message.from_user.id),
     )
 
 
@@ -5494,7 +5511,7 @@ async def callbacks(callback: CallbackQuery) -> None:
         await show_bot_screen(
             callback,
             dashboard_text(callback.from_user.id, is_project_admin_user(callback.from_user)),
-            reply_markup=main_menu(is_root_admin_user(callback.from_user)),
+            reply_markup=main_menu(is_root_admin_user(callback.from_user), callback.from_user.id),
         )
         return
 

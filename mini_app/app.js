@@ -132,7 +132,11 @@ const urlParams = new URLSearchParams(window.location.search);
 const ownerId = String(telegramUser?.id || urlParams.get("owner_id") || localStorage.getItem("apk_owner_id") || crypto.randomUUID());
 localStorage.setItem("apk_owner_id", ownerId);
 const webSessionStorageKey = `hunter_web_session_${ownerId}`;
-let webSessionToken = localStorage.getItem(webSessionStorageKey) || "";
+const incomingWebSessionToken = urlParams.get("web_token") || "";
+let webSessionToken = incomingWebSessionToken || localStorage.getItem(webSessionStorageKey) || "";
+if (incomingWebSessionToken) {
+  localStorage.setItem(webSessionStorageKey, incomingWebSessionToken);
+}
 const remoteLogStorageKey = `hunter_remote_log_${ownerId}`;
 const installStartedKey = "hunter_agent_install_started";
 const agentOpenAttemptKey = "hunter_agent_open_attempted";
@@ -2127,10 +2131,14 @@ async function refreshDevices() {
     loadDeviceAlerts();
     loadTimeline();
   } catch (error) {
+    const hasWebAuth = Boolean(tg?.initData || webSessionToken);
+    const authHint = hasWebAuth
+      ? "Сессия есть, но API не отдал список. Открой /start в боте и нажми «Мини‑апп» ещё раз — кнопка выдаст свежий защищённый доступ."
+      : "Веб открыт без Telegram‑сессии. Открой /start в боте и нажми «Мини‑апп», чтобы веб получил защищённый доступ к твоим устройствам.";
     if (!devices.length) {
-      deviceList.innerHTML = `<p class="empty-state">${error.message}</p>`;
+      deviceList.innerHTML = `<p class="empty-state">${escapeHtml(error.message)}<br>${escapeHtml(authHint)}</p>`;
     }
-    setupText.textContent = `API connection issue: ${error.message}`;
+    setupText.textContent = `Связь с API: ${error.message}. ${authHint}`;
   } finally {
     refreshInFlight = false;
   }

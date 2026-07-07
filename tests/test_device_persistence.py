@@ -47,6 +47,18 @@ class DevicePersistenceTests(unittest.TestCase):
             self.assertEqual("100", main.validate_web_session_token(token))
             self.assertEqual("100", main.webapp_user_id_from_query({"web_token": [token]}))
 
+    def test_main_menu_mini_app_link_carries_signed_web_session(self) -> None:
+        with (
+            patch.object(main, "BOT_TOKEN", "test-bot-token"),
+            patch.object(main, "MINI_APP_URL", "https://panel.example.com"),
+        ):
+            menu = main.main_menu(show_root=True, user_id="100")
+        mini_button = next(button for row in menu.inline_keyboard for button in row if button.web_app)
+        self.assertIn("owner_id=100", mini_button.web_app.url)
+        token = main.parse_qs(main.urlparse(mini_button.web_app.url).query)["web_token"][0]
+        with patch.object(main, "BOT_TOKEN", "test-bot-token"):
+            self.assertEqual("100", main.validate_web_session_token(token))
+
     def test_travel_mode_is_preserved_in_alert_settings(self) -> None:
         settings = main.sanitize_device_notify_settings({"travel_mode": True})
         self.assertTrue(settings["travel_mode"])
