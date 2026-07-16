@@ -168,14 +168,15 @@ https://github.com/playtowin328-lab/HunterAPIK/releases/download/pc-agent-latest
 Подключить ПК:
 
 ```powershell
-hunter-pc-agent.exe pair --server https://web-production-715d7.up.railway.app --code 123456 --name "Home PC"
-hunter-pc-agent.exe run
+hunter-pc-agent.exe setup --server https://web-production-715d7.up.railway.app --code 123456 --name "Home PC" --startup
 ```
+
+После подключения ПК появляется в общем пульте рядом с телефонами. Доступны live-экран рабочего стола, клики и перетаскивание мышью, ввод текста, переключение окон, настройки Windows, диагностика и блокировка.
 
 ADB-мост для Android рядом с ПК:
 
 ```powershell
-hunter-pc-agent.exe setup --server https://web-production-715d7.up.railway.app --code 123456 --name "Home PC" --startup
+hunter-pc-agent.exe setup --server https://web-production-715d7.up.railway.app --code 123456 --name "Home PC" --startup --adb
 ```
 
 Это самый простой режим: одна команда привязывает PC Agent, проверяет ADB, включает мост и добавляет автозапуск Windows.
@@ -205,10 +206,10 @@ hunter-pc-agent.exe run --adb --interval 1
 
 Для поездок схема такая: домашний ПК должен быть включен, PC Agent должен быть в автозапуске, а телефон должен быть подключен по USB или заранее настроенному Wireless debugging. Тогда ты открываешь мини-ап из любой страны и работаешь через домашний мост.
 
-Для полноценного экрана ПК используй нормальный канал:
+Для отдельного полноценного удалённого сеанса можно дополнительно использовать:
 
 - Windows/VDS: WireGuard + RDP.
 - Linux VDS: WireGuard + SSH.
 - Кроссплатформенно: RustDesk или Chrome Remote Desktop.
 
-PC Agent не скрывается, не ставит автозапуск и не выполняет произвольные команды. Это база для легального подключения своих машин.
+PC Agent не скрывается, не ставит автозапуск без явного `--startup` и не выполняет произвольные shell-команды. Используй его только на своих машинах или с явным согласием владельца.

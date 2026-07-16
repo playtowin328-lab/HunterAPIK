@@ -45,12 +45,16 @@ const installationProgressTitle = $("#installationProgressTitle");
 const installationProgressPercent = $("#installationProgressPercent");
 const installationProgressDetail = $("#installationProgressDetail");
 const installationStepElements = [$("#installStepApk"), $("#installStepOpen"), $("#installStepPair"), $("#installStepOnline")];
+const installPlatformButtons = $$('[data-install-platform]');
 const refreshButton = $("#refreshButton");
 const pairResult = $("#pairResult");
 const pairQrImage = $("#pairQrImage");
 const pairCode = $("#pairCode");
 const openPairPageButton = $("#openPairPageButton");
 const openAgentDeepLinkButton = $("#openAgentDeepLinkButton");
+const pairInstructions = $("#pairInstructions");
+const pcSetupCommand = $("#pcSetupCommand");
+const copyPcSetupCommandButton = $("#copyPcSetupCommandButton");
 const deployPanel = $("#deployPanel");
 const deployRefreshButton = $("#deployRefreshButton");
 const deployStatusTitle = $("#deployStatusTitle");
@@ -152,12 +156,13 @@ if (incomingWebSessionToken) {
 const webPinSessionStorageKey = `hunter_web_pin_session_${ownerId}`;
 let webPinToken = sessionStorage.getItem(webPinSessionStorageKey) || "";
 const remoteLogStorageKey = `hunter_remote_log_${ownerId}`;
-const installStartedKey = "hunter_agent_install_started";
-const agentOpenAttemptKey = "hunter_agent_open_attempted";
+const installStartedKey = (platform) => `hunter_agent_install_started_${platform}`;
+const agentOpenAttemptKey = (platform) => `hunter_agent_open_attempted_${platform}`;
 
 const apiBaseUrl = window.location.origin;
 const agentOpenLink = `apkagent://open?server=${encodeURIComponent(apiBaseUrl)}&owner_id=${encodeURIComponent(ownerId)}&setup=1`;
 const agentInstallUrl = `${apiBaseUrl}/agent?owner_id=${encodeURIComponent(ownerId)}`;
+const pcAgentInstallUrl = `${apiBaseUrl}/pc-agent?owner_id=${encodeURIComponent(ownerId)}`;
 const localDeviceIdKey = "apk_converter_local_device_id";
 const typeNames = {
   phone: "Телефон",
@@ -194,9 +199,9 @@ const remoteCommandMessages = {
   request_accessibility_permission: "Настройки жестов и Accessibility открыты на телефоне.",
   request_screen_permission: "Запрос доступа к экрану открыт на телефоне.",
   setup_wizard: "Мастер автонастройки открыт на телефоне.",
-  repair_agent: "Ремонт связи запущен на телефоне.",
+  repair_agent: "Ремонт связи запущен на устройстве.",
   ping: "Агент отвечает.",
-  open_settings: "Открываются настройки телефона.",
+  open_settings: "Открываются настройки устройства.",
   open_wifi_settings: "Открываются настройки Wi-Fi.",
   open_battery_settings: "Открываются настройки батареи.",
   request_actions: "Проверка модуля управления отправлена.",
@@ -232,6 +237,7 @@ const deviceAlertKindLabels = {
 };
 
 let devices = [];
+let installPlatform = localStorage.getItem("hunter_install_platform") || (detectCurrentDevice().type === "pc" ? "pc" : "android");
 let currentPairLinks = null;
 let currentPairExpiresAt = 0;
 let selectedDeviceId = localStorage.getItem("hunter_selected_device_id") || "";
@@ -439,21 +445,29 @@ function renderDeviceToolbar() {
 
 function renderInstallationProgress() {
   if (!installationProgress) return;
-  const installStarted = localStorage.getItem(installStartedKey) === "1";
-  const agentOpened = localStorage.getItem(agentOpenAttemptKey) === "1";
-  const paired = devices.length > 0;
-  const online = devices.some((device) => device.online);
+  const target = installPlatform === "pc" ? "pc" : "android";
+  const targetDevices = platformDevices(target);
+  const installStarted = localStorage.getItem(installStartedKey(target)) === "1";
+  const agentOpened = localStorage.getItem(agentOpenAttemptKey(target)) === "1";
+  const paired = targetDevices.length > 0;
+  const online = targetDevices.some((device) => device.online);
   let step = 0;
   if (installStarted) step = 1;
   if (agentOpened) step = 2;
   if (paired) step = 3;
   if (online) step = 4;
-  const states = [
-    ["Шаг 1 из 4", "Установите Hunter Agent", "Скачайте APK на Android-устройство и подтвердите установку."],
+  const states = target === "pc" ? [
+    ["Шаг 1 из 4", "Установите Windows Agent", "Скачайте hunter-pc-agent.exe на свой Windows ПК."],
+    ["Шаг 2 из 4", "Получите одноразовый код", "Нажмите «Получить QR-код» — для ПК будет подготовлена готовая setup-команда."],
+    ["Шаг 3 из 4", "Запустите setup-команду", "Вставьте команду рядом с EXE в PowerShell. Она подключит агент и включит автозапуск по вашему выбору."],
+    ["Шаг 4 из 4", "Компьютер подключен", "PC Agent зарегистрирован. Осталось дождаться первого heartbeat Online."],
+    ["Готово", "Компьютер Online", "Экран, мышь, клавиатура и диагностика ПК доступны в общем пульте."],
+  ] : [
+    ["Шаг 1 из 4", "Установите Android Agent", "Скачайте APK на Android-устройство и подтвердите установку."],
     ["Шаг 2 из 4", "Откройте установленный Agent", "После установки вернитесь сюда и нажмите «Открыть Agent»."],
     ["Шаг 3 из 4", "Подключите приложение", "Agent открывается с одноразовым кодом. Подтвердите подключение на телефоне."],
-    ["Шаг 4 из 4", "Устройство подключено", "Agent зарегистрирован. Осталось дождаться первого сигнала Online."],
-    ["Готово", "Устройство Online", "Установка и подключение завершены. Устройство доступно в пульте управления."],
+    ["Шаг 4 из 4", "Телефон подключен", "Android Agent зарегистрирован. Осталось дождаться первого сигнала Online."],
+    ["Готово", "Телефон Online", "Экран, жесты и диагностика телефона доступны в общем пульте."],
   ];
   const [label, title, detail] = states[step];
   const percent = [0, 25, 50, 75, 100][step];
@@ -467,8 +481,30 @@ function renderInstallationProgress() {
     element?.classList.toggle("complete", index < step);
     element?.classList.toggle("active", index === Math.min(step, 3));
   });
-  installAgentButton.textContent = step === 0 ? "1. Установить Agent" : "APK / страница установки";
+  installPlatformButtons.forEach((button) => {
+    const active = button.dataset.installPlatform === target;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  installAgentButton.textContent = target === "pc"
+    ? (step === 0 ? "1. Скачать Windows Agent" : "EXE / страница установки")
+    : (step === 0 ? "1. Скачать Android Agent" : "APK / страница установки");
+  connectCurrentDevice.textContent = target === "pc" ? "Установка для Windows" : "Установка для Android";
+  requestPairButton.textContent = target === "pc" ? "2. Получить код для ПК" : "2. Получить QR-код";
+  openInstalledAgentButton.textContent = target === "pc" ? "3. Подготовить setup-команду" : "Открыть Android Agent";
   openInstalledAgentButton.classList.toggle("recommended", step >= 1 && step < 3);
+}
+
+function setInstallPlatform(platform) {
+  installPlatform = platform === "pc" ? "pc" : "android";
+  localStorage.setItem("hunter_install_platform", installPlatform);
+  currentPairLinks = null;
+  currentPairExpiresAt = 0;
+  pairResult.classList.add("hidden");
+  renderInstallationProgress();
+  currentDeviceText.textContent = installPlatform === "pc"
+    ? "Выбран Windows ПК: скачай EXE, получи код и запусти готовую setup-команду."
+    : "Выбран Android: скачай APK, получи QR и открой его в Agent.";
 }
 
 function timelineEventLabel(action) {
@@ -525,6 +561,18 @@ function sendBotEvent(event, payload = {}) {
 
 function isAdbBridge(device) {
   return /adb-bridge/i.test(`${device.agent || ""} ${device.platform || ""}`);
+}
+
+function isPcDevice(device) {
+  return Boolean(device && (
+    device.type === "pc"
+    || /pc-agent/i.test(String(device.agent || ""))
+    || /windows|desktop/i.test(String(device.platform || ""))
+  ));
+}
+
+function platformDevices(platform) {
+  return devices.filter((device) => platform === "pc" ? isPcDevice(device) : !isPcDevice(device));
 }
 
 function qualityStorageKey(device) {
@@ -676,7 +724,8 @@ function formatHealthHint(device, fallback = "") {
   const hints = Array.isArray(health.hints) ? health.hints.filter(Boolean) : [];
   if (hints.length) return hints.join(" ");
   if (fallback) return fallback;
-  return device.online ? "Готов к командам." : "Запусти Android Agent на телефоне.";
+  if (device.online) return "Готов к командам.";
+  return isPcDevice(device) ? "Запусти Windows PC Agent на компьютере." : "Запусти Android Agent на телефоне.";
 }
 
 function formatDeviceNote(device) {
@@ -736,7 +785,7 @@ function primaryDeviceIssue(device) {
       status: "danger",
       label: "Привязка",
       title: "Нужен новый QR",
-      detail: "Привязка сброшена. Получи новый код и открой его на телефоне.",
+      detail: "Привязка сброшена. Получи новый одноразовый код и подключи Agent заново.",
       action: "pair",
       actionLabel: "Получить QR",
     };
@@ -746,7 +795,7 @@ function primaryDeviceIssue(device) {
       status: "danger",
       label: "Связь",
       title: "Агент offline",
-      detail: formatHealthHint(device, "Открой Android Agent на телефоне и проверь интернет."),
+      detail: formatHealthHint(device, isPcDevice(device) ? "Запусти Windows PC Agent и проверь интернет." : "Открой Android Agent на телефоне и проверь интернет."),
       action: "stabilize",
       actionLabel: "Стабилизировать",
     };
@@ -779,6 +828,26 @@ function primaryDeviceIssue(device) {
       detail: String(telemetry.screen_error).slice(0, 160),
       action: "screen",
       actionLabel: "Запустить экран",
+    };
+  }
+  if (isPcDevice(device)) {
+    if (telemetry.screen_control !== true || telemetry.input_control !== true) {
+      return {
+        status: "info",
+        label: "PC Agent",
+        title: "Нужно обновить Windows Agent",
+        detail: "Установи свежий PC Agent: новая версия добавляет экран, мышь и клавиатуру в общий пульт.",
+        action: "report",
+        actionLabel: "Скопировать статус",
+      };
+    }
+    return {
+      status: "ready",
+      label: "Готово",
+      title: "Управление ПК доступно",
+      detail: "Экран, мышь, клавиатура, системные настройки и блокировка доступны после QR-привязки.",
+      action: "screen",
+      actionLabel: "Открыть экран",
     };
   }
   if (telemetry.screen_black_frame) {
@@ -916,6 +985,39 @@ async function copySelectedDeviceReport() {
 function setupSteps(device) {
   const telemetry = device?.telemetry || {};
   const isOnline = Boolean(device?.online);
+  if (isPcDevice(device)) {
+    const agentReady = isOnline && telemetry.agent_enabled !== false;
+    return [
+      {
+        key: "agent",
+        title: "Связь с PC Agent",
+        detail: agentReady ? "Heartbeat приходит, команды можно отправлять." : "Запусти PC Agent или проверь его интернет-соединение.",
+        status: agentReady ? "ready" : "blocked",
+        command: "repair_agent",
+      },
+      {
+        key: "screen",
+        title: "Экран компьютера",
+        detail: telemetry.screen_control === true ? "Захват рабочего стола доступен по запросу." : "Обнови PC Agent до версии с поддержкой экрана.",
+        status: telemetry.screen_control === true ? "ready" : "todo",
+        command: "",
+      },
+      {
+        key: "input",
+        title: "Мышь и клавиатура",
+        detail: telemetry.input_control === true ? "Клики, перетаскивание и ввод текста доступны." : "Обнови PC Agent до версии с управлением вводом.",
+        status: telemetry.input_control === true ? "ready" : "todo",
+        command: "",
+      },
+      {
+        key: "desktop",
+        title: "Windows-команды",
+        detail: "Настройки, Wi-Fi, энергосбережение и блокировка находятся в общем пульте.",
+        status: telemetry.input_control === true ? "ready" : "todo",
+        command: "",
+      },
+    ];
+  }
   const isAndroid = /android/i.test(`${device?.platform || ""} ${device?.name || ""} ${telemetry.android || ""}`);
   const isFull = telemetry.full_control === true;
   const isLite = telemetry.full_control === false;
@@ -1007,7 +1109,7 @@ function deviceSetupProgress(device) {
   const ready = setup.filter((step) => step.status === "ready").length + (pairingDone ? 1 : 0);
   const percent = Math.max(0, Math.min(100, Math.round((ready / total) * 100)));
   const next = device?.pairing_required
-    ? { title: "Подтвердить QR", status: "todo", detail: "Открой код подключения на телефоне и подтверди владельца." }
+    ? { title: "Подтвердить привязку", status: "todo", detail: "Используй QR на Android или setup-команду на Windows." }
     : nextSetupStep(device);
   const status = !device?.online ? "offline" : (percent >= 100 ? "ready" : (device?.pairing_required ? "pairing" : "setup"));
   return { setup, total, ready, percent, next, status };
@@ -1246,6 +1348,40 @@ async function loadDevicesFromApi() {
 
 function createPairingQr() {
   return apiJson(`${apiBaseUrl}/api/pair/new?${apiAuthParams({ owner_id: ownerId }).toString()}`);
+}
+
+function pcSetupCommandText(code) {
+  return `hunter-pc-agent.exe setup --server ${apiBaseUrl} --code ${code} --name "Home PC" --startup`;
+}
+
+function renderPairingPayload(payload) {
+  currentPairLinks = payload.links;
+  currentPairExpiresAt = Date.now() + (payload.expires_in || 600) * 1000;
+  pairQrImage.src = payload.qr_image_data;
+  pairCode.textContent = payload.code;
+  const pcMode = installPlatform === "pc";
+  pairResult.classList.toggle("pc-mode", pcMode);
+  pairQrImage.classList.toggle("hidden", pcMode);
+  openPairPageButton.classList.toggle("hidden", pcMode);
+  openAgentDeepLinkButton.classList.toggle("hidden", pcMode);
+  pcSetupCommand.classList.toggle("hidden", !pcMode);
+  copyPcSetupCommandButton.classList.toggle("hidden", !pcMode);
+  if (pcMode) {
+    pcSetupCommand.textContent = pcSetupCommandText(payload.code);
+    pairInstructions.textContent = "Код одноразовый. Скопируй готовую команду и запусти её в PowerShell рядом с hunter-pc-agent.exe.";
+  } else {
+    pcSetupCommand.textContent = "";
+    pairInstructions.textContent = "Код одноразовый. Открой ссылку на своём Android-устройстве и подтверди подключение в Agent.";
+  }
+  pairResult.classList.remove("hidden");
+}
+
+async function ensurePairingPayload() {
+  const pairIsFresh = currentPairLinks && Date.now() < currentPairExpiresAt - 5000;
+  if (pairIsFresh) return null;
+  const payload = await createPairingQr();
+  renderPairingPayload(payload);
+  return payload;
 }
 
 function apiAuthPayload(extra = {}) {
@@ -1723,7 +1859,7 @@ function startScreenPolling(device, screenPreview, screenImage, controlNote) {
         return;
       }
       controlNote.textContent = frameAge > 4
-        ? `Кадр устарел на ${frameAge} сек. Проверь разрешение экрана и что телефон не заблокирован.`
+        ? `Кадр устарел на ${frameAge} сек. Проверь Agent, доступ к экрану и состояние устройства.`
         : `Кадр обновлён: ${formatLastSeen(payload.frame.updated_at)}. Тапай по экрану для управления.`;
     } catch (error) {
       controlNote.textContent = `Жду кадр. ${error.message}`;
@@ -1810,7 +1946,7 @@ async function runDeviceDiagnostic() {
     }
 
     if (!canControlDevice(device)) {
-      const message = formatHealthHint(device, "Устройство offline. Запусти агент на телефоне и повтори диагностику.");
+      const message = formatHealthHint(device, "Устройство offline. Запусти Agent и повтори диагностику.");
       remoteControlNote.textContent = message;
       addRemoteLog("diagnostic", message, "warn");
       await refreshDevices();
@@ -1860,6 +1996,12 @@ async function runWakeUnlockMacro() {
     const wake = await sendCommandAndWait(device, "wake_screen", {}, 5000);
     addRemoteLog("wake_screen", commandResultText(wake, "Экран пробужден."), wake?.command?.status === "timeout" ? "warn" : "done");
 
+    if (isPcDevice(device)) {
+      remoteControlNote.textContent = "Монитор ПК разбужен. Разблокировка Windows остаётся локальной для безопасности.";
+      await refreshDevices();
+      return;
+    }
+
     remoteControlNote.textContent = "Запрашиваю разблокировку. PIN/биометрию нужно подтвердить на телефоне.";
     const unlock = await sendCommandAndWait(device, "dismiss_keyguard", {}, 7000);
     const message = commandResultText(
@@ -1903,7 +2045,7 @@ async function runStabilizeMacro() {
 
     const freshDevice = selectedDevice() || device;
     if (!canControlDevice(freshDevice)) {
-      const message = formatHealthHint(freshDevice, "Устройство offline. Очередь очищена, теперь открой Agent на телефоне.");
+      const message = formatHealthHint(freshDevice, "Устройство offline. Очередь очищена, теперь запусти Agent.");
       remoteControlNote.textContent = message;
       addRemoteLog("stabilize", message, "warn");
       return;
@@ -1932,7 +2074,7 @@ async function runStabilizeMacro() {
     const secondStatus = secondPing?.command?.status;
     const secondMessage = commandResultText(secondPing, "Агент отвечает после ремонта.");
     remoteControlNote.textContent = secondStatus === "timeout" || secondStatus === "rejected"
-      ? `${secondMessage} Если не ожило, открой Agent на телефоне вручную.`
+      ? `${secondMessage} Если не ожило, запусти Agent на устройстве вручную.`
       : `${secondMessage} Связь восстановлена.`;
     addRemoteLog("ping_after_repair", secondMessage, secondStatus === "timeout" || secondStatus === "rejected" ? "warn" : "done");
     await refreshDevices();
@@ -1994,6 +2136,26 @@ function runQuickAction(action) {
   }
 }
 
+function updateRemotePlatformControls(device) {
+  const pcMode = isPcDevice(device);
+  const pcCommands = new Set([
+    "ping", "request_screen", "stop_screen", "tap", "long_tap", "swipe",
+    "wake_screen", "back", "home", "recents", "input_text", "key_enter", "key_delete",
+    "lock_screen", "open_settings", "open_wifi_settings", "open_battery_settings",
+    "repair_agent", "request_actions",
+  ]);
+  $$(".remote-command-button", remotePanel).forEach((button) => {
+    button.classList.toggle("hidden", pcMode && !pcCommands.has(button.dataset.command));
+  });
+  $(".emergency-stop-button", remotePanel)?.classList.toggle("hidden", pcMode);
+  $(".blackout-message-box", remotePanel)?.classList.toggle("hidden", pcMode);
+  remotePanelTextInput.placeholder = pcMode ? "Текст на компьютер" : "Текст на телефон";
+  const wakeAction = $('[data-action="wake_unlock"] strong', remotePanel);
+  if (wakeAction) wakeAction.textContent = pcMode ? "Разбудить монитор" : "Wake + unlock";
+  const setupAction = $('[data-action="setup"] strong', remotePanel);
+  if (setupAction) setupAction.textContent = pcMode ? "Проверить PC Agent" : "Следующий шаг";
+}
+
 function renderRemotePanel(restartScreen = false) {
   const device = selectedDevice();
   if (!device || remotePanelCollapsed) {
@@ -2002,6 +2164,7 @@ function renderRemotePanel(restartScreen = false) {
   }
 
   remotePanel.classList.remove("hidden");
+  updateRemotePlatformControls(device);
   remoteDeviceTitle.textContent = device.name;
   const remoteStatus = formatRemoteStatus(device);
   remoteConnectionStatus.textContent = remoteStatus.connection;
@@ -2011,7 +2174,7 @@ function renderRemotePanel(restartScreen = false) {
   remoteDeviceMeta.textContent = `${device.platform || "unknown"} · ${device.agent || "agent"} · ${device.health?.label || (device.online ? "Online" : "Offline")}`;
   const telemetry = device.telemetry || {};
   const activeCommand = device.diagnostics?.last_command;
-  remoteNowTitle.textContent = telemetry.active_app_label || telemetry.active_app_package || (device.online ? "Агент работает в фоне" : "Устройство не на связи");
+  remoteNowTitle.textContent = telemetry.active_app_label || telemetry.active_app_package || telemetry.hostname || (device.online ? "Агент работает в фоне" : "Устройство не на связи");
   remoteNowDetail.textContent = activeCommand
     ? `Команда: ${activeCommand.type} · ${activeCommand.status}. Агент: ${telemetry.agent_enabled === false ? "выключен" : "активен"}.`
     : `Активных команд нет. Агент: ${telemetry.agent_enabled === false ? "выключен" : "активен"}.`;
@@ -2182,7 +2345,7 @@ function render() {
     : "";
   setupText.textContent = devices.length
     ? `${scopeText}: ${devices.length}, online: ${onlineCount}. ${authSummary}`
-    : "Установи APK, получи QR и запусти Android Agent на телефоне.";
+    : "Выбери Android или Windows, установи Agent и подключи устройство одноразовым кодом.";
 
   if (!devices.length) {
     renderRemotePanel(false);
@@ -2192,7 +2355,7 @@ function render() {
     setTimeout(() => {
       deviceList.innerHTML = `<p class="empty-state">${diagnostic}<br>Если в боте устройства есть, открой команду /web и нажми новую кнопку веб‑пульта. Так веб получит свежий доступ именно к твоей роли.</p>`;
     }, 0);
-    deviceList.innerHTML = '<p class="empty-state">Пока нет подключённых устройств. Нажми «Скачать APK», затем «Получить QR» и открой QR-ссылку на телефоне. Экран и жесты доступны только в Full APK после явного разрешения на телефоне.</p>';
+    deviceList.innerHTML = '<p class="empty-state">Пока нет подключённых устройств. Выбери Android или Windows в установщике выше, скачай Agent и получи одноразовый код. После подключения телефон и ПК появятся в одном пульте.</p>';
     return;
   }
 
@@ -2226,7 +2389,7 @@ function render() {
     controlNote.textContent = formatDeviceNote(device);
     if (device.pairing_required) {
       card.classList.add("pairing-required");
-      controlNote.textContent = "APK установлен и запущен. Разрешения уже отслеживаются, управление откроется после QR-подключения.";
+      controlNote.textContent = "Agent запущен, но владелец ещё не подтверждён. Управление откроется после QR/код-подключения.";
       card.querySelectorAll("button").forEach((button) => {
         button.disabled = true;
         button.title = "Сначала подтвердите владельца по QR";
@@ -2345,20 +2508,36 @@ deviceFilterButtons.forEach((button) => {
 });
 
 connectCurrentDevice.addEventListener("click", () => {
-  currentDeviceText.textContent = "Открываю страницу установки Android Agent...";
-  openExternal(agentInstallUrl);
+  currentDeviceText.textContent = installPlatform === "pc"
+    ? "Открываю страницу установки Windows Agent..."
+    : "Открываю страницу установки Android Agent...";
+  openExternal(installPlatform === "pc" ? pcAgentInstallUrl : agentInstallUrl);
 });
 
 installAgentButton.addEventListener("click", () => {
-  localStorage.setItem(installStartedKey, "1");
+  localStorage.setItem(installStartedKey(installPlatform), "1");
   renderInstallationProgress();
-  setupText.textContent = "Открываю страницу установки APK...";
-  openExternal(agentInstallUrl);
+  setupText.textContent = installPlatform === "pc"
+    ? "Открываю страницу установки Windows EXE..."
+    : "Открываю страницу установки APK...";
+  openExternal(installPlatform === "pc" ? pcAgentInstallUrl : agentInstallUrl);
 });
 
-openInstalledAgentButton.addEventListener("click", () => {
-  localStorage.setItem(agentOpenAttemptKey, "1");
+openInstalledAgentButton.addEventListener("click", async () => {
+  localStorage.setItem(agentOpenAttemptKey(installPlatform), "1");
   renderInstallationProgress();
+  if (installPlatform === "pc") {
+    setupText.textContent = "Создаю одноразовый код и команду для Windows Agent...";
+    try {
+      await ensurePairingPayload();
+      const command = pcSetupCommand.textContent;
+      if (command) await copyTextToClipboard(command);
+      setupText.textContent = "Setup-команда готова и скопирована. Запусти её в PowerShell рядом с EXE.";
+    } catch (error) {
+      setupText.textContent = `${error.message}. Запасной способ: получи код командой /pair в боте.`;
+    }
+    return;
+  }
   setupText.textContent = "Готовлю автономное подключение Agent...";
   openAgentWithPairing();
 });
@@ -2366,15 +2545,13 @@ openInstalledAgentButton.addEventListener("click", () => {
 openDesktopAppButton?.addEventListener("click", openMiniAppInExternalBrowser);
 
 requestPairButton.addEventListener("click", async () => {
-  setupText.textContent = "Создаю QR и код подключения...";
+  setupText.textContent = installPlatform === "pc" ? "Создаю код и команду для ПК..." : "Создаю QR и код подключения...";
   try {
     const payload = await createPairingQr();
-    currentPairLinks = payload.links;
-    currentPairExpiresAt = Date.now() + (payload.expires_in || 600) * 1000;
-    pairQrImage.src = payload.qr_image_data;
-    pairCode.textContent = payload.code;
-    pairResult.classList.remove("hidden");
-    setupText.textContent = "QR готов. Открой его на телефоне или введи код в Android Agent.";
+    renderPairingPayload(payload);
+    setupText.textContent = installPlatform === "pc"
+      ? "Код и setup-команда готовы. Скопируй команду и запусти её рядом с EXE."
+      : "QR готов. Открой его на телефоне или введи код в Android Agent.";
     sendBotEvent("request_pair");
   } catch (error) {
     setupText.textContent = `${error.message}. Запасной способ: отправь /pair боту.`;
@@ -2389,17 +2566,23 @@ openAgentDeepLinkButton.addEventListener("click", () => {
   window.location.href = currentPairLinks?.app_link || agentOpenLink;
 });
 
+copyPcSetupCommandButton?.addEventListener("click", async () => {
+  try {
+    if (!pcSetupCommand.textContent) await ensurePairingPayload();
+    await copyTextToClipboard(pcSetupCommand.textContent);
+    setupText.textContent = "Команда для Windows Agent скопирована.";
+  } catch (error) {
+    setupText.textContent = `Не удалось скопировать команду: ${error.message}`;
+  }
+});
+
+installPlatformButtons.forEach((button) => {
+  button.addEventListener("click", () => setInstallPlatform(button.dataset.installPlatform));
+});
+
 async function openAgentWithPairing() {
   try {
-    const pairIsFresh = currentPairLinks && Date.now() < currentPairExpiresAt - 5000;
-    const payload = pairIsFresh ? null : await createPairingQr();
-    if (payload) {
-      currentPairLinks = payload.links;
-      currentPairExpiresAt = Date.now() + (payload.expires_in || 600) * 1000;
-      pairQrImage.src = payload.qr_image_data;
-      pairCode.textContent = payload.code;
-      pairResult.classList.remove("hidden");
-    }
+    await ensurePairingPayload();
     setupText.textContent = "Открываю Agent с готовым кодом подключения...";
     window.location.href = currentPairLinks?.app_link || agentOpenLink;
   } catch (error) {

@@ -343,6 +343,14 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertIn("◆ Root Command Center", root_labels)
         self.assertIn("Railway", root_labels)
 
+    def test_connect_menu_exposes_android_and_windows_installers(self) -> None:
+        keyboard = main.connect_keyboard(False)
+        urls = [button.url for row in keyboard.inline_keyboard for button in row if button.url]
+        labels = [button.text for row in main.main_menu(False).inline_keyboard for button in row]
+        self.assertTrue(any(url.endswith("/agent") for url in urls))
+        self.assertTrue(any(url.endswith("/pc-agent") for url in urls))
+        self.assertIn("⌁ Пульт · ПК + телефон", labels)
+
     def test_web_pin_blocks_web_session_until_verified(self) -> None:
         with patch.object(main, "BOT_TOKEN", "test-bot-token"):
             main.save_web_pin("100", "482915")

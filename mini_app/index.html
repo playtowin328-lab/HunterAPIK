@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Hunter Agent</title>
     <meta name="theme-color" content="#0b2334">
-    <link rel="manifest" href="./manifest.webmanifest?v=11">
-    <link rel="stylesheet" href="./styles.css?v=11">
+    <link rel="manifest" href="./manifest.webmanifest?v=12">
+    <link rel="stylesheet" href="./styles.css?v=12">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -83,6 +83,11 @@
           <button class="ghost-button neutral" id="refreshButton" type="button">Обновить</button>
         </div>
 
+        <div class="segmented agent-platform-selector" role="tablist" aria-label="Тип подключаемого устройства">
+          <button class="active" data-install-platform="android" type="button" role="tab" aria-selected="true">📱 Android</button>
+          <button data-install-platform="pc" type="button" role="tab" aria-selected="false">🖥 Windows ПК</button>
+        </div>
+
         <div class="setup-steps" aria-label="Шаги подключения">
           <span id="installStepApk"><strong>1</strong> Установить Agent</span>
           <span id="installStepOpen"><strong>2</strong> Открыть приложение</span>
@@ -96,7 +101,7 @@
             <div><span id="installationProgressLabel">Подготовка</span><strong id="installationProgressTitle">Установите Hunter Agent</strong></div>
             <b id="installationProgressPercent">0%</b>
           </div>
-          <p id="installationProgressDetail">Скачайте APK на Android-устройство. После первого запуска Agent автоматически продолжит подключение.</p>
+          <p id="installationProgressDetail">Выберите Android или Windows — установщик и подключение доступны для обеих платформ.</p>
         </div>
 
         <div class="setup-actions">
@@ -114,10 +119,12 @@
           <div>
             <p class="eyebrow">Код подключения</p>
             <strong id="pairCode">000000</strong>
-            <p>Код одноразовый. Открой ссылку на своём Android-устройстве и подтверди подключение в Agent.</p>
+            <p id="pairInstructions">Код одноразовый. Открой ссылку на своём Android-устройстве и подтверди подключение в Agent.</p>
+            <code class="pc-setup-command hidden" id="pcSetupCommand"></code>
             <div class="pair-links">
               <button class="secondary-button" id="openPairPageButton" type="button">Открыть ссылку</button>
               <button class="ghost-button neutral" id="openAgentDeepLinkButton" type="button">Открыть Agent</button>
+              <button class="secondary-button hidden" id="copyPcSetupCommandButton" type="button">Копировать команду для ПК</button>
             </div>
           </div>
         </div>
@@ -511,11 +518,11 @@
       </section>
     </div>
 
-    <script src="./app.js?v=11"></script>
+    <script src="./app.js?v=12"></script>
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', async () => {
-          const registration = await navigator.serviceWorker.register('./service-worker.js?v=11');
+          const registration = await navigator.serviceWorker.register('./service-worker.js?v=12');
           registration.update?.();
           if (registration.waiting) registration.waiting.postMessage({ type: 'SKIP_WAITING' });
         });

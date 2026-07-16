@@ -1,6 +1,18 @@
 # Hunter PC Agent
 
-Видимый агент для твоего домашнего ПК/VDS. Он нужен, чтобы держать связь с ботом и, при включенном ADB-мосте, управлять своим Android-телефоном через официальный Android Debug Bridge.
+Видимый агент для твоего Windows ПК/VDS. После одноразовой привязки он добавляет компьютер в общий Hunter Control: live-экран, мышь, клавиатура, настройки, диагностика и блокировка. Произвольные shell-команды агент не выполняет.
+
+## Подключить сам Windows ПК
+
+1. В боте или мини-аппе получи одноразовый код.
+2. Скачай `hunter-pc-agent.exe` и открой PowerShell в папке с ним.
+3. Запусти:
+
+```powershell
+hunter-pc-agent.exe setup --server https://web-production-715d7.up.railway.app --code 123456 --name "Home PC" --startup
+```
+
+После heartbeat компьютер появится рядом с телефонами и будет открываться той же кнопкой `Пульт`.
 
 ## Самый простой режим для телефона дома
 
@@ -11,7 +23,7 @@
 5. Запусти одну команду:
 
 ```powershell
-hunter-pc-agent.exe setup --server https://web-production-715d7.up.railway.app --code 123456 --name "Home PC" --startup
+hunter-pc-agent.exe setup --server https://web-production-715d7.up.railway.app --code 123456 --name "Home PC" --startup --adb
 ```
 
 Эта команда:

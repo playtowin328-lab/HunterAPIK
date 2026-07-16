@@ -1850,11 +1850,11 @@ def backup_center_keyboard() -> InlineKeyboardMarkup:
 
 HELP_TEXT = (
     "*Hunter Agent — личный пульт устройств*\n\n"
-    "Бот помогает собрать Android APK, привязать телефон по QR и открыть управление в мини‑аппе. "
-    "Экран и жесты работают только после явного разрешения на твоём телефоне.\n\n"
+    "Бот подключает Android-телефоны и Windows-компьютеры к одному пульту. "
+    "Управление работает только после явной установки Agent и одноразовой привязки владельцем.\n\n"
     "*Главное:*\n"
-    "• `Подключить телефон` — мастер APK, QR и проверки.\n"
-    "• `Мини‑апп` — список устройств, live‑экран, команды и диагностика.\n"
+    "• `Добавить устройство` — общий мастер Android APK и Windows EXE.\n"
+    "• `Пульт` — телефоны и ПК, live‑экран, команды и диагностика.\n"
     "• `Собрать APK` — сборка Android Agent через GitHub Actions.\n"
     "• `Полная проверка` — Railway, мини‑апп, APK и workflow.\n\n"
     "*Команды:*\n"
@@ -1927,20 +1927,30 @@ def device_pulse_text(owner_id: int, project_scope: bool = False) -> str:
     cards = []
     for device in devices[:6]:
         telemetry = device.get("telemetry") or {}
-        checks = [
-            telemetry.get("notifications_ready") is True,
-            telemetry.get("battery_ready") is True,
-            telemetry.get("accessibility") is True,
-        ]
+        pc_device = is_pc_device(device)
+        checks = (
+            [
+                device.get("online") is True,
+                telemetry.get("screen_control") is True,
+                telemetry.get("input_control") is True,
+            ]
+            if pc_device
+            else [
+                telemetry.get("notifications_ready") is True,
+                telemetry.get("battery_ready") is True,
+                telemetry.get("accessibility") is True,
+            ]
+        )
         ready = sum(checks)
         ready_permissions += ready
         total_permissions += len(checks)
         battery = telemetry.get("battery_percent", telemetry.get("battery"))
         battery_label = f" · 🔋 {int(battery)}%" if isinstance(battery, (int, float)) and battery >= 0 else ""
-        network = str(telemetry.get("network") or "—").upper()
+        network = str(telemetry.get("network") or ("WINDOWS" if pc_device else "—")).upper()
         state = "🟢" if device.get("online") else "🔴"
         link = " · нужен QR" if device.get("pairing_required") else ""
-        cards.append(f"{state} {device.get('name', 'Устройство')}{battery_label}\n   {network} · доступы {ready}/3{link}")
+        readiness_label = "модули" if pc_device else "доступы"
+        cards.append(f"{state} {device.get('name', 'Устройство')}{battery_label}\n   {network} · {readiness_label} {ready}/3{link}")
 
     readiness = round(ready_permissions * 100 / total_permissions) if total_permissions else 0
     if not devices:
@@ -1958,7 +1968,7 @@ def device_pulse_text(owner_id: int, project_scope: bool = False) -> str:
         "",
         f"Связь  {online}/{len(devices)}     Готовность  {readiness}%",
         f"Командировка  {travel}",
-        *( ["", *cards] if cards else ["", "Установи Full APK и открой Agent — устройство появится автоматически."] ),
+        *( ["", *cards] if cards else ["", "Установи Android или Windows Agent и подключи его одноразовым кодом."] ),
         "",
         "Обновляется по живым heartbeat-сигналам.",
     ])
@@ -1969,7 +1979,7 @@ def device_pulse_keyboard(owner_id: int, project_scope: bool, show_root: bool) -
     settings = load_device_notify_settings()
     rows = []
     if MINI_APP_URL:
-        rows.append([InlineKeyboardButton(text="📱 Открыть живой пульт", web_app=WebAppInfo(url=mini_app_url_for_user(owner_id)))])
+        rows.append([InlineKeyboardButton(text="⌁ Открыть общий пульт", web_app=WebAppInfo(url=mini_app_url_for_user(owner_id)))])
     if not devices:
         rows.append([InlineKeyboardButton(text="＋ Подключить устройство", callback_data="connect_wizard")])
     elif any(device.get("pairing_required") for device in devices):
@@ -2005,11 +2015,16 @@ def pulse_device_text(device: dict) -> str:
     telemetry = device.get("telemetry") or {}
     battery = telemetry.get("battery_percent", telemetry.get("battery"))
     battery_label = f"{int(battery)}%" if isinstance(battery, (int, float)) and battery >= 0 else "—"
-    permissions = sum([
-        telemetry.get("notifications_ready") is True,
-        telemetry.get("battery_ready") is True,
-        telemetry.get("accessibility") is True,
-    ])
+    pc_device = is_pc_device(device)
+    permissions = sum(
+        [device.get("online") is True, telemetry.get("screen_control") is True, telemetry.get("input_control") is True]
+        if pc_device
+        else [
+            telemetry.get("notifications_ready") is True,
+            telemetry.get("battery_ready") is True,
+            telemetry.get("accessibility") is True,
+        ]
+    )
     status = "🟢 ONLINE" if device.get("online") else "🔴 OFFLINE · команда останется в очереди"
     return "\n".join([
         "⌁ HUNTER QUICK CONTROL",
@@ -2017,7 +2032,7 @@ def pulse_device_text(device: dict) -> str:
         "",
         f"🔋 Заряд: {battery_label}",
         f"⌁ Сеть: {str(telemetry.get('network') or '—').upper()}",
-        f"✓ Разрешения: {permissions}/3",
+        f"✓ {'Модули ПК' if pc_device else 'Разрешения'}: {permissions}/3",
         f"◷ Последний сигнал: {format_last_seen_ru(int(device.get('last_seen') or 0))}",
         "",
         "Выбери действие — результат придёт в журнал и Device Pulse.",
@@ -2046,12 +2061,13 @@ def pulse_device_keyboard(device: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="⌂ Домой", callback_data=f"pulsecmd:home:{device_id}"),
             InlineKeyboardButton(text="↻ Восстановить", callback_data=f"pulsecmd:repair_agent:{device_id}"),
         ],
-        [
-            InlineKeyboardButton(text="🔕 Остановить", callback_data=f"pulsecmd:stop_alarm:{device_id}"),
-        ],
-        [InlineKeyboardButton(text="⚙ Мастер разрешений", callback_data=f"pulsecmd:setup_wizard:{device_id}")],
-        [InlineKeyboardButton(text="‹ Назад в Device Pulse", callback_data="device_pulse")],
     ]
+    if not is_pc_device(device):
+        rows.extend([
+            [InlineKeyboardButton(text="🔕 Остановить", callback_data=f"pulsecmd:stop_alarm:{device_id}")],
+            [InlineKeyboardButton(text="⚙ Мастер разрешений", callback_data=f"pulsecmd:setup_wizard:{device_id}")],
+        ])
+    rows.append([InlineKeyboardButton(text="‹ Назад в Device Pulse", callback_data="device_pulse")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 SETTINGS_TEXT = (
@@ -2068,14 +2084,14 @@ SETTINGS_TEXT = (
 
 GUIDE_TEXT = (
     "*Подключение без технической путаницы*\n\n"
-    "*1. Выбери режим*\n"
-    "Lite — статус и безопасная связь. Full — экран и жесты, которые владелец отдельно разрешает на телефоне.\n\n"
+    "*1. Выбери платформу*\n"
+    "Android — Lite/Full APK. Windows — PC Agent EXE с экраном, мышью и клавиатурой.\n\n"
     "*2. Установи Agent*\n"
-    "Открой страницу установки на своём Android, скачай APK и следуй подсказкам системы.\n\n"
-    "*3. Подключи по QR*\n"
-    "Нажми «Получить QR и код», открой одноразовую ссылку на телефоне и подтверди подключение в Agent.\n\n"
+    "Открой общую страницу подключения и скачай APK или EXE для своего устройства.\n\n"
+    "*3. Подключи одноразовым кодом*\n"
+    "На Android открой QR-ссылку. На Windows запусти готовую setup-команду с тем же кодом.\n\n"
     "*4. Разреши только нужное*\n"
-    "Уведомления и фоновая работа помогают держать связь. Экран и Accessibility нужны только для Full и включаются вручную.\n\n"
+    "Android просит системные разрешения вручную. Windows Agent остаётся видимым и принимает только встроенные команды общего пульта.\n\n"
     "*5. Проверь результат*\n"
     "Устройство появится в мини‑аппе со статусом Online. Если нет — нажми «Диагностика»: бот покажет конкретный следующий шаг.\n\n"
     "_Подключайте только свои устройства или устройства, владелец которых явно дал согласие._"
@@ -2094,18 +2110,18 @@ def mini_app_url_for_user(user_id: str | int | None = None) -> str:
     separator = "&" if "?" in MINI_APP_URL else "?"
     return (
         f"{MINI_APP_URL}{separator}"
-        f"v=11&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
+        f"v=12&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
     )
 
 
 def main_menu(show_root: bool = False, user_id: str | int | None = None) -> InlineKeyboardMarkup:
     mini_app_button = (
         InlineKeyboardButton(
-            text="📱 Мини‑апп",
+            text="⌁ Пульт · ПК + телефон",
             web_app=WebAppInfo(url=mini_app_url_for_user(user_id)),
         )
         if MINI_APP_URL
-        else InlineKeyboardButton(text="📱 Мини‑апп", callback_data="mini_app_info")
+        else InlineKeyboardButton(text="⌁ Пульт · ПК + телефон", callback_data="mini_app_info")
     )
 
     rows = [
@@ -2150,12 +2166,12 @@ def fallback_main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Подключить телефон", callback_data="connect_wizard"),
+                InlineKeyboardButton(text="Добавить устройство", callback_data="connect_wizard"),
                 InlineKeyboardButton(text="Мои устройства", callback_data="my_devices"),
             ],
             [
                 InlineKeyboardButton(text="Инструкция", callback_data="guide"),
-                InlineKeyboardButton(text="APK", callback_data="connect_build_now"),
+                InlineKeyboardButton(text="Android / Windows", callback_data="connect_wizard"),
             ],
             [InlineKeyboardButton(text="Полная проверка", callback_data="connect_check")],
         ]
@@ -2443,7 +2459,7 @@ async def send_web_panel(message: Message) -> None:
         "Если обычный домен показывает пусто, используй эту кнопку — она синхронизирует веб с ботом.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="📱 Открыть веб‑пульт", web_app=WebAppInfo(url=url))],
+                [InlineKeyboardButton(text="⌁ Открыть пульт ПК + телефон", web_app=WebAppInfo(url=url))],
                 [InlineKeyboardButton(text="🔗 Открыть как ссылку", url=url)],
                 nav_row(None),
             ]
@@ -2623,7 +2639,10 @@ async def send_setup(message: Message) -> None:
 
 def connect_keyboard(show_root: bool = False) -> InlineKeyboardMarkup:
     rows = [
-            [InlineKeyboardButton(text="📥 Скачать / установить APK", url=f"{public_server_url()}/agent")],
+            [
+                InlineKeyboardButton(text="📱 Android APK", url=f"{public_server_url()}/agent"),
+                InlineKeyboardButton(text="🖥 Windows EXE", url=f"{public_server_url()}/pc-agent"),
+            ],
             [InlineKeyboardButton(text="🔑 Получить QR и код", callback_data="pair_device")],
             [InlineKeyboardButton(text="📦 Lite / Full APK", callback_data="apk_list")],
             [InlineKeyboardButton(text="🎨 Своё APK: название + иконка", callback_data="custom_apk_help")],
@@ -2632,6 +2651,7 @@ def connect_keyboard(show_root: bool = False) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🎛 Собрать Full", callback_data="connect_build_full"),
             ],
             [InlineKeyboardButton(text="🤔 Что выбрать: Lite или Full", callback_data="apk_mode_compare")],
+            [InlineKeyboardButton(text="▣ Настройка PC Agent", callback_data="pc_agent_info")],
             [
                 InlineKeyboardButton(text="📡 Мои устройства", callback_data="my_devices"),
                 InlineKeyboardButton(text="📊 Статус", callback_data="connect_status"),
@@ -2654,12 +2674,13 @@ def connect_text(owner_id: int) -> str:
         setup_hint = f"\n\nБлижайший шаг: {selected.get('name', 'устройство')} — {format_device_setup_line(selected)}"
     return (
         "Подключение нового устройства\n\n"
-        "Шаг 1 из 4 — установи Lite или Full Agent на свой Android.\n"
-        "Шаг 2 из 4 — получи одноразовый QR‑код и открой его на телефоне.\n"
-        "Шаг 3 из 4 — подтверди подключение и выбери нужные разрешения.\n"
+        "Шаг 1 из 4 — выбери Android APK или Windows EXE.\n"
+        "Шаг 2 из 4 — получи одноразовый QR/код для выбранного Agent.\n"
+        "Шаг 3 из 4 — на Android подтверди ссылку, а на Windows запусти готовую setup-команду.\n"
         "Шаг 4 из 4 — вернись сюда и проверь статус Online.\n\n"
-        "Безопасность: код действует ограниченное время, а чувствительные разрешения включаются только на телефоне.\n\n"
+        "После подключения оба типа устройств появляются в одном пульте. Android-разрешения включаются на телефоне; PC Agent остаётся видимым и управляет только явно привязанным Windows-сеансом.\n\n"
         f"APK: {apk_source}\n"
+        f"Windows Agent: {pc_agent_url()}\n"
         f"Устройства: {len(devices)} всего, {online_count} online"
         f"{setup_hint}"
     )
@@ -2717,6 +2738,11 @@ def check_line(label: str, ok: bool, detail: str = "") -> str:
 def is_android_device(device: dict) -> bool:
     marker = f"{device.get('platform', '')} {device.get('agent', '')} {device.get('name', '')}".lower()
     return "android" in marker or "apk" in marker
+
+
+def is_pc_device(device: dict) -> bool:
+    marker = f"{device.get('type', '')} {device.get('platform', '')} {device.get('agent', '')}".lower()
+    return device.get("type") == "pc" or "pc-agent" in marker or "windows" in marker
 
 
 def setup_step(status: str, title: str, detail: str) -> dict:
@@ -2900,7 +2926,7 @@ def pc_agent_url() -> str:
 def pc_agent_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Скачать PC Agent", url=pc_agent_url())],
+            [InlineKeyboardButton(text="Скачать / установить PC Agent", url=f"{public_server_url()}/pc-agent")],
             [InlineKeyboardButton(text="Команда ADB-моста", callback_data="pc_agent_adb_setup")],
             [InlineKeyboardButton(text="Собрать PC Agent", callback_data="pc_agent_build_now")],
             [InlineKeyboardButton(text="Получить QR / код", callback_data="pair_device")],
@@ -2912,20 +2938,20 @@ def pc_agent_keyboard() -> InlineKeyboardMarkup:
 def pc_agent_text() -> str:
     return (
         "PC Agent для твоих ПК/VDS\n\n"
-        "Самый простой сценарий для телефона, который останется дома:\n"
-        "1. На домашнем ПК один раз установи Android Platform Tools.\n"
-        "2. Подключи телефон по USB, включи USB debugging и подтверди RSA-ключ на телефоне.\n"
-        "3. В боте нажми «Получить QR / код».\n"
-        "4. На домашнем ПК выполни одну команду:\n"
+        "Самый простой сценарий для управления самим Windows ПК:\n"
+        "1. Скачай видимый Windows Agent.\n"
+        "2. В боте нажми «Получить QR / код».\n"
+        "3. На домашнем ПК выполни одну команду:\n"
         f"`{PC_AGENT_EXE_NAME} setup --server {public_server_url()} --code 123456 --name \"Home PC\" --startup`\n\n"
-        "После этого PC Agent сам запустит ADB-мост и добавит автозапуск Windows. "
-        "Когда ты будешь в другой стране, открываешь мини-ап и управляешь устройством `adb-...`, пока домашний ПК включен и телефон подключен/доступен по ADB.\n\n"
+        "После подключения Windows ПК появляется в том же пульте, что и телефон. Доступны live-экран, мышь, клавиатура, настройки, диагностика и блокировка. "
+        "Agent не скрывается: окно процесса и автозапуск остаются под контролем владельца.\n\n"
+        "Если нужен ещё и ADB-мост к Android: установи Android Platform Tools, подключи телефон с USB/Wireless debugging и запусти Agent с `--adb`.\n\n"
         "Ручной режим, если автозапуск не нужен:\n"
         f"`{PC_AGENT_EXE_NAME} pair --server {public_server_url()} --code 123456 --name \"Home PC\"`\n"
         f"`{PC_AGENT_EXE_NAME} run --adb --interval 1`\n"
         f"`{PC_AGENT_EXE_NAME} doctor --adb`\n\n"
-        "Экран ПК лучше подключать легально через WireGuard + RDP/SSH или RustDesk. "
-        "Наш PC Agent не скрывается и не выполняет произвольные команды."
+        "Для полноценного RDP-сеанса можно дополнительно использовать WireGuard + RDP/RustDesk. "
+        "Наш PC Agent принимает только встроенный набор команд пульта и не выполняет произвольные shell-команды."
     )
 
 
@@ -2933,7 +2959,7 @@ def pc_agent_adb_setup_text(owner_id: int) -> str:
     code = create_pairing_code(owner_id)
     command = (
         f"{PC_AGENT_EXE_NAME} setup --server {public_server_url()} "
-        f"--code {code} --name \"Home PC\" --startup"
+        f"--code {code} --name \"Home PC\" --startup --adb"
     )
     return (
         "Готовая команда для домашнего ADB-моста\n\n"
@@ -3155,7 +3181,8 @@ async def send_pairing_code(message: Message) -> None:
         f"Код подключения устройства: `{code}`\n\n"
         f"Способы подключения:\n"
         f"1. Открой ссылку: {links['web_link']}\n"
-        f"2. Или вставь в Android Agent Server URL: `{links['server']}` и код выше.\n\n"
+        f"2. Или вставь в Android Agent Server URL: `{links['server']}` и код выше.\n"
+        f"3. Для Windows выполни: `{PC_AGENT_EXE_NAME} setup --server {links['server']} --code {code} --name \"Home PC\" --startup`\n\n"
         f"Код действует {minutes} мин.",
         parse_mode="Markdown",
     )
@@ -3164,7 +3191,10 @@ async def send_pairing_code(message: Message) -> None:
 def pairing_keyboard(links: dict[str, str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Скачать / установить APK", url=f"{links['server']}/agent")],
+            [
+                InlineKeyboardButton(text="Android APK", url=f"{links['server']}/agent"),
+                InlineKeyboardButton(text="Windows EXE", url=f"{links['server']}/pc-agent"),
+            ],
             [InlineKeyboardButton(text="Открыть страницу подключения", url=links["web_link"])],
             [
                 InlineKeyboardButton(text="Мои устройства", callback_data="my_devices"),
@@ -3248,7 +3278,7 @@ def format_devices_text(owner_id: int) -> str:
             "Устройств пока нет.\n\n"
             "1. Открой «Добавить устройство».\n"
             "2. Получи новый QR / код.\n"
-            "3. В Android Agent нажми подключение и открой ссылку.\n"
+            "3. На Android открой QR-ссылку, а на Windows запусти setup-команду с этим кодом.\n"
             "4. Вернись сюда и обнови список."
             f"{storage_warning}"
         )
@@ -3593,7 +3623,7 @@ def expire_stale_commands() -> dict:
 def device_supports_agent_repair(device: dict) -> bool:
     platform = str(device.get("platform") or "").lower()
     agent = str(device.get("agent") or "").lower()
-    return "android" in platform or "apk" in agent or "android" in agent
+    return "android" in platform or "apk" in agent or "android" in agent or "pc-agent" in agent
 
 
 def device_needs_auto_repair(device: dict) -> tuple[bool, str]:
@@ -3754,6 +3784,7 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     last_seen = int(device.get("last_seen") or 0)
     last_seen_age = max(0, now - last_seen) if last_seen else None
     telemetry = device.get("telemetry") or {}
+    pc_device = is_pc_device(device)
     secret_set = bool(str(device.get("secret", "")).strip())
     online = bool(device.get("online"))
     pending_commands = int(diagnostics.get("pending_commands") or 0)
@@ -3766,13 +3797,13 @@ def device_health(device: dict, diagnostics: dict) -> dict:
 
     if not secret_set:
         issues.append("pairing_revoked")
-        hints.append("Привязка сброшена. Получи новый QR и открой его на телефоне.")
+        hints.append("Привязка сброшена. Получи новый одноразовый код и подключи Agent заново.")
     if last_seen_age is None:
         issues.append("never_seen")
         hints.append("Агент еще ни разу не прислал heartbeat.")
     elif not online:
         issues.append("heartbeat_stale")
-        hints.append("Запусти Android Agent и проверь интернет/режим энергосбережения.")
+        hints.append("Запусти Windows PC Agent и проверь интернет." if pc_device else "Запусти Android Agent и проверь интернет/режим энергосбережения.")
     if pending_commands >= 3 or oldest_pending_age > 60:
         issues.append("command_queue_stuck")
         hints.append("Есть зависшие команды. Если агент online, попробуй перезапустить его.")
@@ -3789,7 +3820,7 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     if not issues:
         state = "online" if online else "waiting"
         label = "Online" if online else "Ожидает первый heartbeat"
-        hints.append("Готов к командам." if online else "Открой агент на телефоне.")
+        hints.append("Готов к командам." if online else ("Запусти Agent на ПК." if pc_device else "Открой Agent на телефоне."))
     elif "pairing_revoked" in issues:
         state = "revoked"
         label = "Нужна новая привязка"
@@ -4903,6 +4934,16 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             self.handle_agent_page(parsed_url)
             return
 
+        if parsed_url.path == "/pc-agent":
+            self.handle_pc_agent_page(parsed_url)
+            return
+
+        if parsed_url.path == f"/{PC_AGENT_EXE_NAME}":
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", pc_agent_url())
+            self.end_headers()
+            return
+
         if parsed_url.path == f"/{AGENT_APK_NAME}":
             self.handle_agent_apk()
             return
@@ -5015,7 +5056,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             checks = setup_status_payload()
             with db_connect() as connection:
                 counts = {name: int(connection.execute(f"SELECT COUNT(*) AS count FROM {name}").fetchone()["count"]) for name in ("devices", "bot_access", "device_history")}
-            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v11", "api": "ok"})
+            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v12", "api": "ok"})
             return
 
         if parsed_url.path == "/api/alerts/device":
@@ -5333,6 +5374,62 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     <section class="note">
       <h2>Если APK еще не готов</h2>
       <p>Открой бота и отправь <code>/build_apk</code>. Для своего названия: <code>/build_apk Hunter Agent</code>. Если перед этим отправить картинку, она станет иконкой приложения.</p>
+    </section>
+  </main>
+</body>
+</html>"""
+        body = html.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def handle_pc_agent_page(self, parsed_url) -> None:
+        server = public_server_url()
+        download_url = pc_agent_url()
+        command = (
+            f'{PC_AGENT_EXE_NAME} setup --server {server} '
+            '--code 123456 --name "Home PC" --startup'
+        )
+        html = f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Установка Windows PC Agent</title>
+  <style>
+    :root {{ color-scheme:dark; --bg:#0f141a; --card:#17212b; --soft:#202d38; --text:#f4f8fb; --muted:#aebdcc; --line:#314252; --accent:#15a98f; --warn:#ffd166; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; min-height:100vh; background:var(--bg); color:var(--text); font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif; }}
+    main {{ width:min(94vw,760px); margin:0 auto; padding:22px 0 36px; }}
+    section {{ margin-top:12px; padding:18px; border:1px solid var(--line); border-radius:10px; background:var(--card); box-shadow:0 14px 40px rgba(0,0,0,.26); }}
+    h1 {{ margin:0 0 8px; font-size:30px; }} h2 {{ margin:0 0 8px; font-size:18px; }}
+    p, li {{ color:var(--muted); line-height:1.55; }} ol {{ padding-left:22px; }}
+    a {{ display:inline-flex; justify-content:center; margin-top:12px; padding:13px 16px; border-radius:8px; background:var(--accent); color:white; font-weight:850; text-decoration:none; }}
+    code {{ display:block; margin-top:10px; padding:13px; overflow-wrap:anywhere; border-radius:8px; background:#0b1117; color:#7ee0d3; line-height:1.5; }}
+    .note {{ border-color:#655326; background:#241f13; }} .note strong {{ color:var(--warn); }}
+  </style>
+</head>
+<body>
+  <main>
+    <section>
+      <h1>Windows PC Agent</h1>
+      <p>Подключает твой Windows-компьютер к тому же Hunter Control, где уже видны телефоны. После одноразовой привязки доступны live-экран, мышь, клавиатура, настройки, диагностика и блокировка.</p>
+      <a href="{escape(download_url, quote=True)}">Скачать {PC_AGENT_EXE_NAME}</a>
+    </section>
+    <section>
+      <h2>Подключение за 3 шага</h2>
+      <ol>
+        <li>В Telegram-боте или мини-аппе нажми «Получить QR и код».</li>
+        <li>Положи EXE в постоянную папку на своём ПК.</li>
+        <li>Открой PowerShell в этой папке, замени <strong>123456</strong> на одноразовый код и выполни команду:</li>
+      </ol>
+      <code>{escape(command)}</code>
+    </section>
+    <section class="note">
+      <strong>Контроль владельца</strong>
+      <p>Agent не скрывается, не выполняет произвольные shell-команды и подключается только после одноразового кода. Параметр <code>--startup</code> добавляет видимый автозапуск; убери его, если автозапуск не нужен.</p>
     </section>
   </main>
 </body>
@@ -6391,8 +6488,8 @@ async def callbacks(callback: CallbackQuery) -> None:
         await show_bot_screen(
             callback,
             "Управление устройствами\n\n"
-            "Android Agent работает только после явного подключения и разрешений на телефоне. "
-            "Lite-режим подходит для проверки связи, QR и статуса. Полный режим добавляет экран и жесты через системные разрешения Android.\n\n"
+            "Android Agent и Windows PC Agent работают только после явной установки и одноразовой привязки. "
+            "Оба типа устройств видны в одном пульте: для Android доступны экран и жесты после системных разрешений, для Windows — экран, мышь, клавиатура, настройки и блокировка.\n\n"
             "iPhone стороннему приложению не дает полноценное удаленное управление как Android. Для iOS реалистично держать инструкции, статус и легальный screen sharing через инструменты Apple.",
             reply_markup=nav_keyboard(None),
         )
@@ -6538,9 +6635,9 @@ async def callbacks(callback: CallbackQuery) -> None:
 
     if action == "control_info":
         await callback.message.answer(
-            "🕹 Управление телефоном\n\n"
-            "Android: можно развивать наш Agent до просмотра экрана через MediaProjection "
-            "и управления через Accessibility Service. Это всегда требует явных разрешений на телефоне.\n\n"
+            "🕹 Общий пульт ПК + телефон\n\n"
+            "Android: экран и жесты работают через MediaProjection и Accessibility после явных разрешений на телефоне.\n\n"
+            "Windows: PC Agent отдаёт live-экран и принимает встроенные команды мыши, клавиатуры, настроек и блокировки после одноразовой привязки.\n\n"
             "iPhone: полноценное удалённое управление сторонним приложением обычно недоступно. "
             "Реалистичный режим — статус устройства, инструкции, открытие разрешённых приложений и screen sharing через Apple/внешние сервисы."
         )

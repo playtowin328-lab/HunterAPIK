@@ -1,5 +1,7 @@
 import argparse
 import base64
+import ctypes
+import io
 import json
 import os
 import platform
@@ -12,6 +14,12 @@ import time
 import uuid
 from pathlib import Path
 from urllib import error, parse, request
+
+try:
+    from PIL import Image, ImageGrab
+except ImportError:  # The agent still provides heartbeat diagnostics without screen support.
+    Image = None
+    ImageGrab = None
 
 
 APP_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "HunterPCAgent"
@@ -28,6 +36,132 @@ AGENT_METRICS = {
     "last_error": "",
     "screen_quality": "balanced",
 }
+
+
+class UnsupportedCommand(RuntimeError):
+    pass
+
+
+def is_windows() -> bool:
+    return os.name == "nt"
+
+
+def windows_user32():
+    if not is_windows():
+        raise UnsupportedCommand("Desktop control is supported by the Windows PC Agent only.")
+    return ctypes.windll.user32
+
+
+def desktop_bounds() -> tuple[int, int, int, int]:
+    user32 = windows_user32()
+    left = user32.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
+    top = user32.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
+    width = max(1, user32.GetSystemMetrics(78))  # SM_CXVIRTUALSCREEN
+    height = max(1, user32.GetSystemMetrics(79))  # SM_CYVIRTUALSCREEN
+    return left, top, width, height
+
+
+def desktop_coord(x: float, y: float) -> tuple[int, int]:
+    left, top, width, height = desktop_bounds()
+    return (
+        left + max(0, min(width - 1, round(float(x) * width))),
+        top + max(0, min(height - 1, round(float(y) * height))),
+    )
+
+
+def mouse_button(flags: int) -> None:
+    windows_user32().mouse_event(flags, 0, 0, 0, 0)
+
+
+def mouse_click(x: float, y: float, hold_seconds: float = 0.0) -> tuple[int, int]:
+    px, py = desktop_coord(x, y)
+    user32 = windows_user32()
+    user32.SetCursorPos(px, py)
+    mouse_button(0x0002)  # MOUSEEVENTF_LEFTDOWN
+    if hold_seconds:
+        time.sleep(min(2.0, max(0.0, hold_seconds)))
+    mouse_button(0x0004)  # MOUSEEVENTF_LEFTUP
+    return px, py
+
+
+def mouse_drag(x: float, y: float, end_x: float, end_y: float) -> tuple[int, int, int, int]:
+    start_x, start_y = desktop_coord(x, y)
+    finish_x, finish_y = desktop_coord(end_x, end_y)
+    user32 = windows_user32()
+    user32.SetCursorPos(start_x, start_y)
+    mouse_button(0x0002)
+    for step in range(1, 13):
+        user32.SetCursorPos(
+            round(start_x + (finish_x - start_x) * step / 12),
+            round(start_y + (finish_y - start_y) * step / 12),
+        )
+        time.sleep(0.012)
+    mouse_button(0x0004)
+    return start_x, start_y, finish_x, finish_y
+
+
+def press_virtual_key(key: int, modifier: int | None = None) -> None:
+    user32 = windows_user32()
+    if modifier is not None:
+        user32.keybd_event(modifier, 0, 0, 0)
+    user32.keybd_event(key, 0, 0, 0)
+    user32.keybd_event(key, 0, 0x0002, 0)
+    if modifier is not None:
+        user32.keybd_event(modifier, 0, 0x0002, 0)
+
+
+def type_unicode_text(value: str) -> int:
+    text = str(value)[:240]
+    if not text:
+        return 0
+    user32 = windows_user32()
+
+    class KeyboardInput(ctypes.Structure):
+        _fields_ = [
+            ("virtual_key", ctypes.c_ushort),
+            ("scan_code", ctypes.c_ushort),
+            ("flags", ctypes.c_ulong),
+            ("time", ctypes.c_ulong),
+            ("extra_info", ctypes.c_size_t),
+        ]
+
+    class MouseInput(ctypes.Structure):
+        _fields_ = [
+            ("x", ctypes.c_long),
+            ("y", ctypes.c_long),
+            ("mouse_data", ctypes.c_ulong),
+            ("flags", ctypes.c_ulong),
+            ("time", ctypes.c_ulong),
+            ("extra_info", ctypes.c_size_t),
+        ]
+
+    class HardwareInput(ctypes.Structure):
+        _fields_ = [("message", ctypes.c_ulong), ("param_low", ctypes.c_ushort), ("param_high", ctypes.c_ushort)]
+
+    class InputUnion(ctypes.Union):
+        _fields_ = [("keyboard", KeyboardInput), ("mouse", MouseInput), ("hardware", HardwareInput)]
+
+    class Input(ctypes.Structure):
+        _fields_ = [("type", ctypes.c_ulong), ("data", InputUnion)]
+
+    utf16_units = memoryview(text.encode("utf-16-le")).cast("H")
+    events = []
+    for unit in utf16_units:
+        events.extend([
+            Input(1, InputUnion(keyboard=KeyboardInput(0, unit, 0x0004, 0, 0))),
+            Input(1, InputUnion(keyboard=KeyboardInput(0, unit, 0x0004 | 0x0002, 0, 0))),
+        ])
+    event_array = (Input * len(events))(*events)
+    sent = user32.SendInput(len(event_array), event_array, ctypes.sizeof(Input))
+    if sent != len(event_array):
+        raise RuntimeError("Windows accepted only part of the keyboard input.")
+    return len(text)
+
+
+def open_windows_settings(uri: str) -> None:
+    if not is_windows():
+        raise UnsupportedCommand("Windows settings are not available on this platform.")
+    os.startfile(uri)  # type: ignore[attr-defined]
 
 
 def load_config() -> dict:
@@ -410,7 +544,7 @@ def adb_bridge_tick(config: dict) -> None:
                 adb_complete_command(config, device_id, command, "failed", str(exc))
 
 
-def executable_command(adb_enabled: bool = True, interval: int = 3) -> str:
+def executable_command(adb_enabled: bool = False, interval: int = 3) -> str:
     if getattr(sys, "frozen", False):
         executable = f'"{sys.executable}"'
     else:
@@ -428,7 +562,7 @@ def windows_startup_dir() -> Path:
     return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
 
 
-def install_startup(adb_enabled: bool = True, interval: int = 1) -> Path:
+def install_startup(adb_enabled: bool = False, interval: int = 1) -> Path:
     startup_dir = windows_startup_dir()
     startup_dir.mkdir(parents=True, exist_ok=True)
     script_path = startup_dir / STARTUP_SCRIPT_NAME
@@ -468,6 +602,144 @@ def claim_pairing(config: dict, server_url: str, code: str) -> dict:
     return data
 
 
+def pc_next_command(config: dict) -> dict | None:
+    server = config["server_url"].rstrip("/")
+    query = parse.urlencode({"owner_id": config["owner_id"], "device_id": config["device_id"]})
+    data = api_request(
+        "GET",
+        f"{server}/api/devices/commands/next?{query}",
+        secret=config["device_secret"],
+    )
+    return data.get("command")
+
+
+def pc_complete_command(config: dict, command: dict, status: str, result: str) -> None:
+    server = config["server_url"].rstrip("/")
+    payload = {
+        "owner_id": config["owner_id"],
+        "device_id": config["device_id"],
+        "command_id": command["command_id"],
+        "status": status,
+        "result": str(result)[:500],
+    }
+    api_request("POST", f"{server}/api/devices/commands/complete", payload, config["device_secret"])
+
+
+def pc_upload_screen(config: dict, payload: dict | None = None) -> str:
+    if not is_windows() or ImageGrab is None or Image is None:
+        raise UnsupportedCommand("Screen capture needs the Windows build of PC Agent with Pillow.")
+    payload = payload or {}
+    quality_name = str(payload.get("quality", "balanced")).strip()[:24] or "balanced"
+    max_size = max(640, min(1920, int(payload.get("max_size", 1280) or 1280)))
+    jpeg_quality = {"fast": 58, "balanced": 72, "quality": 84}.get(quality_name, 72)
+    started = time.perf_counter()
+    screenshot = ImageGrab.grab(all_screens=True)
+    screenshot.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+    if screenshot.mode != "RGB":
+        screenshot = screenshot.convert("RGB")
+    output = io.BytesIO()
+    screenshot.save(output, format="JPEG", quality=jpeg_quality, optimize=True)
+    image = output.getvalue()
+    if len(image) > 2_400_000:
+        output = io.BytesIO()
+        screenshot.save(output, format="JPEG", quality=48, optimize=True)
+        image = output.getvalue()
+    body = {
+        "owner_id": config["owner_id"],
+        "device_id": config["device_id"],
+        "image_base64": base64.b64encode(image).decode("ascii"),
+    }
+    api_request("POST", f"{config['server_url'].rstrip('/')}/api/devices/screen", body, config["device_secret"])
+    AGENT_METRICS["last_screen_ms"] = round((time.perf_counter() - started) * 1000)
+    AGENT_METRICS["screen_quality"] = quality_name
+    return f"Desktop uploaded: {len(image) // 1024} KB, quality={quality_name}"
+
+
+def pc_handle_command(config: dict, command: dict) -> str:
+    command_type = str(command.get("type", ""))
+    payload = command.get("payload") or {}
+
+    if command_type == "ping":
+        return "PC Agent pong"
+    if command_type == "request_screen":
+        return pc_upload_screen(config, payload)
+    if command_type == "stop_screen":
+        return "PC screen capture is on-demand; nothing to stop."
+    if command_type == "tap":
+        x, y = mouse_click(float(payload.get("x", 0)), float(payload.get("y", 0)))
+        return f"Click {x},{y}"
+    if command_type == "long_tap":
+        x, y = mouse_click(float(payload.get("x", 0)), float(payload.get("y", 0)), 0.65)
+        return f"Long click {x},{y}"
+    if command_type == "swipe":
+        points = mouse_drag(
+            float(payload.get("x", 0)),
+            float(payload.get("y", 0)),
+            float(payload.get("end_x", 0)),
+            float(payload.get("end_y", 0)),
+        )
+        return f"Drag {points[0]},{points[1]} -> {points[2]},{points[3]}"
+    if command_type == "input_text":
+        return f"Typed {type_unicode_text(payload.get('text', ''))} characters"
+    if command_type == "key_enter":
+        press_virtual_key(0x0D)
+        return "Enter"
+    if command_type == "key_delete":
+        press_virtual_key(0x08)
+        return "Backspace"
+    if command_type == "back":
+        press_virtual_key(0x25, 0x12)  # Alt+Left
+        return "Alt+Left"
+    if command_type == "home":
+        press_virtual_key(0x44, 0x5B)  # Win+D
+        return "Desktop shown"
+    if command_type == "recents":
+        press_virtual_key(0x09, 0x12)  # Alt+Tab
+        return "Task switcher"
+    if command_type == "wake_screen":
+        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000002 | 0x00000001)
+        return "Display wake requested"
+    if command_type == "lock_screen":
+        windows_user32().LockWorkStation()
+        return "Workstation locked"
+    if command_type == "open_settings":
+        open_windows_settings("ms-settings:")
+        return "Windows Settings opened"
+    if command_type == "open_wifi_settings":
+        open_windows_settings("ms-settings:network-wifi")
+        return "Wi-Fi settings opened"
+    if command_type == "open_battery_settings":
+        open_windows_settings("ms-settings:batterysaver")
+        return "Battery settings opened"
+    if command_type == "repair_agent":
+        return "PC Agent connection is active"
+    if command_type == "request_actions":
+        return "PC Agent supports screen, click, long click, drag, text, navigation, settings and lock."
+    raise UnsupportedCommand(f"Unsupported PC command: {command_type}")
+
+
+def pc_command_tick(config: dict) -> None:
+    for _ in range(5):
+        command = pc_next_command(config)
+        if not command:
+            return
+        started = time.perf_counter()
+        try:
+            result = pc_handle_command(config, command)
+            status = "acknowledged"
+            AGENT_METRICS["commands_handled"] += 1
+            AGENT_METRICS["last_error"] = ""
+        except UnsupportedCommand as exc:
+            result = str(exc)
+            status = "rejected"
+        except Exception as exc:
+            result = str(exc)
+            status = "failed"
+            AGENT_METRICS["last_error"] = result[:160]
+        AGENT_METRICS["last_command_ms"] = round((time.perf_counter() - started) * 1000)
+        pc_complete_command(config, command, status, result)
+
+
 def heartbeat(config: dict) -> None:
     server = config["server_url"].rstrip("/")
     payload = {
@@ -481,8 +753,24 @@ def heartbeat(config: dict) -> None:
             "hostname": socket.gethostname(),
             "python": platform.python_version(),
             "machine": platform.machine(),
+            "agent_enabled": True,
+            "screen_control": bool(is_windows() and ImageGrab is not None),
+            "input_control": is_windows(),
+            "control_mode": "desktop",
+            "capabilities": [
+                "screen",
+                "mouse",
+                "keyboard",
+                "navigation",
+                "settings",
+                "lock",
+            ] if is_windows() else ["heartbeat"],
             "loop_ms": AGENT_METRICS["last_loop_ms"],
             "adb_devices": AGENT_METRICS["last_adb_devices"],
+            "command_ms": AGENT_METRICS["last_command_ms"],
+            "screen_ms": AGENT_METRICS["last_screen_ms"],
+            "commands_handled": AGENT_METRICS["commands_handled"],
+            "screen_quality": AGENT_METRICS["screen_quality"],
             "last_error": AGENT_METRICS["last_error"],
         },
     }
@@ -502,6 +790,7 @@ def run_loop(config: dict, interval: int, adb_enabled: bool) -> None:
         started = time.perf_counter()
         try:
             heartbeat(config)
+            pc_command_tick(config)
             if adb_enabled:
                 adb_bridge_tick(config)
             AGENT_METRICS["last_loop_ms"] = round((time.perf_counter() - started) * 1000)
@@ -548,7 +837,8 @@ def main() -> int:
     setup_parser.add_argument("--code", required=True, help="Pairing code from /pair")
     setup_parser.add_argument("--name", default="", help="Device name")
     setup_parser.add_argument("--interval", type=int, default=1, help="Heartbeat interval seconds")
-    setup_parser.add_argument("--no-adb", action="store_true", help="Do not enable ADB bridge")
+    setup_parser.add_argument("--adb", action="store_true", help="Also enable the optional Android Debug Bridge")
+    setup_parser.add_argument("--no-adb", action="store_true", help="Compatibility flag: keep ADB disabled")
     setup_parser.add_argument("--startup", action="store_true", help="Add Windows startup shortcut")
 
     doctor_parser = subparsers.add_parser("doctor", help="Check pairing and ADB readiness")
@@ -558,7 +848,8 @@ def main() -> int:
     startup_subparsers = startup_parser.add_subparsers(dest="startup_command")
     startup_install = startup_subparsers.add_parser("install", help="Start bridge automatically after Windows login")
     startup_install.add_argument("--interval", type=int, default=1, help="Heartbeat interval seconds")
-    startup_install.add_argument("--no-adb", action="store_true", help="Do not enable ADB bridge")
+    startup_install.add_argument("--adb", action="store_true", help="Also enable the optional Android Debug Bridge")
+    startup_install.add_argument("--no-adb", action="store_true", help="Compatibility flag: keep ADB disabled")
     startup_subparsers.add_parser("remove", help="Remove Windows startup shortcut")
 
     args = parser.parse_args()
@@ -580,7 +871,7 @@ def main() -> int:
             config["device_name"] = args.name.strip()[:60]
         claim_pairing(config, args.server, args.code)
         print("Pair success.")
-        adb_enabled = not args.no_adb
+        adb_enabled = args.adb and not args.no_adb
         if adb_enabled:
             ok, lines = adb_doctor()
             for line in lines:
@@ -598,7 +889,7 @@ def main() -> int:
 
     if args.command == "startup":
         if args.startup_command == "install":
-            script_path = install_startup(adb_enabled=not args.no_adb, interval=max(1, args.interval))
+            script_path = install_startup(adb_enabled=args.adb and not args.no_adb, interval=max(1, args.interval))
             print(f"Startup installed: {script_path}")
             return 0
         if args.startup_command == "remove":
