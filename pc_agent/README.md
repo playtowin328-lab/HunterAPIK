@@ -58,4 +58,13 @@ hunter-pc-agent.exe startup install
 hunter-pc-agent.exe startup remove
 ```
 
+После `startup install` агент копирует EXE в `%APPDATA%\HunterPCAgent`, создаёт резервную копию и восстанавливает основной файл при следующем входе в Windows, если он был повреждён или удалён. Для ручной проверки и восстановления:
+
+```powershell
+hunter-pc-agent.exe doctor
+hunter-pc-agent.exe repair
+```
+
+Конфигурация хранится атомарно вместе с резервной копией, а подробный журнал доступен в `%APPDATA%\HunterPCAgent\agent.log`.
+
 PC Agent не скрывается, не ставит себя в автозапуск без твоей команды и не включает ADB без подтверждения на телефоне.

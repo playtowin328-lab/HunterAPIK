@@ -65,6 +65,7 @@ DEVICE_TTL_SECONDS = int(os.getenv("DEVICE_TTL_SECONDS", "300"))
 DEVICE_MONITOR_INTERVAL_SECONDS = int(os.getenv("DEVICE_MONITOR_INTERVAL_SECONDS", "60"))
 COMMAND_PENDING_TIMEOUT_SECONDS = int(os.getenv("COMMAND_PENDING_TIMEOUT_SECONDS", "120"))
 COMMAND_DELIVERED_TIMEOUT_SECONDS = int(os.getenv("COMMAND_DELIVERED_TIMEOUT_SECONDS", "180"))
+COMMAND_RESERVATION_TIMEOUT_SECONDS = int(os.getenv("COMMAND_RESERVATION_TIMEOUT_SECONDS", "30"))
 COMMAND_HISTORY_TTL_SECONDS = int(os.getenv("COMMAND_HISTORY_TTL_SECONDS", "86400"))
 AUDIT_RETENTION_DAYS = max(7, int(os.getenv("AUDIT_RETENTION_DAYS", "30")))
 AUTO_REPAIR_COOLDOWN_SECONDS = int(os.getenv("AUTO_REPAIR_COOLDOWN_SECONDS", "300"))
@@ -1695,7 +1696,7 @@ def post_deploy_check_text() -> str:
         (devices >= 0, f"Устройства доступны: {devices}"),
         (roles >= 0, f"Роли и доступы доступны: {roles}"),
         (setup.get("ok", False), "API и обязательные Variables готовы"),
-        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v11"),
+        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v14"),
         (history >= 0, f"История телеметрии работает: {history} записей"),
     ]
     ok = all(value for value, _ in checks)
@@ -2110,7 +2111,7 @@ def mini_app_url_for_user(user_id: str | int | None = None) -> str:
     separator = "&" if "?" in MINI_APP_URL else "?"
     return (
         f"{MINI_APP_URL}{separator}"
-        f"v=12&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
+        f"v=14&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
     )
 
 
@@ -3470,8 +3471,17 @@ def create_device_command(owner_id: str, device_id: str, command_type: str, payl
     return command
 
 
-def next_device_command(owner_id: str, device_id: str) -> dict | None:
-    now = int(time.time())
+def command_from_row(row: sqlite3.Row, status: str | None = None, updated_at: int | None = None) -> dict:
+    command = dict(row)
+    command["payload"] = decode_json_object(command.pop("payload_json", None))
+    if status is not None:
+        command["status"] = status
+    if updated_at is not None:
+        command["updated_at"] = updated_at
+    return command
+
+
+def peek_next_device_command(owner_id: str, device_id: str) -> dict | None:
     with db_connect() as connection:
         row = connection.execute(
             """
@@ -3484,14 +3494,63 @@ def next_device_command(owner_id: str, device_id: str) -> dict | None:
         ).fetchone()
         if not row:
             return None
+    return command_from_row(row)
 
+
+def reserve_next_device_command(owner_id: str, device_id: str) -> dict | None:
+    reserved_at = now_ts()
+    stale_before = reserved_at - max(5, COMMAND_RESERVATION_TIMEOUT_SECONDS)
+    with db_connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
         connection.execute(
-            "UPDATE commands SET status = 'delivered', updated_at = ? WHERE command_id = ?",
-            (now, row["command_id"]),
+            "UPDATE commands SET status = 'pending' WHERE status = 'delivering' AND updated_at < ?",
+            (stale_before,),
         )
+        row = connection.execute(
+            """
+            SELECT * FROM commands
+            WHERE owner_id = ? AND device_id = ? AND status = 'pending'
+            ORDER BY CASE WHEN type = 'request_screen' THEN 1 ELSE 0 END, created_at ASC
+            LIMIT 1
+            """,
+            (str(owner_id), str(device_id)),
+        ).fetchone()
+        if not row:
+            return None
+        updated = connection.execute(
+            "UPDATE commands SET status = 'delivering', updated_at = ? WHERE command_id = ? AND status = 'pending'",
+            (reserved_at, row["command_id"]),
+        )
+        if updated.rowcount != 1:
+            return None
+    return command_from_row(row, status="delivering", updated_at=reserved_at)
 
-    command = dict(row)
-    command["payload"] = decode_json_object(command.pop("payload_json", None))
+
+def release_device_command_reservation(command_id: str) -> bool:
+    with db_connect() as connection:
+        updated = connection.execute(
+            "UPDATE commands SET status = 'pending', updated_at = created_at WHERE command_id = ? AND status = 'delivering'",
+            (str(command_id),),
+        )
+        return updated.rowcount == 1
+
+
+def mark_device_command_delivered(command_id: str, delivered_at: int | None = None) -> bool:
+    now = now_ts() if delivered_at is None else int(delivered_at)
+    with db_connect() as connection:
+        updated = connection.execute(
+            "UPDATE commands SET status = 'delivered', updated_at = ? WHERE command_id = ? AND status IN ('pending', 'delivering')",
+            (now, str(command_id)),
+        )
+        return updated.rowcount == 1
+
+
+def next_device_command(owner_id: str, device_id: str) -> dict | None:
+    command = reserve_next_device_command(owner_id, device_id)
+    if not command:
+        return None
+    now = now_ts()
+    mark_device_command_delivered(command["command_id"], now)
     command["status"] = "delivered"
     command["updated_at"] = now
     return command
@@ -3513,8 +3572,7 @@ def complete_device_command(owner_id: str, device_id: str, command_id: str, stat
             (status[:32], result[:500], now, str(command_id)),
         )
 
-    command = dict(row)
-    command["payload"] = decode_json_object(command.pop("payload_json", None))
+    command = command_from_row(row)
     command["status"] = status[:32]
     command["result"] = result[:500]
     command["updated_at"] = now
@@ -3548,9 +3606,7 @@ def get_device_command(owner_id: str, device_id: str, command_id: str) -> dict |
             ).fetchone()
     if not row:
         return None
-    command = dict(row)
-    command["payload"] = decode_json_object(command.pop("payload_json", None))
-    return command
+    return command_from_row(row)
 
 
 def has_active_device_command(owner_id: str, device_id: str, command_type: str) -> bool:
@@ -3779,6 +3835,143 @@ def device_diagnostics(owner_id: str, device_id: str) -> dict:
     return diagnostics
 
 
+def device_connection_quality(device: dict, diagnostics: dict) -> dict:
+    def metric_int(value, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    online = bool(device.get("online"))
+    telemetry = device.get("telemetry") or {}
+    now = now_ts()
+    last_seen = metric_int(device.get("last_seen"))
+    last_seen_age = max(0, now - last_seen) if last_seen else None
+    request_ms = max(0, metric_int(telemetry.get("request_ms")))
+    attempts = max(1, metric_int(telemetry.get("network_attempts"), 1))
+    network_failures = max(0, metric_int(telemetry.get("network_failures")))
+    consecutive_errors = max(0, metric_int(telemetry.get("consecutive_errors") or telemetry.get("error_count")))
+    pending_commands = max(0, metric_int(diagnostics.get("pending_commands")))
+    delivered_commands = max(0, metric_int(diagnostics.get("delivered_commands")))
+    network_error = str(telemetry.get("network_error") or "").strip()
+    score = 100 if online else 0
+    factors: list[dict] = []
+    recommendations: list[str] = []
+
+    def penalize(key: str, points: int, detail: str, recommendation: str = "") -> None:
+        nonlocal score
+        safe_points = max(0, int(points))
+        if not safe_points:
+            return
+        score = max(0, score - safe_points)
+        factors.append({"key": key, "penalty": safe_points, "detail": detail})
+        if recommendation and recommendation not in recommendations:
+            recommendations.append(recommendation)
+
+    if not online:
+        recommendations.append(
+            "Запусти Windows PC Agent и проверь интернет."
+            if is_pc_device(device)
+            else "Открой Android Agent и проверь интернет и работу в фоне."
+        )
+    else:
+        if last_seen_age is not None:
+            if last_seen_age > 120:
+                penalize("heartbeat_age", 40, f"heartbeat {last_seen_age} сек", "Проверь фоновую работу Agent и энергосбережение.")
+            elif last_seen_age > 60:
+                penalize("heartbeat_age", 25, f"heartbeat {last_seen_age} сек", "Проверь фоновую работу Agent.")
+            elif last_seen_age > 30:
+                penalize("heartbeat_age", 12, f"heartbeat {last_seen_age} сек", "Соединение отвечает с задержкой.")
+
+        if request_ms > 5000:
+            penalize("latency", 35, f"API {request_ms} мс", "Проверь интернет устройства и доступность сервера.")
+        elif request_ms > 2500:
+            penalize("latency", 25, f"API {request_ms} мс", "Переключись на более стабильную сеть.")
+        elif request_ms > 1200:
+            penalize("latency", 15, f"API {request_ms} мс", "Сеть отвечает медленно.")
+        elif request_ms > 600:
+            penalize("latency", 6, f"API {request_ms} мс")
+
+        if attempts > 1:
+            penalize(
+                "retries",
+                min(24, (attempts - 1) * 8),
+                f"попыток {attempts}",
+                "Есть потери пакетов: проверь Wi-Fi/VPN или мобильную сеть.",
+            )
+        if network_failures:
+            penalize(
+                "network_failures",
+                min(30, network_failures * 10),
+                f"сетевых ошибок {network_failures}",
+                "Запусти стабилизацию связи и проверь журнал Agent.",
+            )
+        if consecutive_errors:
+            penalize(
+                "consecutive_errors",
+                min(30, consecutive_errors * 10),
+                f"ошибок подряд {consecutive_errors}",
+                "Запусти ремонт связи.",
+            )
+        if network_error:
+            penalize("network_error", 15, network_error[:120], "Проверь DNS, VPN и адрес сервера.")
+        if pending_commands:
+            penalize(
+                "pending_commands",
+                min(20, pending_commands * 4),
+                f"в очереди {pending_commands}",
+                "Очисти зависшую очередь и повтори ping.",
+            )
+        if delivered_commands:
+            penalize(
+                "delivered_commands",
+                min(20, delivered_commands * 5),
+                f"без ответа {delivered_commands}",
+                "Agent получил команды, но не подтвердил выполнение.",
+            )
+        if is_pc_device(device) and telemetry.get("startup_installed") is False:
+            recommendations.append("Включи автозапуск PC Agent для восстановления после перезагрузки.")
+        if is_pc_device(device) and telemetry.get("recovery_copy") is False:
+            recommendations.append("Запусти repair, чтобы создать резервную копию PC Agent.")
+
+    score = max(0, min(100, int(score)))
+    if not online:
+        state, label = "offline", "Нет связи"
+    elif score >= 90:
+        state, label = "excellent", "Отличная"
+    elif score >= 75:
+        state, label = "good", "Хорошая"
+    elif score >= 55:
+        state, label = "fair", "Нестабильная"
+    elif score >= 30:
+        state, label = "weak", "Слабая"
+    else:
+        state, label = "critical", "Критическая"
+
+    summary_parts = []
+    if request_ms:
+        summary_parts.append(f"API {request_ms} мс")
+    if attempts > 1:
+        summary_parts.append(f"{attempts} попытки")
+    if last_seen_age is not None:
+        summary_parts.append(f"heartbeat {last_seen_age} сек")
+    if pending_commands or delivered_commands:
+        summary_parts.append(f"команд ждёт {pending_commands + delivered_commands}")
+    if not summary_parts:
+        summary_parts.append("Heartbeat и очередь команд в норме" if online else "Heartbeat не поступает")
+    if not recommendations and online:
+        recommendations.append("Связь стабильна, дополнительных действий не требуется.")
+
+    return {
+        "score": score,
+        "state": state,
+        "label": label,
+        "summary": " · ".join(summary_parts),
+        "recommendations": recommendations[:3],
+        "factors": factors[:8],
+    }
+
+
 def device_health(device: dict, diagnostics: dict) -> dict:
     now = int(time.time())
     last_seen = int(device.get("last_seen") or 0)
@@ -3791,6 +3984,7 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     oldest_pending_age = int(diagnostics.get("oldest_pending_age") or 0)
     delivered_commands = int(diagnostics.get("delivered_commands") or 0)
     oldest_delivered_age = int(diagnostics.get("oldest_delivered_age") or 0)
+    connection_quality = device_connection_quality(device, diagnostics)
 
     issues: list[str] = []
     hints: list[str] = []
@@ -3816,6 +4010,11 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     if telemetry.get("screen_error"):
         issues.append("screen_error")
         hints.append(str(telemetry.get("screen_error"))[:160])
+    if online and int(connection_quality.get("score") or 0) < 55:
+        issues.append("connection_unstable")
+        recommendations = connection_quality.get("recommendations") or []
+        if recommendations:
+            hints.append(str(recommendations[0])[:160])
 
     if not issues:
         state = "online" if online else "waiting"
@@ -3841,6 +4040,7 @@ def device_health(device: dict, diagnostics: dict) -> dict:
         "hints": hints[:4],
         "last_seen_age": last_seen_age,
         "secret_set": secret_set,
+        "connection": connection_quality,
     }
 
 
@@ -4966,7 +5166,20 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": "bad device secret"}, HTTPStatus.UNAUTHORIZED)
                 return
 
-            self.send_json({"command": next_device_command(payload["owner_id"], payload["device_id"])})
+            command = reserve_next_device_command(payload["owner_id"], payload["device_id"])
+            delivered_at = now_ts()
+            response_command = None
+            if command:
+                response_command = {**command, "status": "delivered", "updated_at": delivered_at}
+            try:
+                self.send_json({"command": response_command})
+            except Exception:
+                if command:
+                    release_device_command_reservation(command["command_id"])
+                raise
+            else:
+                if command:
+                    mark_device_command_delivered(command["command_id"], delivered_at)
             return
 
         if parsed_url.path == "/api/devices/commands/status":
@@ -5056,7 +5269,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             checks = setup_status_payload()
             with db_connect() as connection:
                 counts = {name: int(connection.execute(f"SELECT COUNT(*) AS count FROM {name}").fetchone()["count"]) for name in ("devices", "bot_access", "device_history")}
-            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v12", "api": "ok"})
+            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v14", "api": "ok"})
             return
 
         if parsed_url.path == "/api/alerts/device":

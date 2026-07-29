@@ -204,9 +204,100 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertEqual(1, len(devices))
         self.assertEqual({}, devices[0]["telemetry"])
 
+    def test_connection_quality_reports_stable_link(self) -> None:
+        device = {
+            "online": True,
+            "last_seen": main.now_ts(),
+            "type": "pc",
+            "secret": "secret",
+            "telemetry": {
+                "request_ms": 180,
+                "network_attempts": 1,
+                "network_failures": 0,
+                "consecutive_errors": 0,
+                "startup_installed": True,
+                "recovery_copy": True,
+            },
+        }
+        diagnostics = {"pending_commands": 0, "delivered_commands": 0}
+
+        quality = main.device_connection_quality(device, diagnostics)
+        health = main.device_health(device, diagnostics)
+
+        self.assertEqual(100, quality["score"])
+        self.assertEqual("excellent", quality["state"])
+        self.assertEqual(quality, health["connection"])
+        self.assertNotIn("connection_unstable", health["issues"])
+
+    def test_connection_quality_detects_unstable_link(self) -> None:
+        device = {
+            "online": True,
+            "last_seen": main.now_ts(),
+            "type": "phone",
+            "secret": "secret",
+            "telemetry": {
+                "request_ms": 6000,
+                "network_attempts": 4,
+                "network_failures": 2,
+                "consecutive_errors": 2,
+                "network_error": "timeout",
+            },
+        }
+        diagnostics = {"pending_commands": 4, "delivered_commands": 1}
+
+        quality = main.device_connection_quality(device, diagnostics)
+        health = main.device_health(device, diagnostics)
+
+        self.assertLess(quality["score"], 30)
+        self.assertEqual("critical", quality["state"])
+        self.assertTrue(quality["recommendations"])
+        self.assertIn("connection_unstable", health["issues"])
+
+    def test_connection_quality_tolerates_malformed_metrics(self) -> None:
+        quality = main.device_connection_quality(
+            {"online": True, "last_seen": main.now_ts(), "telemetry": {"request_ms": "broken", "network_attempts": []}},
+            {"pending_commands": "bad"},
+        )
+
+        self.assertEqual(100, quality["score"])
+
     def test_command_for_unknown_device_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "device not found"):
             main.create_device_command("100", "missing", "ping")
+
+    def test_command_delivery_is_marked_after_successful_send(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Phone"})
+        created = main.create_device_command("100", "phone-1", "ping")
+
+        peeked = main.peek_next_device_command("100", "phone-1")
+
+        self.assertIsNotNone(peeked)
+        self.assertEqual(created["command_id"], peeked["command_id"])
+        self.assertEqual("pending", peeked["status"])
+        with main.db_connect() as connection:
+            stored_status = connection.execute(
+                "SELECT status FROM commands WHERE command_id = ?",
+                (created["command_id"],),
+            ).fetchone()["status"]
+        self.assertEqual("pending", stored_status)
+
+        delivered_at = main.now_ts()
+        self.assertTrue(main.mark_device_command_delivered(created["command_id"], delivered_at=delivered_at))
+        delivered = main.get_device_command("100", "phone-1", created["command_id"])
+        self.assertEqual("delivered", delivered["status"])
+        self.assertEqual(delivered_at, delivered["updated_at"])
+
+    def test_command_reservation_prevents_duplicate_delivery(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Phone"})
+        created = main.create_device_command("100", "phone-1", "ping")
+
+        reserved = main.reserve_next_device_command("100", "phone-1")
+        duplicate = main.reserve_next_device_command("100", "phone-1")
+
+        self.assertEqual(created["command_id"], reserved["command_id"])
+        self.assertIsNone(duplicate)
+        self.assertTrue(main.release_device_command_reservation(created["command_id"]))
+        self.assertEqual(created["command_id"], main.reserve_next_device_command("100", "phone-1")["command_id"])
 
     def test_specific_agent_error_suppresses_duplicate_health_warning(self) -> None:
         key = main.device_notify_key("100", "phone-1")

@@ -1,10 +1,14 @@
 import argparse
 import base64
 import ctypes
+import hashlib
 import io
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 import os
 import platform
+import random
 import re
 import shutil
 import socket
@@ -24,7 +28,19 @@ except ImportError:  # The agent still provides heartbeat diagnostics without sc
 
 APP_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "HunterPCAgent"
 CONFIG_PATH = APP_DIR / "config.json"
+CONFIG_BACKUP_PATH = APP_DIR / "config.backup.json"
+LOG_PATH = APP_DIR / "agent.log"
+INSTALLED_EXECUTABLE_PATH = APP_DIR / "hunter-pc-agent.exe"
+BACKUP_EXECUTABLE_PATH = APP_DIR / "hunter-pc-agent.backup.exe"
+PENDING_EXECUTABLE_PATH = APP_DIR / "hunter-pc-agent.update.exe"
 STARTUP_SCRIPT_NAME = "Hunter ADB Bridge.cmd"
+API_TIMEOUT_SECONDS = float(os.getenv("HUNTER_PC_API_TIMEOUT", "12"))
+API_RETRY_ATTEMPTS = max(1, int(os.getenv("HUNTER_PC_API_RETRIES", "3")))
+API_RETRY_BASE_DELAY_SECONDS = float(os.getenv("HUNTER_PC_API_RETRY_BASE", "0.45"))
+API_RETRY_MAX_DELAY_SECONDS = float(os.getenv("HUNTER_PC_API_RETRY_MAX", "6"))
+DEFAULT_POLL_INTERVAL_SECONDS = max(2, int(os.getenv("HUNTER_PC_POLL_INTERVAL", "3")))
+HEARTBEAT_INTERVAL_SECONDS = max(10, int(os.getenv("HUNTER_PC_HEARTBEAT_INTERVAL", "15")))
+INSTALL_REPAIR_INTERVAL_SECONDS = max(60, int(os.getenv("HUNTER_PC_REPAIR_INTERVAL", "300")))
 ADB_INFO_CACHE: dict[str, dict] = {}
 ADB_PREPARED: set[str] = set()
 AGENT_METRICS = {
@@ -32,18 +48,84 @@ AGENT_METRICS = {
     "last_adb_devices": 0,
     "last_command_ms": 0,
     "last_screen_ms": 0,
+    "last_request_ms": 0,
+    "last_http_status": 0,
+    "network_attempts": 0,
+    "network_failures": 0,
+    "network_failures_total": 0,
+    "consecutive_errors": 0,
+    "poll_interval_seconds": DEFAULT_POLL_INTERVAL_SECONDS,
     "commands_handled": 0,
     "last_error": "",
     "screen_quality": "balanced",
 }
+LOGGER = logging.getLogger("hunter_pc_agent")
+SINGLE_INSTANCE_HANDLE = None
 
 
 class UnsupportedCommand(RuntimeError):
     pass
 
 
+def setup_logging(verbose: bool = False) -> None:
+    if LOGGER.handlers:
+        return
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    LOGGER.setLevel(logging.DEBUG if verbose else logging.INFO)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    file_handler = RotatingFileHandler(LOG_PATH, maxBytes=512_000, backupCount=4, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    LOGGER.addHandler(file_handler)
+    if verbose:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        LOGGER.addHandler(stream_handler)
+
+
+def safe_url_for_log(url: str) -> str:
+    parsed = parse.urlsplit(url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    return url.split("?", 1)[0]
+
+
+def retry_delay_seconds(attempt: int) -> float:
+    base_delay = API_RETRY_BASE_DELAY_SECONDS * (2 ** max(0, attempt - 1))
+    delay = min(API_RETRY_MAX_DELAY_SECONDS, base_delay)
+    return delay + random.uniform(0, delay * 0.25)
+
+
+def retryable_http_status(status_code: int) -> bool:
+    return status_code in {408, 425, 429, 500, 502, 503, 504}
+
+
+def retryable_exception(exc: BaseException) -> bool:
+    if isinstance(exc, error.HTTPError):
+        return retryable_http_status(exc.code)
+    return isinstance(exc, (error.URLError, TimeoutError, OSError, socket.timeout))
+
+
 def is_windows() -> bool:
     return os.name == "nt"
+
+
+def acquire_single_instance() -> bool:
+    global SINGLE_INSTANCE_HANDLE
+    if SINGLE_INSTANCE_HANDLE is not None or not is_windows():
+        return True
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_bool
+    handle = kernel32.CreateMutexW(None, False, "Local\\HunterPCAgent")
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    if ctypes.get_last_error() == 183:
+        kernel32.CloseHandle(handle)
+        return False
+    SINGLE_INSTANCE_HANDLE = handle
+    return True
 
 
 def windows_user32():
@@ -164,9 +246,7 @@ def open_windows_settings(uri: str) -> None:
     os.startfile(uri)  # type: ignore[attr-defined]
 
 
-def load_config() -> dict:
-    if CONFIG_PATH.exists():
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+def default_config() -> dict:
     return {
         "server_url": "",
         "owner_id": "",
@@ -176,12 +256,41 @@ def load_config() -> dict:
     }
 
 
+def write_bytes_atomic(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary_path.write_bytes(content)
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def load_config() -> dict:
+    for candidate in (CONFIG_PATH, CONFIG_BACKUP_PATH):
+        if not candidate.exists():
+            continue
+        try:
+            config = json.loads(candidate.read_text(encoding="utf-8"))
+            if not isinstance(config, dict):
+                raise ValueError("configuration root is not an object")
+            if candidate == CONFIG_BACKUP_PATH:
+                write_bytes_atomic(CONFIG_PATH, candidate.read_bytes())
+                LOGGER.warning("Primary configuration restored from backup.")
+            return config
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            LOGGER.error("Unable to read configuration %s: %s", candidate, exc)
+    return default_config()
+
+
 def save_config(config: dict) -> None:
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    content = json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8")
+    write_bytes_atomic(CONFIG_PATH, content)
+    write_bytes_atomic(CONFIG_BACKUP_PATH, content)
 
 
-def api_request(method: str, url: str, payload: dict | None = None, secret: str = "") -> dict:
+def api_request(method: str, url: str, payload: dict | None = None, secret: str = "", attempts: int | None = None) -> dict:
     body = json.dumps(payload or {}).encode("utf-8") if payload is not None else None
     headers = {
         "Content-Type": "application/json; charset=utf-8",
@@ -189,14 +298,49 @@ def api_request(method: str, url: str, payload: dict | None = None, secret: str 
     }
     if secret:
         headers["X-Device-Secret"] = secret
-    req = request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with request.urlopen(req, timeout=20) as response:
-            text = response.read().decode("utf-8")
-            return json.loads(text) if text else {}
-    except error.HTTPError as exc:
-        text = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {text}") from exc
+    max_attempts = max(1, attempts if attempts is not None else API_RETRY_ATTEMPTS)
+    last_exception: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        started = time.perf_counter()
+        req = request.Request(url, data=body, headers=headers, method=method)
+        AGENT_METRICS["network_attempts"] = attempt
+        try:
+            with request.urlopen(req, timeout=API_TIMEOUT_SECONDS) as response:
+                text = response.read().decode("utf-8")
+                AGENT_METRICS["last_request_ms"] = round((time.perf_counter() - started) * 1000)
+                AGENT_METRICS["last_http_status"] = int(getattr(response, "status", 200) or 200)
+                AGENT_METRICS["network_failures"] = 0
+                return json.loads(text) if text else {}
+        except error.HTTPError as exc:
+            text = exc.read().decode("utf-8", errors="replace")
+            AGENT_METRICS["last_request_ms"] = round((time.perf_counter() - started) * 1000)
+            AGENT_METRICS["last_http_status"] = exc.code
+            last_exception = RuntimeError(f"HTTP {exc.code}: {text}")
+            if attempt >= max_attempts or not retryable_exception(exc):
+                AGENT_METRICS["network_failures"] += 1
+                AGENT_METRICS["network_failures_total"] += 1
+                LOGGER.warning("%s %s failed: %s", method, safe_url_for_log(url), last_exception)
+                raise last_exception from exc
+        except (error.URLError, TimeoutError, OSError, socket.timeout) as exc:
+            AGENT_METRICS["last_request_ms"] = round((time.perf_counter() - started) * 1000)
+            AGENT_METRICS["last_http_status"] = 0
+            last_exception = exc
+            if attempt >= max_attempts or not retryable_exception(exc):
+                AGENT_METRICS["network_failures"] += 1
+                AGENT_METRICS["network_failures_total"] += 1
+                LOGGER.warning("%s %s failed: %s", method, safe_url_for_log(url), exc)
+                raise RuntimeError(f"Network error: {exc}") from exc
+        delay = retry_delay_seconds(attempt)
+        LOGGER.info(
+            "%s %s retry %s/%s in %.2fs",
+            method,
+            safe_url_for_log(url),
+            attempt + 1,
+            max_attempts,
+            delay,
+        )
+        time.sleep(delay)
+    raise RuntimeError(f"Network request failed: {last_exception}")
 
 
 def adb_path() -> str:
@@ -544,8 +688,61 @@ def adb_bridge_tick(config: dict) -> None:
                 adb_complete_command(config, device_id, command, "failed", str(exc))
 
 
-def executable_command(adb_enabled: bool = False, interval: int = 3) -> str:
-    if getattr(sys, "frozen", False):
+def file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def files_identical(first: Path, second: Path) -> bool:
+    try:
+        return first.stat().st_size == second.stat().st_size and file_digest(first) == file_digest(second)
+    except OSError:
+        return False
+
+
+def copy_file_atomic(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = destination.with_name(f"{destination.name}.{os.getpid()}.tmp")
+    try:
+        shutil.copy2(source, temporary_path)
+        os.replace(temporary_path, destination)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def install_agent_binary() -> Path | None:
+    if not getattr(sys, "frozen", False):
+        return None
+
+    source_path = Path(sys.executable).resolve()
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    if source_path != INSTALLED_EXECUTABLE_PATH.resolve() and not files_identical(source_path, INSTALLED_EXECUTABLE_PATH):
+        try:
+            copy_file_atomic(source_path, INSTALLED_EXECUTABLE_PATH)
+            PENDING_EXECUTABLE_PATH.unlink(missing_ok=True)
+            LOGGER.info("Agent executable installed at %s", INSTALLED_EXECUTABLE_PATH)
+        except OSError as exc:
+            copy_file_atomic(source_path, PENDING_EXECUTABLE_PATH)
+            LOGGER.warning("Agent executable is in use; update staged for next login: %s", exc)
+
+    if source_path != BACKUP_EXECUTABLE_PATH.resolve() and not files_identical(source_path, BACKUP_EXECUTABLE_PATH):
+        copy_file_atomic(source_path, BACKUP_EXECUTABLE_PATH)
+        LOGGER.info("Agent recovery copy refreshed at %s", BACKUP_EXECUTABLE_PATH)
+    return INSTALLED_EXECUTABLE_PATH
+
+
+def executable_command(
+    adb_enabled: bool = False,
+    interval: int = DEFAULT_POLL_INTERVAL_SECONDS,
+    executable_path: Path | None = None,
+) -> str:
+    if executable_path is not None:
+        executable = f'"{executable_path}"'
+    elif getattr(sys, "frozen", False):
         executable = f'"{sys.executable}"'
     else:
         executable = f'"{sys.executable}" "{Path(__file__).resolve()}"'
@@ -562,25 +759,128 @@ def windows_startup_dir() -> Path:
     return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
 
 
-def install_startup(adb_enabled: bool = False, interval: int = 1) -> Path:
+def startup_script_content(command: str, include_recovery: bool) -> str:
+    lines = [
+        "@echo off",
+        "setlocal",
+        "chcp 65001 >nul",
+        f'set "HUNTER_DIR={APP_DIR}"',
+        f'set "HUNTER_LOG={LOG_PATH}"',
+        'if not exist "%HUNTER_DIR%" mkdir "%HUNTER_DIR%"',
+        'cd /d "%HUNTER_DIR%"',
+    ]
+    if include_recovery:
+        lines.extend([
+            f'if exist "{PENDING_EXECUTABLE_PATH}" move /Y "{PENDING_EXECUTABLE_PATH}" "{INSTALLED_EXECUTABLE_PATH}" >nul',
+            f'if not exist "{INSTALLED_EXECUTABLE_PATH}" if exist "{BACKUP_EXECUTABLE_PATH}" copy /Y "{BACKUP_EXECUTABLE_PATH}" "{INSTALLED_EXECUTABLE_PATH}" >nul',
+            f'if not exist "{BACKUP_EXECUTABLE_PATH}" if exist "{INSTALLED_EXECUTABLE_PATH}" copy /Y "{INSTALLED_EXECUTABLE_PATH}" "{BACKUP_EXECUTABLE_PATH}" >nul',
+            f'if not exist "{INSTALLED_EXECUTABLE_PATH}" echo [%date% %time%] Hunter PC Agent executable is missing >> "%HUNTER_LOG%"',
+            f'if not exist "{INSTALLED_EXECUTABLE_PATH}" exit /b 2',
+        ])
+    lines.extend([
+        'echo [%date% %time%] starting Hunter PC Agent >> "%HUNTER_LOG%"',
+        f'{command} >> "%HUNTER_LOG%" 2>&1',
+        'echo [%date% %time%] Hunter PC Agent stopped with %ERRORLEVEL% >> "%HUNTER_LOG%"',
+        "endlocal",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def install_startup(
+    adb_enabled: bool = False,
+    interval: int = DEFAULT_POLL_INTERVAL_SECONDS,
+    config: dict | None = None,
+) -> Path:
     startup_dir = windows_startup_dir()
     startup_dir.mkdir(parents=True, exist_ok=True)
+    APP_DIR.mkdir(parents=True, exist_ok=True)
     script_path = startup_dir / STARTUP_SCRIPT_NAME
-    command = executable_command(adb_enabled=adb_enabled, interval=interval)
-    script_path.write_text(
-        "@echo off\n"
-        "cd /d \"%USERPROFILE%\"\n"
-        f"{command}\n",
-        encoding="utf-8",
+    installed_executable = install_agent_binary()
+    command = executable_command(
+        adb_enabled=adb_enabled,
+        interval=interval,
+        executable_path=installed_executable,
     )
+    script_path.write_text(
+        startup_script_content(command, include_recovery=installed_executable is not None),
+        encoding="utf-8-sig",
+    )
+    active_config = config if config is not None else load_config()
+    active_config["startup"] = {
+        "enabled": True,
+        "adb_enabled": bool(adb_enabled),
+        "interval": max(1, interval),
+        "executable": str(installed_executable or Path(sys.executable).resolve()),
+    }
+    save_config(active_config)
+    LOGGER.info("Startup installed at %s", script_path)
     return script_path
 
 
-def uninstall_startup() -> bool:
+def uninstall_startup(config: dict | None = None) -> bool:
     script_path = windows_startup_dir() / STARTUP_SCRIPT_NAME
-    if not script_path.exists():
+    removed = script_path.exists()
+    if removed:
+        script_path.unlink()
+        LOGGER.info("Startup removed from %s", script_path)
+    active_config = config if config is not None else load_config()
+    startup = active_config.get("startup") if isinstance(active_config.get("startup"), dict) else {}
+    active_config["startup"] = {**startup, "enabled": False}
+    save_config(active_config)
+    return removed
+
+
+def startup_installed() -> bool:
+    try:
+        script_exists = (windows_startup_dir() / STARTUP_SCRIPT_NAME).exists()
+    except RuntimeError:
         return False
-    script_path.unlink()
+    if not script_exists:
+        return False
+    if not getattr(sys, "frozen", False):
+        return True
+    return any(path.exists() for path in (INSTALLED_EXECUTABLE_PATH, BACKUP_EXECUTABLE_PATH, PENDING_EXECUTABLE_PATH))
+
+
+def startup_preferences(config: dict) -> dict:
+    configured = config.get("startup")
+    if isinstance(configured, dict) and "enabled" in configured:
+        return configured
+    try:
+        script_path = windows_startup_dir() / STARTUP_SCRIPT_NAME
+    except RuntimeError:
+        return {"enabled": False}
+    if not script_path.exists():
+        return {"enabled": False}
+    try:
+        content = script_path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        content = ""
+    interval_match = re.search(r"--interval\s+(\d+)", content)
+    return {
+        "enabled": True,
+        "adb_enabled": "--adb" in content,
+        "interval": int(interval_match.group(1)) if interval_match else DEFAULT_POLL_INTERVAL_SECONDS,
+        "migrated_from_legacy_startup": True,
+    }
+
+
+def repair_installation(config: dict, force: bool = False) -> bool:
+    startup = startup_preferences(config)
+    if not startup.get("enabled"):
+        return False
+    needs_repair = force or not startup_installed()
+    if getattr(sys, "frozen", False) and not BACKUP_EXECUTABLE_PATH.exists():
+        needs_repair = True
+    if not needs_repair:
+        return False
+    install_startup(
+        adb_enabled=bool(startup.get("adb_enabled")),
+        interval=max(1, int(startup.get("interval") or DEFAULT_POLL_INTERVAL_SECONDS)),
+        config=config,
+    )
+    LOGGER.warning("Agent installation repaired automatically.")
     return True
 
 
@@ -594,11 +894,12 @@ def claim_pairing(config: dict, server_url: str, code: str) -> dict:
         "platform": f"{platform.system()} {platform.release()}",
         "agent": "pc-agent",
     }
-    data = api_request("POST", f"{server}/api/pair/claim", payload)
+    data = api_request("POST", f"{server}/api/pair/claim", payload, attempts=1)
     config["server_url"] = server
     config["owner_id"] = str(data["owner_id"])
     config["device_secret"] = data["device_secret"]
     save_config(config)
+    LOGGER.info("Pair success: device_id=%s owner_id=%s server=%s", config["device_id"], config["owner_id"], safe_url_for_log(server))
     return data
 
 
@@ -712,7 +1013,8 @@ def pc_handle_command(config: dict, command: dict) -> str:
         open_windows_settings("ms-settings:batterysaver")
         return "Battery settings opened"
     if command_type == "repair_agent":
-        return "PC Agent connection is active"
+        repaired = repair_installation(config, force=True)
+        return "PC Agent installation repaired" if repaired else "PC Agent connection is active; startup is not enabled"
     if command_type == "request_actions":
         return "PC Agent supports screen, click, long click, drag, text, navigation, settings and lock."
     raise UnsupportedCommand(f"Unsupported PC command: {command_type}")
@@ -769,9 +1071,20 @@ def heartbeat(config: dict) -> None:
             "adb_devices": AGENT_METRICS["last_adb_devices"],
             "command_ms": AGENT_METRICS["last_command_ms"],
             "screen_ms": AGENT_METRICS["last_screen_ms"],
+            "request_ms": AGENT_METRICS["last_request_ms"],
+            "http_status": AGENT_METRICS["last_http_status"],
+            "network_attempts": AGENT_METRICS["network_attempts"],
+            "network_failures": AGENT_METRICS["network_failures"],
+            "network_failures_total": AGENT_METRICS["network_failures_total"],
+            "consecutive_errors": AGENT_METRICS["consecutive_errors"],
             "commands_handled": AGENT_METRICS["commands_handled"],
             "screen_quality": AGENT_METRICS["screen_quality"],
             "last_error": AGENT_METRICS["last_error"],
+            "log_path": str(LOG_PATH),
+            "startup_installed": startup_installed(),
+            "recovery_copy": BACKUP_EXECUTABLE_PATH.exists(),
+            "poll_interval_seconds": AGENT_METRICS["poll_interval_seconds"],
+            "heartbeat_interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
         },
     }
     api_request("POST", f"{server}/api/devices/heartbeat", payload, config["device_secret"])
@@ -780,34 +1093,98 @@ def heartbeat(config: dict) -> None:
 def run_loop(config: dict, interval: int, adb_enabled: bool) -> None:
     if not config.get("server_url") or not config.get("owner_id") or not config.get("device_secret"):
         raise RuntimeError("PC Agent is not paired yet. Run: hunter-pc-agent.exe pair --server URL --code 123456")
+    if not acquire_single_instance():
+        print("Hunter PC Agent is already running.")
+        LOGGER.warning("Duplicate agent process stopped.")
+        return
 
     print("Hunter PC Agent started. Keep this window open.")
     if adb_enabled:
         print("ADB bridge enabled. Connect an Android phone with USB debugging or Wireless debugging.")
     else:
         print("Remote desktop tip: use WireGuard + RDP/SSH/RustDesk for screen control.")
+    print(f"Log file: {LOG_PATH}")
+    AGENT_METRICS["poll_interval_seconds"] = max(1, interval)
+    try:
+        repair_installation(config)
+    except Exception:
+        LOGGER.exception("Installation self-check failed during startup; connection will continue.")
+    LOGGER.info(
+        "Hunter PC Agent started: poll_interval=%s heartbeat_interval=%s adb=%s",
+        interval,
+        HEARTBEAT_INTERVAL_SECONDS,
+        adb_enabled,
+    )
+    error_streak = 0
+    next_heartbeat_at = 0.0
+    next_repair_at = time.monotonic() + INSTALL_REPAIR_INTERVAL_SECONDS
     while True:
         started = time.perf_counter()
+        sleep_for = max(1, interval)
+        heartbeat_due = time.monotonic() >= next_heartbeat_at
+        if heartbeat_due:
+            try:
+                heartbeat(config)
+                next_heartbeat_at = time.monotonic() + HEARTBEAT_INTERVAL_SECONDS
+                if error_streak:
+                    LOGGER.info("Connection restored after %s failed heartbeat cycles.", error_streak)
+                error_streak = 0
+                AGENT_METRICS["consecutive_errors"] = 0
+                AGENT_METRICS["last_error"] = ""
+                print(time.strftime("%H:%M:%S"), "online")
+            except Exception as exc:
+                error_streak += 1
+                AGENT_METRICS["last_loop_ms"] = round((time.perf_counter() - started) * 1000)
+                AGENT_METRICS["last_error"] = str(exc)[:160]
+                AGENT_METRICS["consecutive_errors"] = error_streak
+                sleep_for = max(interval, min(60, 2 ** min(error_streak, 6)))
+                print(time.strftime("%H:%M:%S"), "connection error:", exc)
+                LOGGER.exception("heartbeat failed; retry in %ss", sleep_for)
+                time.sleep(sleep_for)
+                continue
+
+        component_errors = []
         try:
-            heartbeat(config)
             pc_command_tick(config)
-            if adb_enabled:
-                adb_bridge_tick(config)
-            AGENT_METRICS["last_loop_ms"] = round((time.perf_counter() - started) * 1000)
-            print(time.strftime("%H:%M:%S"), "online")
         except Exception as exc:
-            AGENT_METRICS["last_loop_ms"] = round((time.perf_counter() - started) * 1000)
-            AGENT_METRICS["last_error"] = str(exc)[:160]
-            print(time.strftime("%H:%M:%S"), "error:", exc)
-        time.sleep(interval)
+            component_errors.append(f"commands: {exc}")
+            LOGGER.warning("Command polling failed; heartbeat remains active: %s", exc)
+        if adb_enabled:
+            try:
+                adb_bridge_tick(config)
+            except Exception as exc:
+                component_errors.append(f"adb: {exc}")
+                LOGGER.warning("ADB bridge tick failed; heartbeat remains active: %s", exc)
+
+        if time.monotonic() >= next_repair_at:
+            try:
+                repair_installation(config)
+            except Exception as exc:
+                component_errors.append(f"repair: {exc}")
+                LOGGER.exception("Installation self-check failed.")
+            next_repair_at = time.monotonic() + INSTALL_REPAIR_INTERVAL_SECONDS
+
+        AGENT_METRICS["last_loop_ms"] = round((time.perf_counter() - started) * 1000)
+        if component_errors:
+            AGENT_METRICS["last_error"] = "; ".join(component_errors)[:160]
+        LOGGER.debug("loop ok loop_ms=%s commands=%s", AGENT_METRICS["last_loop_ms"], AGENT_METRICS["commands_handled"])
+        elapsed = time.perf_counter() - started
+        time.sleep(max(0.2, sleep_for - elapsed))
 
 
 def print_doctor(adb_enabled: bool) -> bool:
     print("Hunter PC Agent doctor")
     print(f"Config: {CONFIG_PATH}")
+    print(f"Config backup: {CONFIG_BACKUP_PATH}")
+    print(f"Log: {LOG_PATH}")
     config = load_config()
     paired = bool(config.get("server_url") and config.get("owner_id") and config.get("device_secret"))
     print("Pairing:", "ok" if paired else "not paired")
+    print("Startup:", "installed" if startup_installed() else "not installed")
+    if getattr(sys, "frozen", False):
+        print("Installed executable:", "ok" if INSTALLED_EXECUTABLE_PATH.exists() else "missing")
+        print("Recovery executable:", "ok" if BACKUP_EXECUTABLE_PATH.exists() else "missing")
+        print("Pending update:", "yes" if PENDING_EXECUTABLE_PATH.exists() else "no")
     if config.get("server_url"):
         print("Server:", config["server_url"])
     if not adb_enabled:
@@ -829,30 +1206,32 @@ def main() -> int:
     pair_parser.add_argument("--name", default="", help="Device name")
 
     run_parser = subparsers.add_parser("run", help="Run heartbeat loop")
-    run_parser.add_argument("--interval", type=int, default=30, help="Heartbeat interval seconds")
+    run_parser.add_argument("--interval", type=int, default=DEFAULT_POLL_INTERVAL_SECONDS, help="Command polling interval seconds")
     run_parser.add_argument("--adb", action="store_true", help="Enable Android Debug Bridge device control")
 
     setup_parser = subparsers.add_parser("setup", help="Pair, check ADB, optionally install startup, then run")
     setup_parser.add_argument("--server", required=True, help="Public bot server URL")
     setup_parser.add_argument("--code", required=True, help="Pairing code from /pair")
     setup_parser.add_argument("--name", default="", help="Device name")
-    setup_parser.add_argument("--interval", type=int, default=1, help="Heartbeat interval seconds")
+    setup_parser.add_argument("--interval", type=int, default=DEFAULT_POLL_INTERVAL_SECONDS, help="Command polling interval seconds")
     setup_parser.add_argument("--adb", action="store_true", help="Also enable the optional Android Debug Bridge")
     setup_parser.add_argument("--no-adb", action="store_true", help="Compatibility flag: keep ADB disabled")
     setup_parser.add_argument("--startup", action="store_true", help="Add Windows startup shortcut")
 
-    doctor_parser = subparsers.add_parser("doctor", help="Check pairing and ADB readiness")
+    doctor_parser = subparsers.add_parser("doctor", help="Check pairing, installation and ADB readiness")
     doctor_parser.add_argument("--adb", action="store_true", help="Check Android Debug Bridge too")
 
     startup_parser = subparsers.add_parser("startup", help="Install or remove Windows startup")
     startup_subparsers = startup_parser.add_subparsers(dest="startup_command")
     startup_install = startup_subparsers.add_parser("install", help="Start bridge automatically after Windows login")
-    startup_install.add_argument("--interval", type=int, default=1, help="Heartbeat interval seconds")
+    startup_install.add_argument("--interval", type=int, default=DEFAULT_POLL_INTERVAL_SECONDS, help="Command polling interval seconds")
     startup_install.add_argument("--adb", action="store_true", help="Also enable the optional Android Debug Bridge")
     startup_install.add_argument("--no-adb", action="store_true", help="Compatibility flag: keep ADB disabled")
     startup_subparsers.add_parser("remove", help="Remove Windows startup shortcut")
+    subparsers.add_parser("repair", help="Restore the installed executable, recovery copy and Windows startup")
 
     args = parser.parse_args()
+    setup_logging(verbose=bool(os.getenv("HUNTER_PC_VERBOSE", "").strip()))
     config = load_config()
 
     if args.command == "pair":
@@ -879,7 +1258,7 @@ def main() -> int:
             if not ok:
                 print("ADB bridge will keep running, but the phone will appear only after ADB is ready.")
         if args.startup:
-            script_path = install_startup(adb_enabled=adb_enabled, interval=max(1, args.interval))
+            script_path = install_startup(adb_enabled=adb_enabled, interval=max(1, args.interval), config=config)
             print(f"Startup installed: {script_path}")
         run_loop(config, max(1, args.interval), adb_enabled)
         return 0
@@ -889,13 +1268,24 @@ def main() -> int:
 
     if args.command == "startup":
         if args.startup_command == "install":
-            script_path = install_startup(adb_enabled=args.adb and not args.no_adb, interval=max(1, args.interval))
+            script_path = install_startup(
+                adb_enabled=args.adb and not args.no_adb,
+                interval=max(1, args.interval),
+                config=config,
+            )
             print(f"Startup installed: {script_path}")
             return 0
         if args.startup_command == "remove":
-            removed = uninstall_startup()
+            removed = uninstall_startup(config=config)
             print("Startup removed." if removed else "Startup was not installed.")
             return 0
+
+    if args.command == "repair":
+        if repair_installation(config, force=True):
+            print("Installation repaired.")
+            return 0
+        print("Startup is not enabled. Run: hunter-pc-agent.exe startup install")
+        return 2
 
     parser.print_help()
     return 1

@@ -16,11 +16,17 @@ import android.util.Base64;
 import org.json.JSONObject;
 
 final class DeviceApiClient {
-    private static final int CONNECT_TIMEOUT_MS = 6000;
-    private static final int READ_TIMEOUT_MS = 6000;
+    private static final int CONNECT_TIMEOUT_MS = 10000;
+    private static final int READ_TIMEOUT_MS = 12000;
     private static final int MAX_COMMAND_RESULT_LENGTH = 1200;
-    private static final int NETWORK_ATTEMPTS = 2;
-    private static final long RETRY_BASE_DELAY_MS = 350L;
+    private static final int NETWORK_ATTEMPTS = 4;
+    private static final long RETRY_BASE_DELAY_MS = 500L;
+    private static final long RETRY_MAX_DELAY_MS = 5000L;
+    private static volatile int lastAttemptCount = 0;
+    private static volatile int consecutiveNetworkFailures = 0;
+    private static volatile long lastRequestMs = 0L;
+    private static volatile long lastRetryDelayMs = 0L;
+    private static volatile String lastNetworkError = "";
 
     private DeviceApiClient() {
     }
@@ -37,12 +43,14 @@ final class DeviceApiClient {
                 .put("platform", AgentConfig.platformLabel())
                 .put("agent", "android-agent")
                 .put("telemetry", new JSONObject(AgentTelemetry.toJson(context)));
-        HttpURLConnection connection = openConnection(endpoint(serverUrl, "/api/devices/discover"), "POST");
-        try {
-            return sendJson(connection, payload);
-        } finally {
-            connection.disconnect();
-        }
+        return withRetry(() -> {
+            HttpURLConnection connection = openConnection(endpoint(serverUrl, "/api/devices/discover"), "POST");
+            try {
+                return sendJson(connection, payload);
+            } finally {
+                connection.disconnect();
+            }
+        });
     }
 
     static String heartbeat(Context context) throws Exception {
@@ -284,17 +292,30 @@ final class DeviceApiClient {
     }
 
     private static <T> T withRetry(NetworkCall<T> call) throws Exception {
+        long started = System.currentTimeMillis();
         Exception lastException = null;
         for (int attempt = 0; attempt < NETWORK_ATTEMPTS; attempt++) {
+            lastAttemptCount = attempt + 1;
             try {
-                return call.run();
+                T result = call.run();
+                lastRequestMs = System.currentTimeMillis() - started;
+                lastRetryDelayMs = 0L;
+                lastNetworkError = "";
+                consecutiveNetworkFailures = 0;
+                return result;
             } catch (Exception exc) {
                 lastException = exc;
                 if (attempt == NETWORK_ATTEMPTS - 1 || !isRetryable(exc)) {
+                    lastRequestMs = System.currentTimeMillis() - started;
+                    lastNetworkError = truncate(String.valueOf(exc.getMessage()), 220);
+                    consecutiveNetworkFailures += 1;
                     throw exc;
                 }
+                long baseDelayMs = Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * (1L << attempt));
+                long delayMs = Math.min(RETRY_MAX_DELAY_MS, baseDelayMs + (long) (Math.random() * baseDelayMs * 0.25));
+                lastRetryDelayMs = delayMs;
                 try {
-                    Thread.sleep(RETRY_BASE_DELAY_MS * (1L << attempt));
+                    Thread.sleep(delayMs);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     throw interrupted;
@@ -306,13 +327,38 @@ final class DeviceApiClient {
 
     private static boolean isRetryable(Exception exc) {
         String message = exc.getMessage();
-        if (message == null) {
+        if (message == null || !message.startsWith("HTTP ")) {
             return true;
         }
-        return !message.startsWith("HTTP 400")
-                && !message.startsWith("HTTP 401")
-                && !message.startsWith("HTTP 403")
-                && !message.startsWith("HTTP 404");
+        try {
+            int statusCode = Integer.parseInt(message.substring(5, 8));
+            return statusCode == 408
+                    || statusCode == 425
+                    || statusCode == 429
+                    || (statusCode >= 500 && statusCode <= 599);
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    static int getLastAttemptCount() {
+        return lastAttemptCount;
+    }
+
+    static int getConsecutiveNetworkFailures() {
+        return consecutiveNetworkFailures;
+    }
+
+    static long getLastRequestMs() {
+        return lastRequestMs;
+    }
+
+    static long getLastRetryDelayMs() {
+        return lastRetryDelayMs;
+    }
+
+    static String getLastNetworkError() {
+        return lastNetworkError;
     }
 
     private static String urlEncode(String value) throws Exception {

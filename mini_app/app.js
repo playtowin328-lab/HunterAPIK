@@ -403,10 +403,15 @@ function renderFleetPulse(onlineCount) {
     return ["warning", "degraded", "revoked", "offline"].includes(state);
   }).length;
   const allOnline = devices.length > 0 && onlineCount === devices.length;
+  const fleetQuality = devices.length
+    ? Math.round(devices.reduce((total, device) => total + deviceConnectionQuality(device).score, 0) / devices.length)
+    : 0;
+  const fleetReady = allOnline && attentionCount === 0;
 
-  document.documentElement.dataset.fleet = !devices.length ? "empty" : (allOnline ? "ready" : "attention");
+  document.documentElement.dataset.fleet = !devices.length ? "empty" : (fleetReady ? "ready" : "attention");
   if (fleetLiveStatus) {
-    fleetLiveStatus.innerHTML = `<i aria-hidden="true"></i> ${allOnline ? "Все устройства на связи" : `${onlineCount} из ${devices.length} на связи`}`;
+    const connectionText = allOnline ? "Все устройства на связи" : `${onlineCount} из ${devices.length} на связи`;
+    fleetLiveStatus.innerHTML = `<i aria-hidden="true"></i> ${connectionText}${devices.length ? ` · Smart Link ${fleetQuality}%` : ""}`;
   }
   if (fleetAttentionStatus) {
     fleetAttentionStatus.textContent = attentionCount
@@ -668,6 +673,16 @@ function formatTelemetry(device) {
   if (typeof telemetry.full_control === "boolean") items.push(telemetry.full_control ? "Full APK" : "Lite APK");
   if (typeof telemetry.agent_enabled === "boolean") items.push(`agent: ${telemetry.agent_enabled ? "on" : "off"}`);
   if (typeof telemetry.last_success_age === "number" && telemetry.last_success_age >= 0) items.push(`last ok: ${telemetry.last_success_age} сек`);
+  if (typeof telemetry.request_ms === "number" && telemetry.request_ms > 0) items.push(`api: ${telemetry.request_ms} ms`);
+  if (typeof telemetry.network_attempts === "number" && telemetry.network_attempts > 1) items.push(`retry: ${telemetry.network_attempts}`);
+  if (typeof telemetry.network_failures === "number" && telemetry.network_failures > 0) items.push(`net failures: ${telemetry.network_failures}`);
+  if (typeof telemetry.network_failures_total === "number" && telemetry.network_failures_total > 0) items.push(`net total: ${telemetry.network_failures_total}`);
+  if (typeof telemetry.consecutive_errors === "number" && telemetry.consecutive_errors > 0) items.push(`loop errors: ${telemetry.consecutive_errors}`);
+  if (typeof telemetry.network_backoff_ms === "number" && telemetry.network_backoff_ms > 0) items.push(`backoff: ${telemetry.network_backoff_ms} ms`);
+  if (typeof telemetry.startup_installed === "boolean") items.push(`startup: ${telemetry.startup_installed ? "on" : "off"}`);
+  if (typeof telemetry.recovery_copy === "boolean") items.push(`recovery: ${telemetry.recovery_copy ? "ready" : "missing"}`);
+  if (typeof telemetry.poll_interval_seconds === "number") items.push(`poll: ${telemetry.poll_interval_seconds}s`);
+  if (typeof telemetry.heartbeat_interval_seconds === "number") items.push(`heartbeat: ${telemetry.heartbeat_interval_seconds}s`);
   if (typeof telemetry.lost_mode === "boolean") items.push(`lost: ${telemetry.lost_mode ? "on" : "off"}`);
   if (typeof telemetry.blackout === "boolean") items.push(`blackout: ${telemetry.blackout ? "on" : "off"}`);
   if (telemetry.setup_wizard) items.push(`setup: ${telemetry.setup_waiting_for || "active"}`);
@@ -692,8 +707,10 @@ function formatTelemetry(device) {
   if (typeof telemetry.error_count === "number" && telemetry.error_count > 0) items.push(`errors: ${telemetry.error_count}`);
   if (diagnostics.pending_commands) items.push(`очередь: ${diagnostics.pending_commands}`);
   if (typeof diagnostics.frame_age === "number") items.push(`кадр: ${diagnostics.frame_age} сек`);
+  if (telemetry.network_error) items.push(`net error: ${telemetry.network_error}`);
   if (telemetry.last_error) items.push(`ошибка: ${telemetry.last_error}`);
   if (telemetry.screen_error) items.push(`screen error: ${telemetry.screen_error}`);
+  if (telemetry.log_path) items.push(`log: ${telemetry.log_path}`);
   return items;
 }
 
@@ -710,13 +727,52 @@ function formatDiagnostics(device) {
     parts.push(`последняя: ${last.type} · ${last.status} · ${last.duration_ms || 0} ms`);
   }
   if (typeof telemetry.loop_ms === "number" && telemetry.loop_ms > 0) parts.push(`агент ${telemetry.loop_ms} ms`);
+  if (typeof telemetry.request_ms === "number" && telemetry.request_ms > 0) parts.push(`api ${telemetry.request_ms} ms`);
+  if (typeof telemetry.network_attempts === "number" && telemetry.network_attempts > 1) parts.push(`retry x${telemetry.network_attempts}`);
+  if (typeof telemetry.network_failures === "number" && telemetry.network_failures > 0) parts.push(`net failures ${telemetry.network_failures}`);
   if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) parts.push(`экран ${telemetry.screen_ms} ms`);
   if (telemetry.screen_black_frame) parts.push("кадр черный: приложение может блокировать захват");
   if (typeof telemetry.gesture_ms === "number" && telemetry.gesture_ms > 0) parts.push(`жест ${telemetry.gesture_ms} ms`);
   if (telemetry.gesture_result) parts.push(telemetry.gesture_result);
   if (telemetry.active_app_label || telemetry.active_app_package) parts.push(`активно ${telemetry.active_app_label || telemetry.active_app_package}`);
+  if (telemetry.network_error) parts.push(`net error: ${telemetry.network_error}`);
   if (telemetry.last_error) parts.push(`ошибка: ${telemetry.last_error}`);
   return parts.join(" · ");
+}
+
+function deviceConnectionQuality(device) {
+  const connection = device?.health?.connection || {};
+  const score = Math.max(0, Math.min(100, Number(connection.score ?? (device?.online ? 80 : 0))));
+  return {
+    score: Math.round(score),
+    state: connection.state || (device?.online ? "good" : "offline"),
+    label: connection.label || (device?.online ? "Хорошая" : "Нет связи"),
+    summary: connection.summary || (device?.online ? "Heartbeat поступает" : "Heartbeat не поступает"),
+    recommendations: Array.isArray(connection.recommendations) ? connection.recommendations.filter(Boolean) : [],
+  };
+}
+
+function renderConnectionQuality(device) {
+  const quality = deviceConnectionQuality(device);
+  const recommendation = quality.recommendations[0] || "Связь стабильна, дополнительных действий не требуется.";
+  const action = device?.online && quality.score < 75
+    ? '<button class="connection-quality-action" type="button">Усилить связь</button>'
+    : "";
+  return `
+    <div class="connection-quality" data-level="${escapeHtml(quality.state)}">
+      <div class="connection-quality-head">
+        <span><i aria-hidden="true"></i> Smart Link · ${escapeHtml(quality.label)}</span>
+        <strong>${quality.score}%</strong>
+      </div>
+      <div class="connection-quality-track" role="progressbar" aria-label="Качество связи" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${quality.score}">
+        <i style="width: ${quality.score}%"></i>
+      </div>
+      <div class="connection-quality-detail">
+        <small>${escapeHtml(quality.summary)}. ${escapeHtml(recommendation)}</small>
+        ${action}
+      </div>
+    </div>
+  `;
 }
 
 function formatHealthHint(device, fallback = "") {
@@ -753,8 +809,9 @@ function formatRemoteStatus(device) {
   const pending = Number(diagnostics.pending_commands || 0);
   const delivered = Number(diagnostics.delivered_commands || 0);
   const last = diagnostics.last_command?.type ? ` · ${diagnostics.last_command.type}` : "";
+  const quality = deviceConnectionQuality(device);
   return {
-    connection: device?.online ? (device.health?.label || "Online") : "Offline",
+    connection: device?.online ? `${quality.label} · ${quality.score}%` : "Offline · 0%",
     battery,
     security,
     commands: pending ? `ждет ${pending}${last}` : (delivered ? `дост. ${delivered}${last}` : `чисто${last}`),
@@ -808,6 +865,17 @@ function primaryDeviceIssue(device) {
       detail: `Активных команд: ${pending + delivered}. Очисти очередь и проверь ping агента.`,
       action: "stabilize",
       actionLabel: "Стабилизировать",
+    };
+  }
+  const connection = deviceConnectionQuality(device);
+  if (connection.score < 55) {
+    return {
+      status: "warn",
+      label: "Smart Link",
+      title: `Качество связи ${connection.score}%`,
+      detail: `${connection.summary}. ${connection.recommendations[0] || "Запусти стабилизацию связи."}`,
+      action: "stabilize",
+      actionLabel: "Усилить связь",
     };
   }
   if (telemetry.last_error) {
@@ -2382,8 +2450,18 @@ function render() {
     const agent = device.agent ? ` · ${device.agent}` : "";
     $(".meta", card).textContent = `${typeNames[device.type] || "Устройство"}${platform}${agent} · сигнал ${formatLastSeen(device.last_seen)}`;
 
-    $(".telemetry", card).innerHTML = formatTelemetry(device).map((item) => `<span>${item}</span>`).join("");
-    $(".telemetry", card).insertAdjacentHTML("afterend", renderDeviceSetupProgress(device));
+    const telemetryElement = $(".telemetry", card);
+    telemetryElement.innerHTML = formatTelemetry(device).map((item) => `<span>${item}</span>`).join("");
+    telemetryElement.insertAdjacentHTML("afterend", renderConnectionQuality(device));
+    const connectionAction = $(".connection-quality-action", card);
+    if (connectionAction) {
+      connectionAction.addEventListener("click", async () => {
+        selectDevice(device);
+        remotePanel.scrollIntoView({ behavior: "smooth", block: "start" });
+        await runStabilizeMacro();
+      });
+    }
+    $(".connection-quality", card).insertAdjacentHTML("afterend", renderDeviceSetupProgress(device));
 
     const controlNote = $(".control-note", card);
     controlNote.textContent = formatDeviceNote(device);

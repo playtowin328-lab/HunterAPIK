@@ -110,21 +110,38 @@ public class HeartbeatService extends Service {
         boolean shouldHeartbeat = lastHeartbeatAt == 0 || now - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS;
 
         try {
-            editor.putString(AgentConfig.KEY_LAST_ERROR, "");
             if (shouldHeartbeat) {
                 // Heartbeat is the connection's source of truth. A failed command poll
                 // must never prevent the device from attempting to stay online.
                 DeviceApiClient.heartbeat(this);
                 lastHeartbeatAt = now;
             }
-            String commandStatus = handlePendingCommands(tickStarted);
+            String commandStatus = "";
+            Exception commandError = null;
+            try {
+                commandStatus = handlePendingCommands(tickStarted);
+            } catch (Exception exc) {
+                commandError = exc;
+                commandStatus = "\nCommand loop error: " + exc.getMessage();
+            }
+
             editor.putString(KEY_LAST_STATUS, "Online - " + timestamp + commandStatus);
             editor.putLong(KEY_LAST_SUCCESS, now);
             editor.putLong(AgentConfig.KEY_LAST_LOOP_MS, System.currentTimeMillis() - tickStarted);
-            editor.putInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0);
-            consecutiveErrors = 0;
-            backoffUntilAt = 0;
-            updateNotification("Online - " + timestamp);
+            if (commandError == null) {
+                editor.putString(AgentConfig.KEY_LAST_ERROR, "");
+                editor.putInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0);
+                consecutiveErrors = 0;
+                backoffUntilAt = 0;
+                updateNotification("Online - " + timestamp);
+            } else {
+                int errorCount = prefs.getInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0) + 1;
+                consecutiveErrors = Math.max(consecutiveErrors + 1, errorCount);
+                editor.putInt(AgentConfig.KEY_LAST_ERROR_COUNT, errorCount);
+                editor.putString(AgentConfig.KEY_LAST_ERROR, String.valueOf(commandError.getMessage()));
+                backoffUntilAt = System.currentTimeMillis() + Math.min(5_000L, 500L * Math.max(1, consecutiveErrors));
+                updateNotification("Online, command retrying");
+            }
         } catch (Exception exc) {
             int errorCount = prefs.getInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0) + 1;
             consecutiveErrors = Math.max(consecutiveErrors + 1, errorCount);
