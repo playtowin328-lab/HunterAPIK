@@ -1,6 +1,8 @@
 import os
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -298,6 +300,48 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertIsNone(duplicate)
         self.assertTrue(main.release_device_command_reservation(created["command_id"]))
         self.assertEqual(created["command_id"], main.reserve_next_device_command("100", "phone-1")["command_id"])
+
+    def test_long_poll_wakes_when_command_is_created(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Phone"})
+        result = {}
+
+        def wait_for_command() -> None:
+            result["command"] = main.wait_for_next_device_command("100", "phone-1", wait_seconds=1)
+
+        waiter = threading.Thread(target=wait_for_command)
+        waiter.start()
+        time.sleep(0.05)
+        created = main.create_device_command("100", "phone-1", "ping")
+        waiter.join(timeout=1)
+
+        self.assertFalse(waiter.is_alive())
+        self.assertEqual(created["command_id"], result["command"]["command_id"])
+        self.assertEqual("delivering", result["command"]["status"])
+
+    def test_long_poll_returns_after_timeout_without_command(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Phone"})
+        started = time.monotonic()
+
+        command = main.wait_for_next_device_command("100", "phone-1", wait_seconds=0.05)
+
+        self.assertIsNone(command)
+        self.assertGreaterEqual(time.monotonic() - started, 0.04)
+
+    def test_health_status_reports_transport_and_database_readiness(self) -> None:
+        health = main.health_status_payload()
+
+        self.assertTrue(health["ok"])
+        self.assertTrue(health["database_ready"])
+        self.assertEqual("long_poll", health["command_transport"]["mode"])
+        self.assertEqual(main.PWA_CACHE_VERSION, health["pwa_cache"])
+
+    def test_health_status_fails_when_database_is_unavailable(self) -> None:
+        with patch.object(main, "db_connect", side_effect=main.sqlite3.OperationalError("database down")):
+            health = main.health_status_payload()
+
+        self.assertFalse(health["ok"])
+        self.assertFalse(health["database_ready"])
+        self.assertEqual("OperationalError", health["database_error"])
 
     def test_specific_agent_error_suppresses_duplicate_health_warning(self) -> None:
         key = main.device_notify_key("100", "phone-1")

@@ -41,6 +41,7 @@ API_RETRY_MAX_DELAY_SECONDS = float(os.getenv("HUNTER_PC_API_RETRY_MAX", "6"))
 DEFAULT_POLL_INTERVAL_SECONDS = max(2, int(os.getenv("HUNTER_PC_POLL_INTERVAL", "3")))
 HEARTBEAT_INTERVAL_SECONDS = max(10, int(os.getenv("HUNTER_PC_HEARTBEAT_INTERVAL", "15")))
 INSTALL_REPAIR_INTERVAL_SECONDS = max(60, int(os.getenv("HUNTER_PC_REPAIR_INTERVAL", "300")))
+COMMAND_LONG_POLL_SECONDS = max(0, min(10, int(os.getenv("HUNTER_PC_COMMAND_WAIT", "6"))))
 ADB_INFO_CACHE: dict[str, dict] = {}
 ADB_PREPARED: set[str] = set()
 AGENT_METRICS = {
@@ -49,6 +50,7 @@ AGENT_METRICS = {
     "last_command_ms": 0,
     "last_screen_ms": 0,
     "last_request_ms": 0,
+    "last_long_poll_ms": 0,
     "last_http_status": 0,
     "network_attempts": 0,
     "network_failures": 0,
@@ -290,7 +292,14 @@ def save_config(config: dict) -> None:
     write_bytes_atomic(CONFIG_BACKUP_PATH, content)
 
 
-def api_request(method: str, url: str, payload: dict | None = None, secret: str = "", attempts: int | None = None) -> dict:
+def api_request(
+    method: str,
+    url: str,
+    payload: dict | None = None,
+    secret: str = "",
+    attempts: int | None = None,
+    timeout_seconds: float | None = None,
+) -> dict:
     body = json.dumps(payload or {}).encode("utf-8") if payload is not None else None
     headers = {
         "Content-Type": "application/json; charset=utf-8",
@@ -299,13 +308,14 @@ def api_request(method: str, url: str, payload: dict | None = None, secret: str 
     if secret:
         headers["X-Device-Secret"] = secret
     max_attempts = max(1, attempts if attempts is not None else API_RETRY_ATTEMPTS)
+    request_timeout = max(1.0, float(timeout_seconds if timeout_seconds is not None else API_TIMEOUT_SECONDS))
     last_exception: BaseException | None = None
     for attempt in range(1, max_attempts + 1):
         started = time.perf_counter()
         req = request.Request(url, data=body, headers=headers, method=method)
         AGENT_METRICS["network_attempts"] = attempt
         try:
-            with request.urlopen(req, timeout=API_TIMEOUT_SECONDS) as response:
+            with request.urlopen(req, timeout=request_timeout) as response:
                 text = response.read().decode("utf-8")
                 AGENT_METRICS["last_request_ms"] = round((time.perf_counter() - started) * 1000)
                 AGENT_METRICS["last_http_status"] = int(getattr(response, "status", 200) or 200)
@@ -903,14 +913,24 @@ def claim_pairing(config: dict, server_url: str, code: str) -> dict:
     return data
 
 
-def pc_next_command(config: dict) -> dict | None:
+def pc_next_command(config: dict, wait_seconds: int = 0) -> dict | None:
     server = config["server_url"].rstrip("/")
-    query = parse.urlencode({"owner_id": config["owner_id"], "device_id": config["device_id"]})
+    safe_wait = max(0, min(COMMAND_LONG_POLL_SECONDS, int(wait_seconds or 0)))
+    query = parse.urlencode({
+        "owner_id": config["owner_id"],
+        "device_id": config["device_id"],
+        "wait_seconds": safe_wait,
+    })
     data = api_request(
         "GET",
         f"{server}/api/devices/commands/next?{query}",
         secret=config["device_secret"],
+        attempts=2 if safe_wait > 0 else None,
+        timeout_seconds=max(API_TIMEOUT_SECONDS, safe_wait + 5),
     )
+    server_wait_ms = max(0, int(data.get("waited_ms") or 0))
+    AGENT_METRICS["last_long_poll_ms"] = server_wait_ms
+    AGENT_METRICS["last_request_ms"] = max(0, AGENT_METRICS["last_request_ms"] - server_wait_ms)
     return data.get("command")
 
 
@@ -1021,8 +1041,8 @@ def pc_handle_command(config: dict, command: dict) -> str:
 
 
 def pc_command_tick(config: dict) -> None:
-    for _ in range(5):
-        command = pc_next_command(config)
+    for index in range(5):
+        command = pc_next_command(config, wait_seconds=COMMAND_LONG_POLL_SECONDS if index == 0 else 0)
         if not command:
             return
         started = time.perf_counter()
@@ -1072,6 +1092,7 @@ def heartbeat(config: dict) -> None:
             "command_ms": AGENT_METRICS["last_command_ms"],
             "screen_ms": AGENT_METRICS["last_screen_ms"],
             "request_ms": AGENT_METRICS["last_request_ms"],
+            "long_poll_ms": AGENT_METRICS["last_long_poll_ms"],
             "http_status": AGENT_METRICS["last_http_status"],
             "network_attempts": AGENT_METRICS["network_attempts"],
             "network_failures": AGENT_METRICS["network_failures"],
@@ -1085,6 +1106,8 @@ def heartbeat(config: dict) -> None:
             "recovery_copy": BACKUP_EXECUTABLE_PATH.exists(),
             "poll_interval_seconds": AGENT_METRICS["poll_interval_seconds"],
             "heartbeat_interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
+            "command_transport": "long_poll",
+            "command_wait_seconds": COMMAND_LONG_POLL_SECONDS,
         },
     }
     api_request("POST", f"{server}/api/devices/heartbeat", payload, config["device_secret"])

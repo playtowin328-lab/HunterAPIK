@@ -79,6 +79,7 @@ PUBLIC_BASE_URL=https://твой-проект.up.railway.app
 MINI_APP_URL=https://твой-проект.up.railway.app
 DEVICE_API_TOKEN=сложный_секрет_для_агента
 DEVICE_TTL_SECONDS=90
+COMMAND_LONG_POLL_MAX_SECONDS=10
 PAIRING_TTL_SECONDS=600
 MAX_IMAGE_SIZE_MB=20
 STORAGE_DIR=storage
@@ -99,7 +100,7 @@ python migrate_json_to_sqlite.py
 
 После деплоя:
 
-1. Открой публичный домен Railway и проверь `/health`.
+1. Открой публичный домен Railway и проверь `/health`: он подтверждает SQLite, PWA-версию и режим транспорта команд.
 2. Укажи этот домен в `PUBLIC_BASE_URL` и `MINI_APP_URL`.
 3. В BotFather настрой Mini App/Web App URL на этот же HTTPS-домен.
 

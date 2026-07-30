@@ -674,6 +674,7 @@ function formatTelemetry(device) {
   if (typeof telemetry.agent_enabled === "boolean") items.push(`agent: ${telemetry.agent_enabled ? "on" : "off"}`);
   if (typeof telemetry.last_success_age === "number" && telemetry.last_success_age >= 0) items.push(`last ok: ${telemetry.last_success_age} сек`);
   if (typeof telemetry.request_ms === "number" && telemetry.request_ms > 0) items.push(`api: ${telemetry.request_ms} ms`);
+  if (typeof telemetry.long_poll_ms === "number" && telemetry.long_poll_ms > 0) items.push(`wait: ${telemetry.long_poll_ms} ms`);
   if (typeof telemetry.network_attempts === "number" && telemetry.network_attempts > 1) items.push(`retry: ${telemetry.network_attempts}`);
   if (typeof telemetry.network_failures === "number" && telemetry.network_failures > 0) items.push(`net failures: ${telemetry.network_failures}`);
   if (typeof telemetry.network_failures_total === "number" && telemetry.network_failures_total > 0) items.push(`net total: ${telemetry.network_failures_total}`);
@@ -683,6 +684,8 @@ function formatTelemetry(device) {
   if (typeof telemetry.recovery_copy === "boolean") items.push(`recovery: ${telemetry.recovery_copy ? "ready" : "missing"}`);
   if (typeof telemetry.poll_interval_seconds === "number") items.push(`poll: ${telemetry.poll_interval_seconds}s`);
   if (typeof telemetry.heartbeat_interval_seconds === "number") items.push(`heartbeat: ${telemetry.heartbeat_interval_seconds}s`);
+  if (telemetry.command_transport) items.push(`transport: ${telemetry.command_transport}`);
+  if (typeof telemetry.command_wait_seconds === "number") items.push(`command wait: ${telemetry.command_wait_seconds}s`);
   if (typeof telemetry.lost_mode === "boolean") items.push(`lost: ${telemetry.lost_mode ? "on" : "off"}`);
   if (typeof telemetry.blackout === "boolean") items.push(`blackout: ${telemetry.blackout ? "on" : "off"}`);
   if (telemetry.setup_wizard) items.push(`setup: ${telemetry.setup_waiting_for || "active"}`);
@@ -728,6 +731,7 @@ function formatDiagnostics(device) {
   }
   if (typeof telemetry.loop_ms === "number" && telemetry.loop_ms > 0) parts.push(`агент ${telemetry.loop_ms} ms`);
   if (typeof telemetry.request_ms === "number" && telemetry.request_ms > 0) parts.push(`api ${telemetry.request_ms} ms`);
+  if (typeof telemetry.long_poll_ms === "number" && telemetry.long_poll_ms > 0) parts.push(`wait ${telemetry.long_poll_ms} ms`);
   if (typeof telemetry.network_attempts === "number" && telemetry.network_attempts > 1) parts.push(`retry x${telemetry.network_attempts}`);
   if (typeof telemetry.network_failures === "number" && telemetry.network_failures > 0) parts.push(`net failures ${telemetry.network_failures}`);
   if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) parts.push(`экран ${telemetry.screen_ms} ms`);

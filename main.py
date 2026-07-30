@@ -66,6 +66,7 @@ DEVICE_MONITOR_INTERVAL_SECONDS = int(os.getenv("DEVICE_MONITOR_INTERVAL_SECONDS
 COMMAND_PENDING_TIMEOUT_SECONDS = int(os.getenv("COMMAND_PENDING_TIMEOUT_SECONDS", "120"))
 COMMAND_DELIVERED_TIMEOUT_SECONDS = int(os.getenv("COMMAND_DELIVERED_TIMEOUT_SECONDS", "180"))
 COMMAND_RESERVATION_TIMEOUT_SECONDS = int(os.getenv("COMMAND_RESERVATION_TIMEOUT_SECONDS", "30"))
+COMMAND_LONG_POLL_MAX_SECONDS = max(1, min(15, int(os.getenv("COMMAND_LONG_POLL_MAX_SECONDS", "10"))))
 COMMAND_HISTORY_TTL_SECONDS = int(os.getenv("COMMAND_HISTORY_TTL_SECONDS", "86400"))
 AUDIT_RETENTION_DAYS = max(7, int(os.getenv("AUDIT_RETENTION_DAYS", "30")))
 AUTO_REPAIR_COOLDOWN_SECONDS = int(os.getenv("AUTO_REPAIR_COOLDOWN_SECONDS", "300"))
@@ -148,6 +149,8 @@ def request_rate_allowed(client_id: str, method: str, now: float | None = None) 
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
 APP_STARTED_AT = time.time()
+PWA_CACHE_VERSION = "hunter-control-v15"
+DEVICE_COMMAND_CONDITION = threading.Condition()
 BOT_POLLING_READY = False
 BOT_POLLING_STATUS = "starting"
 BOT_INSTANCE: Bot | None = None
@@ -1696,7 +1699,7 @@ def post_deploy_check_text() -> str:
         (devices >= 0, f"Устройства доступны: {devices}"),
         (roles >= 0, f"Роли и доступы доступны: {roles}"),
         (setup.get("ok", False), "API и обязательные Variables готовы"),
-        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v14"),
+        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v15"),
         (history >= 0, f"История телеметрии работает: {history} записей"),
     ]
     ok = all(value for value, _ in checks)
@@ -2111,7 +2114,7 @@ def mini_app_url_for_user(user_id: str | int | None = None) -> str:
     separator = "&" if "?" in MINI_APP_URL else "?"
     return (
         f"{MINI_APP_URL}{separator}"
-        f"v=14&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
+        f"v=15&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
     )
 
 
@@ -3468,6 +3471,8 @@ def create_device_command(owner_id: str, device_id: str, command_type: str, payl
                 command["updated_at"],
             ),
         )
+    with DEVICE_COMMAND_CONDITION:
+        DEVICE_COMMAND_CONDITION.notify_all()
     return command
 
 
@@ -3526,13 +3531,35 @@ def reserve_next_device_command(owner_id: str, device_id: str) -> dict | None:
     return command_from_row(row, status="delivering", updated_at=reserved_at)
 
 
+def wait_for_next_device_command(owner_id: str, device_id: str, wait_seconds: float = 0) -> dict | None:
+    try:
+        requested_wait = float(wait_seconds or 0)
+    except (TypeError, ValueError):
+        requested_wait = 0.0
+    safe_wait = max(0.0, min(requested_wait, float(COMMAND_LONG_POLL_MAX_SECONDS)))
+    deadline = time.monotonic() + safe_wait
+    with DEVICE_COMMAND_CONDITION:
+        while True:
+            command = reserve_next_device_command(owner_id, device_id)
+            if command:
+                return command
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            DEVICE_COMMAND_CONDITION.wait(timeout=min(1.0, remaining))
+
+
 def release_device_command_reservation(command_id: str) -> bool:
     with db_connect() as connection:
         updated = connection.execute(
             "UPDATE commands SET status = 'pending', updated_at = created_at WHERE command_id = ? AND status = 'delivering'",
             (str(command_id),),
         )
-        return updated.rowcount == 1
+        released = updated.rowcount == 1
+    if released:
+        with DEVICE_COMMAND_CONDITION:
+            DEVICE_COMMAND_CONDITION.notify_all()
+    return released
 
 
 def mark_device_command_delivered(command_id: str, delivered_at: int | None = None) -> bool:
@@ -5029,6 +5056,51 @@ def is_authorized_device_request(headers, payload: dict) -> bool:
     return bool(bridge and secrets.compare_digest(str(bridge["secret"]), provided_secret))
 
 
+def health_status_payload() -> dict:
+    database_ready = False
+    database_error = ""
+    try:
+        with db_connect() as connection:
+            database_ready = connection.execute("SELECT 1").fetchone()[0] == 1
+    except Exception as exc:
+        database_error = type(exc).__name__
+
+    required_web_files = ("index.html", "app.js", "styles.css", "service-worker.js")
+    mini_app_ready = all(MINI_APP_DIR.joinpath(name).is_file() for name in required_web_files)
+    try:
+        setup_status = setup_status_payload()
+        setup_ready = bool(setup_status.get("ok"))
+        setup_failed_count = int(setup_status.get("required_failed_count") or 0)
+    except Exception:
+        setup_ready = False
+        setup_failed_count = -1
+
+    ready = database_ready and mini_app_ready
+    payload = {
+        "ok": ready,
+        "service": "apk-converter-bot",
+        "uptime_sec": round(time.time() - APP_STARTED_AT, 2),
+        "revision": os.getenv("RAILWAY_GIT_COMMIT_SHA", os.getenv("GIT_COMMIT_SHA", ""))[:40],
+        "instance_id": INSTANCE_ID,
+        "database_ready": database_ready,
+        "mini_app_ready": mini_app_ready,
+        "bot_polling_ready": BOT_POLLING_READY,
+        "bot_polling_enabled": BOT_POLLING_ENABLED,
+        "bot_polling_status": BOT_POLLING_STATUS,
+        "storage_persistent": railway_storage_is_persistent(),
+        "setup_ready": setup_ready,
+        "setup_required_failed_count": setup_failed_count,
+        "pwa_cache": PWA_CACHE_VERSION,
+        "command_transport": {
+            "mode": "long_poll",
+            "max_wait_seconds": COMMAND_LONG_POLL_MAX_SECONDS,
+        },
+    }
+    if database_error:
+        payload["database_error"] = database_error
+    return payload
+
+
 class MiniAppRequestHandler(SimpleHTTPRequestHandler):
     extensions_map = {
         **SimpleHTTPRequestHandler.extensions_map,
@@ -5066,6 +5138,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         if (
             self.path.startswith("/api/")
             or self.path.startswith("/health")
+            or self.path.startswith("/ready")
             or self.path.startswith("/setup-status")
             or static_path in {"/", "/index.html", "/app.js", "/styles.css", "/manifest.webmanifest", "/service-worker.js"}
         ):
@@ -5096,25 +5169,12 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        if not self.allow_request("GET"):
-            return
         parsed_url = urlparse(self.path)
-        if parsed_url.path == "/health":
-            setup_status = setup_status_payload()
-            self.send_json(
-                {
-                    "ok": True,
-                    "service": "apk-converter-bot",
-                    "uptime_sec": round(time.time() - APP_STARTED_AT, 2),
-                    "bot_polling_ready": BOT_POLLING_READY,
-                    "bot_polling_enabled": BOT_POLLING_ENABLED,
-                    "bot_polling_status": BOT_POLLING_STATUS,
-                    "mini_app": True,
-                    "storage_persistent": railway_storage_is_persistent(),
-                    "setup_ready": setup_status["ok"],
-                    "setup_required_failed_count": setup_status["required_failed_count"],
-                }
-            )
+        if parsed_url.path not in {"/health", "/ready"} and not self.allow_request("GET"):
+            return
+        if parsed_url.path in {"/health", "/ready"}:
+            health = health_status_payload()
+            self.send_json(health, HTTPStatus.OK if health["ok"] else HTTPStatus.SERVICE_UNAVAILABLE)
             return
 
         if parsed_url.path == "/setup-status":
@@ -5154,6 +5214,11 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed_url.path == "/api/devices/commands/next":
             query = parse_qs(parsed_url.query)
+            try:
+                wait_seconds = float(query.get("wait_seconds", ["0"])[0] or 0)
+            except (TypeError, ValueError):
+                wait_seconds = 0.0
+            wait_seconds = max(0.0, min(wait_seconds, float(COMMAND_LONG_POLL_MAX_SECONDS)))
             payload = {
                 "owner_id": query.get("owner_id", [""])[0].strip(),
                 "device_id": query.get("device_id", [""])[0].strip(),
@@ -5166,13 +5231,21 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": "bad device secret"}, HTTPStatus.UNAUTHORIZED)
                 return
 
-            command = reserve_next_device_command(payload["owner_id"], payload["device_id"])
+            poll_started = time.perf_counter()
+            command = wait_for_next_device_command(payload["owner_id"], payload["device_id"], wait_seconds)
+            waited_ms = round((time.perf_counter() - poll_started) * 1000)
             delivered_at = now_ts()
             response_command = None
             if command:
                 response_command = {**command, "status": "delivered", "updated_at": delivered_at}
             try:
-                self.send_json({"command": response_command})
+                self.send_json(
+                    {
+                        "command": response_command,
+                        "transport": "long_poll" if wait_seconds > 0 else "poll",
+                        "waited_ms": waited_ms,
+                    }
+                )
             except Exception:
                 if command:
                     release_device_command_reservation(command["command_id"])
@@ -5269,7 +5342,7 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             checks = setup_status_payload()
             with db_connect() as connection:
                 counts = {name: int(connection.execute(f"SELECT COUNT(*) AS count FROM {name}").fetchone()["count"]) for name in ("devices", "bot_access", "device_history")}
-            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": "hunter-control-v14", "api": "ok"})
+            self.send_json({"ok": checks["ok"] and railway_storage_is_persistent(), "setup": checks, "counts": counts, "pwa_cache": PWA_CACHE_VERSION, "api": "ok"})
             return
 
         if parsed_url.path == "/api/alerts/device":
@@ -6086,8 +6159,14 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def start_web_app() -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer((WEBAPP_HOST, WEBAPP_PORT), MiniAppRequestHandler)
+class ControlHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = 128
+
+
+def start_web_app() -> ControlHTTPServer:
+    server = ControlHTTPServer((WEBAPP_HOST, WEBAPP_PORT), MiniAppRequestHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     print(f"Mini app server started on http://{WEBAPP_HOST}:{WEBAPP_PORT}")

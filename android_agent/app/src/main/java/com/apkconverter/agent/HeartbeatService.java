@@ -34,7 +34,7 @@ public class HeartbeatService extends Service {
     private static final long COMMAND_POLL_INTERVAL_MS = 1500L;
     private static final int MAX_COMMANDS_PER_TICK = 2;
     private static final long HEARTBEAT_INTERVAL_MS = 15_000L;
-    private static final long MAX_TICK_WORK_MS = 8_000L;
+    private static final long MAX_TICK_WORK_MS = 12_000L;
 
     private ScheduledExecutorService executor;
     private PowerManager.WakeLock wakeLock;
@@ -168,7 +168,10 @@ public class HeartbeatService extends Service {
                 status.append("\nCommand loop paused: stability budget reached.");
                 break;
             }
-            DeviceApiClient.RemoteCommand command = DeviceApiClient.nextCommand(this);
+            DeviceApiClient.RemoteCommand command = DeviceApiClient.nextCommand(
+                    this,
+                    index == 0 ? DeviceApiClient.COMMAND_WAIT_SECONDS : 0
+            );
             if (command == null) {
                 break;
             }

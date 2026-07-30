@@ -28,6 +28,7 @@ class PcAgentTests(unittest.TestCase):
             "last_command_ms": 0,
             "last_screen_ms": 0,
             "last_request_ms": 0,
+            "last_long_poll_ms": 0,
             "last_http_status": 0,
             "network_attempts": 0,
             "network_failures": 0,
@@ -60,12 +61,14 @@ class PcAgentTests(unittest.TestCase):
     def test_pc_agent_consumes_and_acknowledges_commands(self) -> None:
         command = {"command_id": "cmd-1", "type": "ping", "payload": {}}
         with (
-            patch.object(agent, "pc_next_command", side_effect=[command, None]),
+            patch.object(agent, "pc_next_command", side_effect=[command, None]) as next_command,
             patch.object(agent, "pc_complete_command") as complete,
         ):
             agent.pc_command_tick({})
 
         complete.assert_called_once_with({}, command, "acknowledged", "PC Agent pong")
+        self.assertEqual(agent.COMMAND_LONG_POLL_SECONDS, next_command.call_args_list[0].kwargs["wait_seconds"])
+        self.assertEqual(0, next_command.call_args_list[1].kwargs["wait_seconds"])
         self.assertEqual(1, agent.AGENT_METRICS["commands_handled"])
 
     def test_pc_agent_rejects_commands_outside_builtin_allowlist(self) -> None:
@@ -86,6 +89,35 @@ class PcAgentTests(unittest.TestCase):
         self.assertEqual({"ok": True}, result)
         self.assertEqual(2, agent.AGENT_METRICS["network_attempts"])
         sleep.assert_called_once()
+
+    def test_pc_command_poll_uses_bounded_long_poll(self) -> None:
+        config = {
+            "server_url": "https://example.test",
+            "owner_id": "100",
+            "device_id": "pc-1",
+            "device_secret": "secret",
+        }
+        with patch.object(agent, "api_request", return_value={"command": None}) as api:
+            agent.pc_next_command(config, wait_seconds=99)
+
+        query = agent.parse.parse_qs(agent.parse.urlsplit(api.call_args.args[1]).query)
+        self.assertEqual([str(agent.COMMAND_LONG_POLL_SECONDS)], query["wait_seconds"])
+        self.assertEqual(2, api.call_args.kwargs["attempts"])
+        self.assertGreaterEqual(api.call_args.kwargs["timeout_seconds"], agent.COMMAND_LONG_POLL_SECONDS + 5)
+
+    def test_pc_command_poll_excludes_server_wait_from_latency(self) -> None:
+        config = {
+            "server_url": "https://example.test",
+            "owner_id": "100",
+            "device_id": "pc-1",
+            "device_secret": "secret",
+        }
+        agent.AGENT_METRICS["last_request_ms"] = 5700
+        with patch.object(agent, "api_request", return_value={"command": None, "waited_ms": 5500}):
+            agent.pc_next_command(config, wait_seconds=6)
+
+        self.assertEqual(5500, agent.AGENT_METRICS["last_long_poll_ms"])
+        self.assertEqual(200, agent.AGENT_METRICS["last_request_ms"])
 
     def test_config_is_restored_from_recovery_copy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

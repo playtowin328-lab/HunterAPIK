@@ -22,10 +22,13 @@ final class DeviceApiClient {
     private static final int NETWORK_ATTEMPTS = 4;
     private static final long RETRY_BASE_DELAY_MS = 500L;
     private static final long RETRY_MAX_DELAY_MS = 5000L;
+    static final int COMMAND_WAIT_SECONDS = 6;
     private static volatile int lastAttemptCount = 0;
     private static volatile int consecutiveNetworkFailures = 0;
     private static volatile long lastRequestMs = 0L;
     private static volatile long lastRetryDelayMs = 0L;
+    private static volatile long lastServerWaitMs = 0L;
+    private static volatile long lastLongPollMs = 0L;
     private static volatile String lastNetworkError = "";
 
     private DeviceApiClient() {
@@ -93,7 +96,7 @@ final class DeviceApiClient {
         });
     }
 
-    static RemoteCommand nextCommand(Context context) throws Exception {
+    static RemoteCommand nextCommand(Context context, int waitSeconds) throws Exception {
         SharedPreferences prefs = AgentConfig.prefs(context);
         String serverUrl = prefs.getString(AgentConfig.KEY_SERVER_URL, "").trim();
         String ownerId = prefs.getString(AgentConfig.KEY_OWNER_ID, "").trim();
@@ -103,16 +106,20 @@ final class DeviceApiClient {
             return null;
         }
 
+        int safeWaitSeconds = Math.max(0, Math.min(COMMAND_WAIT_SECONDS, waitSeconds));
         return withRetry(() -> {
             String endpoint = serverUrl.replaceAll("/+$", "")
                     + "/api/devices/commands/next?owner_id=" + urlEncode(ownerId)
-                    + "&device_id=" + urlEncode(AgentConfig.getDeviceId(context));
+                    + "&device_id=" + urlEncode(AgentConfig.getDeviceId(context))
+                    + "&wait_seconds=" + safeWaitSeconds;
 
             HttpURLConnection connection = openConnection(endpoint, "GET");
+            connection.setReadTimeout(Math.max(READ_TIMEOUT_MS, safeWaitSeconds * 1000 + 5000));
             JSONObject response;
             try {
                 connection.setRequestProperty("X-Device-Secret", deviceSecret);
                 response = new JSONObject(readSuccessfulResponse(connection));
+                lastServerWaitMs = Math.max(0L, response.optLong("waited_ms", 0L));
             } finally {
                 connection.disconnect();
             }
@@ -142,7 +149,7 @@ final class DeviceApiClient {
             int blackoutRevealMs = Math.max(500, Math.min(3000, payload.optInt("blackout_reveal_ms", 1400)));
             int maxSize = Math.max(360, Math.min(2160, payload.optInt("max_size", 960)));
             return new RemoteCommand(commandId, type, x, y, endX, endY, text, url, packageName, revealBlackout, blackoutRevealMs, maxSize);
-        });
+        }, safeWaitSeconds > 0 ? 2 : NETWORK_ATTEMPTS);
     }
 
     static void completeCommand(Context context, RemoteCommand command, String status, String result) throws Exception {
@@ -292,20 +299,29 @@ final class DeviceApiClient {
     }
 
     private static <T> T withRetry(NetworkCall<T> call) throws Exception {
+        return withRetry(call, NETWORK_ATTEMPTS);
+    }
+
+    private static <T> T withRetry(NetworkCall<T> call, int maxAttempts) throws Exception {
         long started = System.currentTimeMillis();
+        lastServerWaitMs = 0L;
         Exception lastException = null;
-        for (int attempt = 0; attempt < NETWORK_ATTEMPTS; attempt++) {
+        int safeAttempts = Math.max(1, Math.min(NETWORK_ATTEMPTS, maxAttempts));
+        for (int attempt = 0; attempt < safeAttempts; attempt++) {
             lastAttemptCount = attempt + 1;
             try {
                 T result = call.run();
-                lastRequestMs = System.currentTimeMillis() - started;
+                long totalRequestMs = System.currentTimeMillis() - started;
+                lastLongPollMs = lastServerWaitMs;
+                lastRequestMs = Math.max(0L, totalRequestMs - lastServerWaitMs);
+                lastServerWaitMs = 0L;
                 lastRetryDelayMs = 0L;
                 lastNetworkError = "";
                 consecutiveNetworkFailures = 0;
                 return result;
             } catch (Exception exc) {
                 lastException = exc;
-                if (attempt == NETWORK_ATTEMPTS - 1 || !isRetryable(exc)) {
+                if (attempt == safeAttempts - 1 || !isRetryable(exc)) {
                     lastRequestMs = System.currentTimeMillis() - started;
                     lastNetworkError = truncate(String.valueOf(exc.getMessage()), 220);
                     consecutiveNetworkFailures += 1;
@@ -355,6 +371,10 @@ final class DeviceApiClient {
 
     static long getLastRetryDelayMs() {
         return lastRetryDelayMs;
+    }
+
+    static long getLastLongPollMs() {
+        return lastLongPollMs;
     }
 
     static String getLastNetworkError() {
