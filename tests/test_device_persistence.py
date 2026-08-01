@@ -18,6 +18,7 @@ import main  # noqa: E402
 
 class DevicePersistenceTests(unittest.TestCase):
     def setUp(self) -> None:
+        main.DEVICE_MAINTENANCE_STATE_PATH.unlink(missing_ok=True)
         with main.db_connect() as connection:
             connection.execute("DELETE FROM commands")
             connection.execute("DELETE FROM devices")
@@ -262,6 +263,55 @@ class DevicePersistenceTests(unittest.TestCase):
         )
 
         self.assertEqual(100, quality["score"])
+
+    def test_connection_quality_reports_open_command_circuit(self) -> None:
+        device = {
+            "online": True,
+            "last_seen": main.now_ts(),
+            "type": "pc",
+            "secret": "secret",
+            "telemetry": {
+                "request_ms": 200,
+                "command_channel_state": "open",
+                "command_channel_failures": 3,
+                "startup_installed": True,
+                "recovery_copy": True,
+            },
+        }
+
+        quality = main.device_connection_quality(device, {})
+        health = main.device_health(device, {})
+
+        self.assertLess(quality["score"], 90)
+        self.assertIn("command_channel_open", [factor["key"] for factor in quality["factors"]])
+        self.assertIn("command_channel_open", health["issues"])
+
+    def test_auto_repair_confirms_transient_channel_failure(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "pc-1", "name": "PC", "type": "pc", "agent": "pc-agent"})
+        degraded = {
+            "owner_id": "100",
+            "device_id": "pc-1",
+            "name": "PC",
+            "type": "pc",
+            "agent": "pc-agent",
+            "online": True,
+            "telemetry": {"command_channel_state": "open"},
+            "diagnostics": {},
+            "health": {"state": "warning", "issues": ["command_channel_open"]},
+        }
+
+        with (
+            patch.object(main, "AUTO_REPAIR_CONFIRMATION_CHECKS", 2),
+            patch.object(main, "AUTO_REPAIR_COOLDOWN_SECONDS", 0),
+        ):
+            first = main.maybe_enqueue_auto_repair(degraded)
+            first_status = main.device_recovery_status("100", "pc-1")
+            second = main.maybe_enqueue_auto_repair(degraded)
+
+        self.assertIsNone(first)
+        self.assertEqual(1, first_status["confirmation_checks"])
+        self.assertIsNotNone(second)
+        self.assertEqual("repair_agent", second["type"])
 
     def test_command_for_unknown_device_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "device not found"):

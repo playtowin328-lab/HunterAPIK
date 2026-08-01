@@ -35,6 +35,16 @@ class PcAgentTests(unittest.TestCase):
             "network_failures": 0,
             "network_failures_total": 0,
             "consecutive_errors": 0,
+            "last_success_at": 0,
+            "last_success_age": -1,
+            "network_backoff_ms": 0,
+            "heartbeat_successes_total": 0,
+            "heartbeat_failures_total": 0,
+            "connection_restored_total": 0,
+            "command_channel_state": "closed",
+            "command_channel_failures": 0,
+            "command_channel_backoff_seconds": 0,
+            "command_channel_opened_total": 0,
             "poll_interval_seconds": agent.DEFAULT_POLL_INTERVAL_SECONDS,
             "commands_handled": 0,
             "command_replays_prevented": 0,
@@ -61,6 +71,8 @@ class PcAgentTests(unittest.TestCase):
         self.assertTrue(payload["telemetry"]["screen_control"])
         self.assertTrue(payload["telemetry"]["input_control"])
         self.assertIn("keyboard", payload["telemetry"]["capabilities"])
+        self.assertEqual("connected", payload["telemetry"]["connection_state"])
+        self.assertEqual("closed", payload["telemetry"]["command_channel_state"])
 
     def test_pc_agent_consumes_and_acknowledges_commands(self) -> None:
         command = {"command_id": "cmd-1", "type": "ping", "payload": {}}
@@ -178,7 +190,25 @@ class PcAgentTests(unittest.TestCase):
 
         self.assertEqual({"ok": True}, result)
         self.assertEqual(2, agent.AGENT_METRICS["network_attempts"])
+        self.assertGreater(agent.AGENT_METRICS["last_success_at"], 0)
+        self.assertEqual(0, agent.AGENT_METRICS["network_backoff_ms"])
         sleep.assert_called_once()
+
+    def test_command_circuit_breaker_opens_probes_and_recovers(self) -> None:
+        circuit = agent.AdaptiveCircuitBreaker(failure_threshold=2, base_delay_seconds=5, max_delay_seconds=20)
+
+        self.assertEqual(0, circuit.record_failure(now=0))
+        self.assertEqual(5, circuit.record_failure(now=1))
+        self.assertEqual("open", circuit.state)
+        self.assertFalse(circuit.allows_attempt(now=5))
+        self.assertTrue(circuit.allows_attempt(now=6))
+        self.assertEqual("half_open", circuit.state)
+        self.assertEqual(10, circuit.record_failure(now=6))
+        self.assertFalse(circuit.allows_attempt(now=15))
+        self.assertTrue(circuit.allows_attempt(now=16))
+        self.assertTrue(circuit.record_success())
+        self.assertEqual("closed", circuit.state)
+        self.assertEqual(0, circuit.failures)
 
     def test_pc_command_poll_uses_bounded_long_poll(self) -> None:
         config = {

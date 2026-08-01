@@ -674,6 +674,32 @@ h2 {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--connection-color) 16%, transparent);
 }
 
+.connection-recovery-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--success) 12%, var(--surface));
+  color: var(--success);
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 900;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+
+.connection-recovery-badge[data-state="active"] {
+  background: color-mix(in srgb, var(--warn) 14%, var(--surface));
+  color: var(--warn);
+  animation: live-pulse 1.8s ease-out infinite;
+}
+
+.connection-recovery-badge[data-state="probe"] {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  color: var(--accent-strong);
+}
+
 .connection-quality-head strong {
   color: var(--connection-color);
   font-size: 13px;

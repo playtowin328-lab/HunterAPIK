@@ -752,6 +752,11 @@ function formatTelemetry(device) {
   if (typeof telemetry.command_receipt_cache_size === "number") items.push(`receipt cache: ${telemetry.command_receipt_cache_size}`);
   if (typeof telemetry.consecutive_errors === "number" && telemetry.consecutive_errors > 0) items.push(`loop errors: ${telemetry.consecutive_errors}`);
   if (typeof telemetry.network_backoff_ms === "number" && telemetry.network_backoff_ms > 0) items.push(`backoff: ${telemetry.network_backoff_ms} ms`);
+  if (telemetry.connection_state) items.push(`связь: ${telemetry.connection_state}`);
+  if (telemetry.command_channel_state && telemetry.command_channel_state !== "closed") items.push(`канал команд: ${telemetry.command_channel_state}`);
+  if (typeof telemetry.command_channel_failures === "number" && telemetry.command_channel_failures > 0) items.push(`ошибок канала: ${telemetry.command_channel_failures}`);
+  if (typeof telemetry.command_channel_backoff_seconds === "number" && telemetry.command_channel_backoff_seconds > 0) items.push(`проба через: ${telemetry.command_channel_backoff_seconds} сек`);
+  if (typeof telemetry.connection_restored_total === "number" && telemetry.connection_restored_total > 0) items.push(`восстановлений: ${telemetry.connection_restored_total}`);
   if (typeof telemetry.startup_installed === "boolean") items.push(`startup: ${telemetry.startup_installed ? "on" : "off"}`);
   if (typeof telemetry.watchdog_enabled === "boolean") items.push(`watchdog: ${telemetry.watchdog_enabled ? "on" : "off"}`);
   if (typeof telemetry.recovery_copy === "boolean") items.push(`recovery: ${telemetry.recovery_copy ? "ready" : "missing"}`);
@@ -795,6 +800,7 @@ function formatTelemetry(device) {
 function formatDiagnostics(device) {
   const diagnostics = device.diagnostics || {};
   const telemetry = device.telemetry || {};
+  const autoRepair = diagnostics.auto_repair || {};
   const parts = [];
 
   if (typeof diagnostics.frame_age === "number") parts.push(`кадр ${diagnostics.frame_age} сек`);
@@ -818,6 +824,8 @@ function formatDiagnostics(device) {
   if (telemetry.active_app_label || telemetry.active_app_package) parts.push(`активно ${telemetry.active_app_label || telemetry.active_app_package}`);
   if (telemetry.network_error) parts.push(`net error: ${telemetry.network_error}`);
   if (telemetry.last_error) parts.push(`ошибка: ${telemetry.last_error}`);
+  if (Number(autoRepair.confirmation_checks || 0) > 0) parts.push(`auto-repair ${autoRepair.confirmation_checks}/${autoRepair.confirmation_required || 1}`);
+  if (typeof autoRepair.last_repair_age === "number") parts.push(`repair ${autoRepair.last_repair_age} сек назад`);
   return parts.join(" · ");
 }
 
@@ -835,6 +843,13 @@ function deviceConnectionQuality(device) {
 
 function renderConnectionQuality(device) {
   const quality = deviceConnectionQuality(device);
+  const channelState = String(device?.telemetry?.command_channel_state || "closed");
+  const recoveryReady = device?.telemetry?.watchdog_enabled === true && device?.telemetry?.recovery_copy === true;
+  const recoveryBadge = channelState === "open"
+    ? '<b class="connection-recovery-badge" data-state="active">Auto-heal</b>'
+    : (channelState === "half_open"
+      ? '<b class="connection-recovery-badge" data-state="probe">Проверка</b>'
+      : (recoveryReady ? '<b class="connection-recovery-badge" data-state="ready">Recovery ready</b>' : ""));
   const recommendation = quality.recommendations[0] || "Связь стабильна, дополнительных действий не требуется.";
   const action = device?.online && quality.score < 75
     ? '<button class="connection-quality-action" type="button">Усилить связь</button>'
@@ -842,7 +857,7 @@ function renderConnectionQuality(device) {
   return `
     <div class="connection-quality" data-level="${escapeHtml(quality.state)}">
       <div class="connection-quality-head">
-        <span><i aria-hidden="true"></i> Smart Link · ${escapeHtml(quality.label)}</span>
+        <span><i aria-hidden="true"></i> Smart Link · ${escapeHtml(quality.label)} ${recoveryBadge}</span>
         <strong>${quality.score}%</strong>
       </div>
       <div class="connection-quality-track" role="progressbar" aria-label="Качество связи" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${quality.score}">

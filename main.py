@@ -71,6 +71,7 @@ COMMAND_MAX_DELIVERY_ATTEMPTS = max(1, min(20, int(os.getenv("COMMAND_MAX_DELIVE
 COMMAND_HISTORY_TTL_SECONDS = int(os.getenv("COMMAND_HISTORY_TTL_SECONDS", "86400"))
 AUDIT_RETENTION_DAYS = max(7, int(os.getenv("AUDIT_RETENTION_DAYS", "30")))
 AUTO_REPAIR_COOLDOWN_SECONDS = int(os.getenv("AUTO_REPAIR_COOLDOWN_SECONDS", "300"))
+AUTO_REPAIR_CONFIRMATION_CHECKS = max(1, min(10, int(os.getenv("AUTO_REPAIR_CONFIRMATION_CHECKS", "2"))))
 BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -150,7 +151,7 @@ def request_rate_allowed(client_id: str, method: str, now: float | None = None) 
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
 APP_STARTED_AT = time.time()
-PWA_CACHE_VERSION = "hunter-control-v17"
+PWA_CACHE_VERSION = "hunter-control-v18"
 DEVICE_COMMAND_CONDITION = threading.Condition()
 BOT_POLLING_READY = False
 BOT_POLLING_STATUS = "starting"
@@ -2122,7 +2123,7 @@ def mini_app_url_for_user(user_id: str | int | None = None) -> str:
     separator = "&" if "?" in MINI_APP_URL else "?"
     return (
         f"{MINI_APP_URL}{separator}"
-        f"v=17&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
+        f"v=18&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
     )
 
 
@@ -3730,10 +3731,31 @@ def load_device_maintenance_state() -> dict:
 
 
 def save_device_maintenance_state(data: dict) -> None:
-    DEVICE_MAINTENANCE_STATE_PATH.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    DEVICE_MAINTENANCE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = DEVICE_MAINTENANCE_STATE_PATH.with_name(
+        f"{DEVICE_MAINTENANCE_STATE_PATH.name}.{os.getpid()}.tmp"
     )
+    try:
+        temporary_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary_path, DEVICE_MAINTENANCE_STATE_PATH)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def device_recovery_status(owner_id: str, device_id: str) -> dict:
+    with DEVICE_MAINTENANCE_LOCK:
+        record = dict(
+            load_device_maintenance_state().get("devices", {}).get(device_notify_key(owner_id, device_id)) or {}
+        )
+    last_repair_at = max(0, int(record.get("last_repair_at") or 0))
+    return {
+        "confirmation_checks": max(0, int(record.get("degraded_checks") or 0)),
+        "confirmation_required": AUTO_REPAIR_CONFIRMATION_CHECKS,
+        "pending_reason": str(record.get("degraded_reason") or ""),
+        "degraded_since": max(0, int(record.get("degraded_since") or 0)),
+        "last_repair_age": max(0, now_ts() - last_repair_at) if last_repair_at else None,
+        "last_repair_reason": str(record.get("last_repair_reason") or ""),
+    }
 
 
 def expire_stale_commands() -> dict:
@@ -3828,6 +3850,8 @@ def device_needs_auto_repair(device: dict) -> tuple[bool, str]:
         return True, "command_delivery_lease_stuck"
     if delivered_commands >= 2 and oldest_delivered_age > COMMAND_DELIVERED_TIMEOUT_SECONDS:
         return True, "delivered_commands_stuck"
+    if str(telemetry.get("command_channel_state") or "") == "open":
+        return True, "command_channel_open"
     if telemetry.get("last_error") or telemetry.get("screen_error") or error_count >= 2:
         return True, "agent_error"
     if str(health.get("state") or "") in {"degraded", "warning"}:
@@ -3842,18 +3866,49 @@ def maybe_enqueue_auto_repair(device: dict) -> dict | None:
         return None
 
     needed, reason = device_needs_auto_repair(device)
-    if not needed:
-        return None
-    if has_active_device_command(owner_id, device_id, "repair_agent"):
-        return None
-
     with DEVICE_MAINTENANCE_LOCK:
         state = load_device_maintenance_state()
         devices_state = state.setdefault("devices", {})
         key = device_notify_key(owner_id, device_id)
-        previous = devices_state.get(key) or {}
+        previous = dict(devices_state.get(key) or {})
         now = now_ts()
-        if now - int(previous.get("last_repair_at") or 0) < AUTO_REPAIR_COOLDOWN_SECONDS:
+
+        if not needed:
+            changed = False
+            for field in ("degraded_checks", "degraded_reason", "degraded_since"):
+                if field in previous:
+                    previous.pop(field, None)
+                    changed = True
+            if changed:
+                if previous:
+                    devices_state[key] = previous
+                else:
+                    devices_state.pop(key, None)
+                save_device_maintenance_state(state)
+            return None
+
+        if previous.get("degraded_reason") == reason:
+            degraded_checks = max(0, int(previous.get("degraded_checks") or 0)) + 1
+            degraded_since = max(0, int(previous.get("degraded_since") or now))
+        else:
+            degraded_checks = 1
+            degraded_since = now
+
+        previous.update({
+            "degraded_checks": degraded_checks,
+            "degraded_reason": reason,
+            "degraded_since": degraded_since,
+        })
+        devices_state[key] = previous
+        immediate_reasons = {
+            "command_queue_stuck",
+            "command_delivery_lease_stuck",
+            "delivered_commands_stuck",
+        }
+        confirmed = reason in immediate_reasons or degraded_checks >= AUTO_REPAIR_CONFIRMATION_CHECKS
+        cooldown_active = now - int(previous.get("last_repair_at") or 0) < AUTO_REPAIR_COOLDOWN_SECONDS
+        if not confirmed or cooldown_active or has_active_device_command(owner_id, device_id, "repair_agent"):
+            save_device_maintenance_state(state)
             return None
 
         command = create_device_command(
@@ -3867,6 +3922,9 @@ def maybe_enqueue_auto_repair(device: dict) -> dict | None:
             "last_repair_at": now,
             "last_repair_reason": reason,
             "last_command_id": command["command_id"],
+            "degraded_checks": 0,
+            "degraded_reason": "",
+            "degraded_since": 0,
         }
         save_device_maintenance_state(state)
 
@@ -3912,6 +3970,7 @@ def device_diagnostics(owner_id: str, device_id: str) -> dict:
         "max_delivery_attempts": 0,
         "last_command": None,
         "frame_age": None,
+        "auto_repair": device_recovery_status(owner_id, device_id),
     }
     with db_connect() as connection:
         rows = connection.execute(
@@ -3989,6 +4048,10 @@ def device_connection_quality(device: dict, diagnostics: dict) -> dict:
     attempts = max(1, metric_int(telemetry.get("network_attempts"), 1))
     network_failures = max(0, metric_int(telemetry.get("network_failures")))
     consecutive_errors = max(0, metric_int(telemetry.get("consecutive_errors") or telemetry.get("error_count")))
+    last_success_age = max(-1, metric_int(telemetry.get("last_success_age"), -1))
+    network_backoff_ms = max(0, metric_int(telemetry.get("network_backoff_ms")))
+    command_channel_state = str(telemetry.get("command_channel_state") or "closed").strip().lower()
+    command_channel_failures = max(0, metric_int(telemetry.get("command_channel_failures")))
     pending_commands = max(0, metric_int(diagnostics.get("pending_commands")))
     delivering_commands = max(0, metric_int(diagnostics.get("delivering_commands")))
     oldest_delivering_age = max(0, metric_int(diagnostics.get("oldest_delivering_age")))
@@ -4054,6 +4117,29 @@ def device_connection_quality(device: dict, diagnostics: dict) -> dict:
                 f"ошибок подряд {consecutive_errors}",
                 "Запусти ремонт связи.",
             )
+        if command_channel_state == "open":
+            penalize(
+                "command_channel_open",
+                28,
+                f"канал команд приостановлен после {command_channel_failures} ошибок",
+                "Circuit breaker сам выполнит пробный запрос; heartbeat продолжает работать.",
+            )
+        elif command_channel_state == "half_open":
+            penalize(
+                "command_channel_probe",
+                10,
+                "канал команд проверяет восстановление",
+                "Дождись контрольного запроса Agent.",
+            )
+        elif network_backoff_ms > 0:
+            penalize("network_backoff", 5, f"backoff {network_backoff_ms} мс")
+        if last_success_age > 60:
+            penalize(
+                "last_success_age",
+                min(20, 8 + last_success_age // 30),
+                f"последний успешный запрос {last_success_age} сек назад",
+                "Проверь DNS, VPN и стабильность маршрута до сервера.",
+            )
         if network_error:
             penalize("network_error", 15, network_error[:120], "Проверь DNS, VPN и адрес сервера.")
         if pending_commands:
@@ -4108,6 +4194,8 @@ def device_connection_quality(device: dict, diagnostics: dict) -> dict:
         summary_parts.append(f"API {request_ms} мс")
     if attempts > 1:
         summary_parts.append(f"{attempts} попытки")
+    if command_channel_state != "closed":
+        summary_parts.append(f"канал команд {command_channel_state}")
     if last_seen_age is not None:
         summary_parts.append(f"heartbeat {last_seen_age} сек")
     if pending_commands or delivering_commands or delivered_commands:
@@ -4170,6 +4258,9 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     if telemetry.get("screen_error"):
         issues.append("screen_error")
         hints.append(str(telemetry.get("screen_error"))[:160])
+    if str(telemetry.get("command_channel_state") or "") == "open":
+        issues.append("command_channel_open")
+        hints.append("Circuit breaker временно остановил опрос команд, heartbeat остаётся активным.")
     if online and int(connection_quality.get("score") or 0) < 55:
         issues.append("connection_unstable")
         recommendations = connection_quality.get("recommendations") or []

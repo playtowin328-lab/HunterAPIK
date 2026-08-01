@@ -50,7 +50,7 @@ jobs:
         with:
           tag_name: pc-agent-latest
           name: PC Agent Latest
-          body: Visible PC heartbeat agent. Use only on your own PCs/VDS.
+          body: Visible PC heartbeat agent with watchdog recovery, replay guard and adaptive connection circuit breaker. Use only on your own PCs/VDS.
           files: |
             dist-release/hunter-pc-agent.exe
             dist-release/hunter-pc-agent.sha256

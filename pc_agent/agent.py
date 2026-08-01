@@ -28,7 +28,7 @@ except ImportError:  # The agent still provides heartbeat diagnostics without sc
 
 
 APP_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "HunterPCAgent"
-AGENT_VERSION = "0.4.0"
+AGENT_VERSION = "0.5.0"
 CONFIG_PATH = APP_DIR / "config.json"
 CONFIG_BACKUP_PATH = APP_DIR / "config.backup.json"
 COMMAND_RECEIPTS_PATH = APP_DIR / "command_receipts.json"
@@ -47,6 +47,9 @@ DEFAULT_POLL_INTERVAL_SECONDS = max(2, int(os.getenv("HUNTER_PC_POLL_INTERVAL", 
 HEARTBEAT_INTERVAL_SECONDS = max(10, int(os.getenv("HUNTER_PC_HEARTBEAT_INTERVAL", "15")))
 INSTALL_REPAIR_INTERVAL_SECONDS = max(60, int(os.getenv("HUNTER_PC_REPAIR_INTERVAL", "300")))
 COMMAND_LONG_POLL_SECONDS = max(0, min(10, int(os.getenv("HUNTER_PC_COMMAND_WAIT", "6"))))
+COMMAND_CIRCUIT_FAILURE_THRESHOLD = max(1, int(os.getenv("HUNTER_PC_CIRCUIT_FAILURES", "2")))
+COMMAND_CIRCUIT_BASE_DELAY_SECONDS = max(1.0, float(os.getenv("HUNTER_PC_CIRCUIT_BASE_DELAY", "5")))
+COMMAND_CIRCUIT_MAX_DELAY_SECONDS = max(COMMAND_CIRCUIT_BASE_DELAY_SECONDS, float(os.getenv("HUNTER_PC_CIRCUIT_MAX_DELAY", "45")))
 COMMAND_RECEIPT_LIMIT = max(32, min(1000, int(os.getenv("HUNTER_PC_COMMAND_RECEIPTS", "256"))))
 COMMAND_RECEIPT_TTL_SECONDS = max(3600, int(os.getenv("HUNTER_PC_COMMAND_RECEIPT_TTL", "604800")))
 ADB_INFO_CACHE: dict[str, dict] = {}
@@ -63,6 +66,16 @@ AGENT_METRICS = {
     "network_failures": 0,
     "network_failures_total": 0,
     "consecutive_errors": 0,
+    "last_success_at": 0,
+    "last_success_age": -1,
+    "network_backoff_ms": 0,
+    "heartbeat_successes_total": 0,
+    "heartbeat_failures_total": 0,
+    "connection_restored_total": 0,
+    "command_channel_state": "closed",
+    "command_channel_failures": 0,
+    "command_channel_backoff_seconds": 0,
+    "command_channel_opened_total": 0,
     "poll_interval_seconds": DEFAULT_POLL_INTERVAL_SECONDS,
     "commands_handled": 0,
     "command_replays_prevented": 0,
@@ -76,6 +89,62 @@ SINGLE_INSTANCE_HANDLE = None
 
 class UnsupportedCommand(RuntimeError):
     pass
+
+
+class AdaptiveCircuitBreaker:
+    def __init__(
+        self,
+        failure_threshold: int = COMMAND_CIRCUIT_FAILURE_THRESHOLD,
+        base_delay_seconds: float = COMMAND_CIRCUIT_BASE_DELAY_SECONDS,
+        max_delay_seconds: float = COMMAND_CIRCUIT_MAX_DELAY_SECONDS,
+    ) -> None:
+        self.failure_threshold = max(1, int(failure_threshold))
+        self.base_delay_seconds = max(0.1, float(base_delay_seconds))
+        self.max_delay_seconds = max(self.base_delay_seconds, float(max_delay_seconds))
+        self.failures = 0
+        self.opened_total = 0
+        self.opened_until = 0.0
+        self.state = "closed"
+
+    def remaining_delay(self, now: float | None = None) -> float:
+        current = time.monotonic() if now is None else float(now)
+        return max(0.0, self.opened_until - current)
+
+    def allows_attempt(self, now: float | None = None) -> bool:
+        current = time.monotonic() if now is None else float(now)
+        if self.state != "open":
+            return True
+        if current < self.opened_until:
+            return False
+        self.state = "half_open"
+        return True
+
+    def record_failure(self, now: float | None = None) -> float:
+        current = time.monotonic() if now is None else float(now)
+        self.failures += 1
+        if self.failures < self.failure_threshold:
+            self.state = "closed"
+            return 0.0
+        exponent = max(0, self.failures - self.failure_threshold)
+        delay = min(self.max_delay_seconds, self.base_delay_seconds * (2 ** exponent))
+        self.opened_until = current + delay
+        self.state = "open"
+        self.opened_total += 1
+        return delay
+
+    def record_success(self) -> bool:
+        restored = self.failures > 0 or self.state != "closed"
+        self.failures = 0
+        self.opened_until = 0.0
+        self.state = "closed"
+        return restored
+
+
+def update_command_circuit_metrics(circuit: AdaptiveCircuitBreaker, now: float | None = None) -> None:
+    AGENT_METRICS["command_channel_state"] = circuit.state
+    AGENT_METRICS["command_channel_failures"] = circuit.failures
+    AGENT_METRICS["command_channel_backoff_seconds"] = round(circuit.remaining_delay(now), 1)
+    AGENT_METRICS["command_channel_opened_total"] = circuit.opened_total
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -402,6 +471,9 @@ def api_request(
                 AGENT_METRICS["last_request_ms"] = round((time.perf_counter() - started) * 1000)
                 AGENT_METRICS["last_http_status"] = int(getattr(response, "status", 200) or 200)
                 AGENT_METRICS["network_failures"] = 0
+                AGENT_METRICS["last_success_at"] = int(time.time())
+                AGENT_METRICS["last_success_age"] = 0
+                AGENT_METRICS["network_backoff_ms"] = 0
                 return json.loads(text) if text else {}
         except error.HTTPError as exc:
             text = exc.read().decode("utf-8", errors="replace")
@@ -423,6 +495,7 @@ def api_request(
                 LOGGER.warning("%s %s failed: %s", method, safe_url_for_log(url), exc)
                 raise RuntimeError(f"Network error: {exc}") from exc
         delay = retry_delay_seconds(attempt)
+        AGENT_METRICS["network_backoff_ms"] = round(delay * 1000)
         LOGGER.info(
             "%s %s retry %s/%s in %.2fs",
             method,
@@ -1207,6 +1280,14 @@ def pc_command_tick(config: dict) -> None:
 
 def heartbeat(config: dict) -> None:
     server = config["server_url"].rstrip("/")
+    last_success_at = max(0, int(AGENT_METRICS.get("last_success_at") or 0))
+    AGENT_METRICS["last_success_age"] = max(0, int(time.time()) - last_success_at) if last_success_at else -1
+    if int(AGENT_METRICS.get("consecutive_errors") or 0) > 0:
+        connection_state = "recovering"
+    elif AGENT_METRICS.get("command_channel_state") in {"open", "half_open"}:
+        connection_state = "degraded"
+    else:
+        connection_state = "connected"
     payload = {
         "owner_id": config["owner_id"],
         "device_id": config["device_id"],
@@ -1242,6 +1323,16 @@ def heartbeat(config: dict) -> None:
             "network_failures": AGENT_METRICS["network_failures"],
             "network_failures_total": AGENT_METRICS["network_failures_total"],
             "consecutive_errors": AGENT_METRICS["consecutive_errors"],
+            "last_success_age": AGENT_METRICS["last_success_age"],
+            "network_backoff_ms": AGENT_METRICS["network_backoff_ms"],
+            "heartbeat_successes_total": AGENT_METRICS["heartbeat_successes_total"],
+            "heartbeat_failures_total": AGENT_METRICS["heartbeat_failures_total"],
+            "connection_restored_total": AGENT_METRICS["connection_restored_total"],
+            "connection_state": connection_state,
+            "command_channel_state": AGENT_METRICS["command_channel_state"],
+            "command_channel_failures": AGENT_METRICS["command_channel_failures"],
+            "command_channel_backoff_seconds": AGENT_METRICS["command_channel_backoff_seconds"],
+            "command_channel_opened_total": AGENT_METRICS["command_channel_opened_total"],
             "commands_handled": AGENT_METRICS["commands_handled"],
             "command_replays_prevented": AGENT_METRICS["command_replays_prevented"],
             "command_receipt_cache_size": AGENT_METRICS["command_receipt_cache_size"],
@@ -1286,6 +1377,8 @@ def run_loop(config: dict, interval: int, adb_enabled: bool) -> None:
         adb_enabled,
     )
     error_streak = 0
+    command_circuit = AdaptiveCircuitBreaker()
+    update_command_circuit_metrics(command_circuit)
     next_heartbeat_at = 0.0
     next_repair_at = time.monotonic() + INSTALL_REPAIR_INTERVAL_SECONDS
     while True:
@@ -1295,30 +1388,47 @@ def run_loop(config: dict, interval: int, adb_enabled: bool) -> None:
         if heartbeat_due:
             try:
                 heartbeat(config)
+                AGENT_METRICS["heartbeat_successes_total"] += 1
                 next_heartbeat_at = time.monotonic() + HEARTBEAT_INTERVAL_SECONDS
                 if error_streak:
                     LOGGER.info("Connection restored after %s failed heartbeat cycles.", error_streak)
+                    AGENT_METRICS["connection_restored_total"] += 1
                 error_streak = 0
                 AGENT_METRICS["consecutive_errors"] = 0
                 AGENT_METRICS["last_error"] = ""
+                AGENT_METRICS["network_backoff_ms"] = 0
                 print(time.strftime("%H:%M:%S"), "online")
             except Exception as exc:
                 error_streak += 1
+                AGENT_METRICS["heartbeat_failures_total"] += 1
                 AGENT_METRICS["last_loop_ms"] = round((time.perf_counter() - started) * 1000)
                 AGENT_METRICS["last_error"] = str(exc)[:160]
                 AGENT_METRICS["consecutive_errors"] = error_streak
                 sleep_for = max(interval, min(60, 2 ** min(error_streak, 6)))
+                AGENT_METRICS["network_backoff_ms"] = int(sleep_for * 1000)
                 print(time.strftime("%H:%M:%S"), "connection error:", exc)
                 LOGGER.exception("heartbeat failed; retry in %ss", sleep_for)
                 time.sleep(sleep_for)
                 continue
 
         component_errors = []
-        try:
-            pc_command_tick(config)
-        except Exception as exc:
-            component_errors.append(f"commands: {exc}")
-            LOGGER.warning("Command polling failed; heartbeat remains active: %s", exc)
+        if command_circuit.allows_attempt():
+            update_command_circuit_metrics(command_circuit)
+            try:
+                pc_command_tick(config)
+                if command_circuit.record_success():
+                    AGENT_METRICS["connection_restored_total"] += 1
+                    LOGGER.info("Command channel restored; circuit closed.")
+            except Exception as exc:
+                circuit_delay = command_circuit.record_failure()
+                component_errors.append(f"commands: {exc}")
+                if circuit_delay:
+                    LOGGER.warning("Command channel circuit opened for %.1fs: %s", circuit_delay, exc)
+                else:
+                    LOGGER.warning("Command polling failed; heartbeat remains active: %s", exc)
+            update_command_circuit_metrics(command_circuit)
+        else:
+            update_command_circuit_metrics(command_circuit)
         if adb_enabled:
             try:
                 adb_bridge_tick(config)
