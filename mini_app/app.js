@@ -670,6 +670,7 @@ function formatTelemetry(device) {
   }
   if (telemetry.network) items.push(`сеть: ${telemetry.network}`);
   if (telemetry.android) items.push(`Android ${telemetry.android}`);
+  if (telemetry.agent_version) items.push(`agent v${telemetry.agent_version}`);
   if (typeof telemetry.full_control === "boolean") items.push(telemetry.full_control ? "Full APK" : "Lite APK");
   if (typeof telemetry.agent_enabled === "boolean") items.push(`agent: ${telemetry.agent_enabled ? "on" : "off"}`);
   if (typeof telemetry.last_success_age === "number" && telemetry.last_success_age >= 0) items.push(`last ok: ${telemetry.last_success_age} сек`);
@@ -678,9 +679,12 @@ function formatTelemetry(device) {
   if (typeof telemetry.network_attempts === "number" && telemetry.network_attempts > 1) items.push(`retry: ${telemetry.network_attempts}`);
   if (typeof telemetry.network_failures === "number" && telemetry.network_failures > 0) items.push(`net failures: ${telemetry.network_failures}`);
   if (typeof telemetry.network_failures_total === "number" && telemetry.network_failures_total > 0) items.push(`net total: ${telemetry.network_failures_total}`);
+  if (typeof telemetry.command_replays_prevented === "number" && telemetry.command_replays_prevented > 0) items.push(`дубли заблокированы: ${telemetry.command_replays_prevented}`);
+  if (typeof telemetry.command_receipt_cache_size === "number") items.push(`receipt cache: ${telemetry.command_receipt_cache_size}`);
   if (typeof telemetry.consecutive_errors === "number" && telemetry.consecutive_errors > 0) items.push(`loop errors: ${telemetry.consecutive_errors}`);
   if (typeof telemetry.network_backoff_ms === "number" && telemetry.network_backoff_ms > 0) items.push(`backoff: ${telemetry.network_backoff_ms} ms`);
   if (typeof telemetry.startup_installed === "boolean") items.push(`startup: ${telemetry.startup_installed ? "on" : "off"}`);
+  if (typeof telemetry.watchdog_enabled === "boolean") items.push(`watchdog: ${telemetry.watchdog_enabled ? "on" : "off"}`);
   if (typeof telemetry.recovery_copy === "boolean") items.push(`recovery: ${telemetry.recovery_copy ? "ready" : "missing"}`);
   if (typeof telemetry.poll_interval_seconds === "number") items.push(`poll: ${telemetry.poll_interval_seconds}s`);
   if (typeof telemetry.heartbeat_interval_seconds === "number") items.push(`heartbeat: ${telemetry.heartbeat_interval_seconds}s`);
@@ -709,6 +713,8 @@ function formatTelemetry(device) {
   if (telemetry.screen_black_frame) items.push(`screen: protected/black`);
   if (typeof telemetry.error_count === "number" && telemetry.error_count > 0) items.push(`errors: ${telemetry.error_count}`);
   if (diagnostics.pending_commands) items.push(`очередь: ${diagnostics.pending_commands}`);
+  if (diagnostics.delivering_commands) items.push(`доставка: ${diagnostics.delivering_commands}`);
+  if (diagnostics.max_delivery_attempts > 1) items.push(`delivery retry: ${diagnostics.max_delivery_attempts}`);
   if (typeof diagnostics.frame_age === "number") items.push(`кадр: ${diagnostics.frame_age} сек`);
   if (telemetry.network_error) items.push(`net error: ${telemetry.network_error}`);
   if (telemetry.last_error) items.push(`ошибка: ${telemetry.last_error}`);
@@ -724,10 +730,12 @@ function formatDiagnostics(device) {
 
   if (typeof diagnostics.frame_age === "number") parts.push(`кадр ${diagnostics.frame_age} сек`);
   if (diagnostics.pending_commands) parts.push(`очередь ${diagnostics.pending_commands}`);
+  if (diagnostics.delivering_commands) parts.push(`доставка ${diagnostics.delivering_commands}`);
   if (diagnostics.delivered_commands) parts.push(`доставлено ${diagnostics.delivered_commands}`);
   if (diagnostics.last_command) {
     const last = diagnostics.last_command;
-    parts.push(`последняя: ${last.type} · ${last.status} · ${last.duration_ms || 0} ms`);
+    const attempts = Number(last.delivery_attempts || 0) > 1 ? ` · retry x${last.delivery_attempts}` : "";
+    parts.push(`последняя: ${last.type} · ${last.status} · ${last.duration_ms || 0} ms${attempts}`);
   }
   if (typeof telemetry.loop_ms === "number" && telemetry.loop_ms > 0) parts.push(`агент ${telemetry.loop_ms} ms`);
   if (typeof telemetry.request_ms === "number" && telemetry.request_ms > 0) parts.push(`api ${telemetry.request_ms} ms`);

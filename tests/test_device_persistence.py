@@ -301,6 +301,77 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertTrue(main.release_device_command_reservation(created["command_id"]))
         self.assertEqual(created["command_id"], main.reserve_next_device_command("100", "phone-1")["command_id"])
 
+    def test_command_delivery_attempts_are_bounded(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Phone"})
+        created = main.create_device_command("100", "phone-1", "ping")
+
+        with (
+            patch.object(main, "COMMAND_MAX_DELIVERY_ATTEMPTS", 2),
+            patch.object(main, "COMMAND_RESERVATION_TIMEOUT_SECONDS", 5),
+        ):
+            first = main.reserve_next_device_command("100", "phone-1")
+            self.assertEqual(1, first["delivery_attempts"])
+            with main.db_connect() as connection:
+                connection.execute(
+                    "UPDATE commands SET updated_at = ? WHERE command_id = ?",
+                    (main.now_ts() - 10, created["command_id"]),
+                )
+
+            second = main.reserve_next_device_command("100", "phone-1")
+            self.assertEqual(2, second["delivery_attempts"])
+            with main.db_connect() as connection:
+                connection.execute(
+                    "UPDATE commands SET updated_at = ? WHERE command_id = ?",
+                    (main.now_ts() - 10, created["command_id"]),
+                )
+
+            self.assertIsNone(main.reserve_next_device_command("100", "phone-1"))
+
+        stored = main.get_device_command("100", "phone-1", created["command_id"])
+        self.assertEqual("timeout", stored["status"])
+        self.assertEqual(2, stored["delivery_attempts"])
+        self.assertIn("лимит", stored["result"])
+
+    def test_maintenance_recovers_stale_delivery_lease(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Phone"})
+        created = main.create_device_command("100", "phone-1", "ping")
+        main.reserve_next_device_command("100", "phone-1")
+        with main.db_connect() as connection:
+            connection.execute(
+                "UPDATE commands SET updated_at = ? WHERE command_id = ?",
+                (main.now_ts() - 10, created["command_id"]),
+            )
+
+        with patch.object(main, "COMMAND_RESERVATION_TIMEOUT_SECONDS", 5):
+            summary = main.expire_stale_commands()
+
+        self.assertEqual(1, summary["recovered_leases"])
+        self.assertEqual("pending", main.get_device_command("100", "phone-1", created["command_id"])["status"])
+
+    def test_command_completion_is_idempotent(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Phone"})
+        created = main.create_device_command("100", "phone-1", "ping")
+        main.mark_device_command_delivered(created["command_id"])
+
+        first = main.complete_device_command("100", "phone-1", created["command_id"], "acknowledged", "pong")
+        duplicate = main.complete_device_command("100", "phone-1", created["command_id"], "acknowledged", "pong")
+        conflict = main.complete_device_command("100", "phone-1", created["command_id"], "failed", "late failure")
+
+        self.assertFalse(first["duplicate_completion"])
+        self.assertTrue(duplicate["duplicate_completion"])
+        self.assertFalse(duplicate["completion_conflict"])
+        self.assertTrue(conflict["completion_conflict"])
+        self.assertEqual("acknowledged", conflict["status"])
+        self.assertEqual("pong", conflict["result"])
+
+    def test_clear_queue_cancels_delivering_commands(self) -> None:
+        main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Phone"})
+        created = main.create_device_command("100", "phone-1", "ping")
+        main.reserve_next_device_command("100", "phone-1")
+
+        self.assertEqual(1, main.clear_device_command_queue("100", "phone-1"))
+        self.assertEqual("cancelled", main.get_device_command("100", "phone-1", created["command_id"])["status"])
+
     def test_long_poll_wakes_when_command_is_created(self) -> None:
         main.upsert_device({"owner_id": "100", "device_id": "phone-1", "name": "Phone"})
         result = {}

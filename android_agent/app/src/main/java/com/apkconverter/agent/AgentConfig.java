@@ -18,6 +18,7 @@ final class AgentConfig {
     static final String KEY_ENABLED = "enabled";
     static final String KEY_LAST_LOOP_MS = "last_loop_ms";
     static final String KEY_LAST_COMMAND_MS = "last_command_ms";
+    static final String KEY_COMMAND_REPLAYS_PREVENTED = "command_replays_prevented";
     static final String KEY_LAST_ERROR_COUNT = "last_error_count";
     static final String KEY_LAST_ERROR = "last_error";
     static final String KEY_LAST_GESTURE_MS = "last_gesture_ms";

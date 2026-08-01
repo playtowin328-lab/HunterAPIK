@@ -67,6 +67,7 @@ COMMAND_PENDING_TIMEOUT_SECONDS = int(os.getenv("COMMAND_PENDING_TIMEOUT_SECONDS
 COMMAND_DELIVERED_TIMEOUT_SECONDS = int(os.getenv("COMMAND_DELIVERED_TIMEOUT_SECONDS", "180"))
 COMMAND_RESERVATION_TIMEOUT_SECONDS = int(os.getenv("COMMAND_RESERVATION_TIMEOUT_SECONDS", "30"))
 COMMAND_LONG_POLL_MAX_SECONDS = max(1, min(15, int(os.getenv("COMMAND_LONG_POLL_MAX_SECONDS", "10"))))
+COMMAND_MAX_DELIVERY_ATTEMPTS = max(1, min(20, int(os.getenv("COMMAND_MAX_DELIVERY_ATTEMPTS", "5"))))
 COMMAND_HISTORY_TTL_SECONDS = int(os.getenv("COMMAND_HISTORY_TTL_SECONDS", "86400"))
 AUDIT_RETENTION_DAYS = max(7, int(os.getenv("AUDIT_RETENTION_DAYS", "30")))
 AUTO_REPAIR_COOLDOWN_SECONDS = int(os.getenv("AUTO_REPAIR_COOLDOWN_SECONDS", "300"))
@@ -149,7 +150,7 @@ def request_rate_allowed(client_id: str, method: str, now: float | None = None) 
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
 APP_STARTED_AT = time.time()
-PWA_CACHE_VERSION = "hunter-control-v15"
+PWA_CACHE_VERSION = "hunter-control-v16"
 DEVICE_COMMAND_CONDITION = threading.Condition()
 BOT_POLLING_READY = False
 BOT_POLLING_STATUS = "starting"
@@ -334,6 +335,13 @@ def init_db() -> None:
             )
             """
         )
+        command_columns = {row["name"] for row in connection.execute("PRAGMA table_info(commands)").fetchall()}
+        for column, declaration in {
+            "delivery_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "last_delivery_at": "INTEGER NOT NULL DEFAULT 0",
+        }.items():
+            if column not in command_columns:
+                connection.execute(f"ALTER TABLE commands ADD COLUMN {column} {declaration}")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_commands_next ON commands(owner_id, device_id, status, created_at)")
         connection.execute(
             """
@@ -1627,7 +1635,7 @@ def root_command_center_text() -> str:
     attention = sum(1 for device in devices if (device.get("health") or {}).get("state") in {"warning", "degraded", "revoked", "offline"})
     integrity = verify_audit_chain()
     with db_connect() as connection:
-        pending = connection.execute("SELECT COUNT(*) AS count FROM commands WHERE status IN ('pending', 'delivered')").fetchone()["count"]
+        pending = connection.execute("SELECT COUNT(*) AS count FROM commands WHERE status IN ('pending', 'delivering', 'delivered')").fetchone()["count"]
         failed = connection.execute("SELECT COUNT(*) AS count FROM commands WHERE status IN ('failed', 'rejected')").fetchone()["count"]
         users = connection.execute("SELECT COUNT(*) AS count FROM bot_access").fetchone()["count"]
         security_events = connection.execute(
@@ -2114,7 +2122,7 @@ def mini_app_url_for_user(user_id: str | int | None = None) -> str:
     separator = "&" if "?" in MINI_APP_URL else "?"
     return (
         f"{MINI_APP_URL}{separator}"
-        f"v=15&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
+        f"v=16&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
     )
 
 
@@ -3437,6 +3445,8 @@ def create_device_command(owner_id: str, device_id: str, command_type: str, payl
         "type": command_type,
         "payload": payload or {},
         "status": "pending",
+        "delivery_attempts": 0,
+        "last_delivery_at": 0,
         "created_at": now,
         "updated_at": now,
     }
@@ -3508,27 +3518,54 @@ def reserve_next_device_command(owner_id: str, device_id: str) -> dict | None:
     with db_connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
-            "UPDATE commands SET status = 'pending' WHERE status = 'delivering' AND updated_at < ?",
-            (stale_before,),
+            """
+            UPDATE commands
+            SET status = 'timeout', result = ?, updated_at = ?
+            WHERE status = 'delivering' AND updated_at < ? AND delivery_attempts >= ?
+            """,
+            ("Команда превысила лимит попыток доставки агенту.", reserved_at, stale_before, COMMAND_MAX_DELIVERY_ATTEMPTS),
+        )
+        connection.execute(
+            """
+            UPDATE commands
+            SET status = 'pending', result = ''
+            WHERE status = 'delivering' AND updated_at < ? AND delivery_attempts < ?
+            """,
+            (stale_before, COMMAND_MAX_DELIVERY_ATTEMPTS),
+        )
+        connection.execute(
+            """
+            UPDATE commands
+            SET status = 'timeout', result = ?, updated_at = ?
+            WHERE status = 'pending' AND delivery_attempts >= ?
+            """,
+            ("Команда превысила лимит попыток доставки агенту.", reserved_at, COMMAND_MAX_DELIVERY_ATTEMPTS),
         )
         row = connection.execute(
             """
             SELECT * FROM commands
-            WHERE owner_id = ? AND device_id = ? AND status = 'pending'
+            WHERE owner_id = ? AND device_id = ? AND status = 'pending' AND delivery_attempts < ?
             ORDER BY CASE WHEN type = 'request_screen' THEN 1 ELSE 0 END, created_at ASC
             LIMIT 1
             """,
-            (str(owner_id), str(device_id)),
+            (str(owner_id), str(device_id), COMMAND_MAX_DELIVERY_ATTEMPTS),
         ).fetchone()
         if not row:
             return None
         updated = connection.execute(
-            "UPDATE commands SET status = 'delivering', updated_at = ? WHERE command_id = ? AND status = 'pending'",
-            (reserved_at, row["command_id"]),
+            """
+            UPDATE commands
+            SET status = 'delivering', updated_at = ?, last_delivery_at = ?, delivery_attempts = delivery_attempts + 1
+            WHERE command_id = ? AND status = 'pending' AND delivery_attempts < ?
+            """,
+            (reserved_at, reserved_at, row["command_id"], COMMAND_MAX_DELIVERY_ATTEMPTS),
         )
         if updated.rowcount != 1:
             return None
-    return command_from_row(row, status="delivering", updated_at=reserved_at)
+    command = command_from_row(row, status="delivering", updated_at=reserved_at)
+    command["delivery_attempts"] = int(row["delivery_attempts"] or 0) + 1
+    command["last_delivery_at"] = reserved_at
+    return command
 
 
 def wait_for_next_device_command(owner_id: str, device_id: str, wait_seconds: float = 0) -> dict | None:
@@ -3551,12 +3588,25 @@ def wait_for_next_device_command(owner_id: str, device_id: str, wait_seconds: fl
 
 def release_device_command_reservation(command_id: str) -> bool:
     with db_connect() as connection:
-        updated = connection.execute(
-            "UPDATE commands SET status = 'pending', updated_at = created_at WHERE command_id = ? AND status = 'delivering'",
+        row = connection.execute(
+            "SELECT delivery_attempts FROM commands WHERE command_id = ? AND status = 'delivering'",
             (str(command_id),),
-        )
+        ).fetchone()
+        if not row:
+            return False
+        exhausted = int(row["delivery_attempts"] or 0) >= COMMAND_MAX_DELIVERY_ATTEMPTS
+        if exhausted:
+            updated = connection.execute(
+                "UPDATE commands SET status = 'timeout', result = ?, updated_at = ? WHERE command_id = ? AND status = 'delivering'",
+                ("Команда превысила лимит попыток доставки агенту.", now_ts(), str(command_id)),
+            )
+        else:
+            updated = connection.execute(
+                "UPDATE commands SET status = 'pending', result = '', updated_at = created_at WHERE command_id = ? AND status = 'delivering'",
+                (str(command_id),),
+            )
         released = updated.rowcount == 1
-    if released:
+    if released and not exhausted:
         with DEVICE_COMMAND_CONDITION:
             DEVICE_COMMAND_CONDITION.notify_all()
     return released
@@ -3584,8 +3634,11 @@ def next_device_command(owner_id: str, device_id: str) -> dict | None:
 
 
 def complete_device_command(owner_id: str, device_id: str, command_id: str, status: str, result: str = "") -> dict | None:
-    result = str(result or "")[:1200]
-    now = int(time.time())
+    normalized_status = str(status or "done").strip().lower()[:32]
+    if normalized_status not in {"acknowledged", "completed", "done", "rejected", "failed"}:
+        raise ValueError("unsupported command completion status")
+    normalized_result = str(result or "")[:500]
+    now = now_ts()
     with db_connect() as connection:
         row = connection.execute(
             "SELECT * FROM commands WHERE owner_id = ? AND device_id = ? AND command_id = ?",
@@ -3593,16 +3646,32 @@ def complete_device_command(owner_id: str, device_id: str, command_id: str, stat
         ).fetchone()
         if not row:
             return None
+        if row["status"] not in {"pending", "delivering", "delivered"}:
+            command = command_from_row(row)
+            command["duplicate_completion"] = True
+            command["completion_conflict"] = row["status"] != normalized_status or str(row["result"] or "") != normalized_result
+            return command
 
-        connection.execute(
-            "UPDATE commands SET status = ?, result = ?, updated_at = ? WHERE command_id = ?",
-            (status[:32], result[:500], now, str(command_id)),
+        updated = connection.execute(
+            """
+            UPDATE commands SET status = ?, result = ?, updated_at = ?
+            WHERE command_id = ? AND status IN ('pending', 'delivering', 'delivered')
+            """,
+            (normalized_status, normalized_result, now, str(command_id)),
         )
+        if updated.rowcount != 1:
+            current = connection.execute("SELECT * FROM commands WHERE command_id = ?", (str(command_id),)).fetchone()
+            if not current:
+                return None
+            command = command_from_row(current)
+            command["duplicate_completion"] = True
+            command["completion_conflict"] = True
+            return command
 
-    command = command_from_row(row)
-    command["status"] = status[:32]
-    command["result"] = result[:500]
-    command["updated_at"] = now
+    command = command_from_row(row, status=normalized_status, updated_at=now)
+    command["result"] = normalized_result
+    command["duplicate_completion"] = False
+    command["completion_conflict"] = False
     return command
 
 
@@ -3641,7 +3710,7 @@ def has_active_device_command(owner_id: str, device_id: str, command_type: str) 
         row = connection.execute(
             """
             SELECT 1 FROM commands
-            WHERE owner_id = ? AND device_id = ? AND type = ? AND status IN ('pending', 'delivered')
+            WHERE owner_id = ? AND device_id = ? AND type = ? AND status IN ('pending', 'delivering', 'delivered')
             LIMIT 1
             """,
             (str(owner_id), str(device_id), str(command_type)),
@@ -3669,10 +3738,27 @@ def save_device_maintenance_state(data: dict) -> None:
 
 def expire_stale_commands() -> dict:
     now = now_ts()
+    reservation_before = max(0, now - max(5, COMMAND_RESERVATION_TIMEOUT_SECONDS))
     pending_before = max(0, now - COMMAND_PENDING_TIMEOUT_SECONDS)
     delivered_before = max(0, now - COMMAND_DELIVERED_TIMEOUT_SECONDS)
     history_before = max(0, now - COMMAND_HISTORY_TTL_SECONDS)
     with db_connect() as connection:
+        exhausted_result = connection.execute(
+            """
+            UPDATE commands
+            SET status = 'timeout', result = ?, updated_at = ?
+            WHERE status = 'delivering' AND updated_at < ? AND delivery_attempts >= ?
+            """,
+            ("Команда превысила лимит попыток доставки агенту.", now, reservation_before, COMMAND_MAX_DELIVERY_ATTEMPTS),
+        )
+        recovered_result = connection.execute(
+            """
+            UPDATE commands
+            SET status = 'pending', result = ''
+            WHERE status = 'delivering' AND updated_at < ? AND delivery_attempts < ?
+            """,
+            (reservation_before, COMMAND_MAX_DELIVERY_ATTEMPTS),
+        )
         pending_result = connection.execute(
             """
             UPDATE commands
@@ -3692,11 +3778,17 @@ def expire_stale_commands() -> dict:
         cleanup_result = connection.execute(
             """
             DELETE FROM commands
-            WHERE status NOT IN ('pending', 'delivered') AND updated_at < ?
+            WHERE status NOT IN ('pending', 'delivering', 'delivered') AND updated_at < ?
             """,
             (history_before,),
         )
+    recovered_leases = max(0, recovered_result.rowcount or 0)
+    if recovered_leases:
+        with DEVICE_COMMAND_CONDITION:
+            DEVICE_COMMAND_CONDITION.notify_all()
     return {
+        "recovered_leases": recovered_leases,
+        "delivery_attempts_exhausted": max(0, exhausted_result.rowcount or 0),
         "pending_timeout": max(0, pending_result.rowcount or 0),
         "delivered_timeout": max(0, delivered_result.rowcount or 0),
         "deleted_history": max(0, cleanup_result.rowcount or 0),
@@ -3719,6 +3811,8 @@ def device_needs_auto_repair(device: dict) -> tuple[bool, str]:
     issues = set(health.get("issues") or [])
     pending_commands = int(diagnostics.get("pending_commands") or 0)
     oldest_pending_age = int(diagnostics.get("oldest_pending_age") or 0)
+    delivering_commands = int(diagnostics.get("delivering_commands") or 0)
+    oldest_delivering_age = int(diagnostics.get("oldest_delivering_age") or 0)
     delivered_commands = int(diagnostics.get("delivered_commands") or 0)
     oldest_delivered_age = int(diagnostics.get("oldest_delivered_age") or 0)
     try:
@@ -3730,6 +3824,8 @@ def device_needs_auto_repair(device: dict) -> tuple[bool, str]:
         return False, ""
     if pending_commands >= 3 or oldest_pending_age > 60:
         return True, "command_queue_stuck"
+    if delivering_commands and oldest_delivering_age > COMMAND_RESERVATION_TIMEOUT_SECONDS:
+        return True, "command_delivery_lease_stuck"
     if delivered_commands >= 2 and oldest_delivered_age > COMMAND_DELIVERED_TIMEOUT_SECONDS:
         return True, "delivered_commands_stuck"
     if telemetry.get("last_error") or telemetry.get("screen_error") or error_count >= 2:
@@ -3808,33 +3904,46 @@ def device_diagnostics(owner_id: str, device_id: str) -> dict:
     now = int(time.time())
     diagnostics: dict = {
         "pending_commands": 0,
+        "delivering_commands": 0,
         "delivered_commands": 0,
         "oldest_pending_age": 0,
+        "oldest_delivering_age": 0,
         "oldest_delivered_age": 0,
+        "max_delivery_attempts": 0,
         "last_command": None,
         "frame_age": None,
     }
     with db_connect() as connection:
         rows = connection.execute(
             """
-            SELECT status, MIN(created_at) AS oldest, COUNT(*) AS count
+            SELECT status,
+                   MIN(CASE WHEN status = 'delivering' THEN updated_at ELSE created_at END) AS oldest,
+                   COUNT(*) AS count,
+                   MAX(delivery_attempts) AS max_attempts
             FROM commands
-            WHERE owner_id = ? AND device_id = ? AND status IN ('pending', 'delivered')
+            WHERE owner_id = ? AND device_id = ? AND status IN ('pending', 'delivering', 'delivered')
             GROUP BY status
             """,
             (str(owner_id), str(device_id)),
         ).fetchall()
         for row in rows:
+            diagnostics["max_delivery_attempts"] = max(
+                diagnostics["max_delivery_attempts"],
+                int(row["max_attempts"] or 0),
+            )
             if row["status"] == "pending":
                 diagnostics["pending_commands"] = int(row["count"])
                 diagnostics["oldest_pending_age"] = max(0, now - int(row["oldest"] or now))
+            elif row["status"] == "delivering":
+                diagnostics["delivering_commands"] = int(row["count"])
+                diagnostics["oldest_delivering_age"] = max(0, now - int(row["oldest"] or now))
             elif row["status"] == "delivered":
                 diagnostics["delivered_commands"] = int(row["count"])
                 diagnostics["oldest_delivered_age"] = max(0, now - int(row["oldest"] or now))
 
         last = connection.execute(
             """
-            SELECT type, status, created_at, updated_at, result
+            SELECT type, status, created_at, updated_at, result, delivery_attempts, last_delivery_at
             FROM commands
             WHERE owner_id = ? AND device_id = ?
             ORDER BY updated_at DESC
@@ -3850,6 +3959,8 @@ def device_diagnostics(owner_id: str, device_id: str) -> dict:
             "age": max(0, now - int(last["updated_at"] or now)),
             "duration_ms": max(0, int(last["updated_at"] or now) - int(last["created_at"] or now)) * 1000,
             "result": str(last["result"] or "")[:160],
+            "delivery_attempts": int(last["delivery_attempts"] or 0),
+            "last_delivery_age": max(0, now - int(last["last_delivery_at"])) if int(last["last_delivery_at"] or 0) else None,
         }
 
     _, meta_path = screen_paths(owner_id, device_id)
@@ -3879,7 +3990,10 @@ def device_connection_quality(device: dict, diagnostics: dict) -> dict:
     network_failures = max(0, metric_int(telemetry.get("network_failures")))
     consecutive_errors = max(0, metric_int(telemetry.get("consecutive_errors") or telemetry.get("error_count")))
     pending_commands = max(0, metric_int(diagnostics.get("pending_commands")))
+    delivering_commands = max(0, metric_int(diagnostics.get("delivering_commands")))
+    oldest_delivering_age = max(0, metric_int(diagnostics.get("oldest_delivering_age")))
     delivered_commands = max(0, metric_int(diagnostics.get("delivered_commands")))
+    max_delivery_attempts = max(0, metric_int(diagnostics.get("max_delivery_attempts")))
     network_error = str(telemetry.get("network_error") or "").strip()
     score = 100 if online else 0
     factors: list[dict] = []
@@ -3949,6 +4063,20 @@ def device_connection_quality(device: dict, diagnostics: dict) -> dict:
                 f"в очереди {pending_commands}",
                 "Очисти зависшую очередь и повтори ping.",
             )
+        if delivering_commands and oldest_delivering_age > 5:
+            penalize(
+                "delivering_commands",
+                min(16, delivering_commands * 4),
+                f"доставляется {delivering_commands}",
+                "Дождись lease recovery или запусти ремонт связи.",
+            )
+        if max_delivery_attempts > 1:
+            penalize(
+                "delivery_retries",
+                min(18, (max_delivery_attempts - 1) * 6),
+                f"delivery retry x{max_delivery_attempts}",
+                "Agent блокирует дубли, но сеть стоит проверить.",
+            )
         if delivered_commands:
             penalize(
                 "delivered_commands",
@@ -3982,8 +4110,8 @@ def device_connection_quality(device: dict, diagnostics: dict) -> dict:
         summary_parts.append(f"{attempts} попытки")
     if last_seen_age is not None:
         summary_parts.append(f"heartbeat {last_seen_age} сек")
-    if pending_commands or delivered_commands:
-        summary_parts.append(f"команд ждёт {pending_commands + delivered_commands}")
+    if pending_commands or delivering_commands or delivered_commands:
+        summary_parts.append(f"команд ждёт {pending_commands + delivering_commands + delivered_commands}")
     if not summary_parts:
         summary_parts.append("Heartbeat и очередь команд в норме" if online else "Heartbeat не поступает")
     if not recommendations and online:
@@ -4009,6 +4137,8 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     online = bool(device.get("online"))
     pending_commands = int(diagnostics.get("pending_commands") or 0)
     oldest_pending_age = int(diagnostics.get("oldest_pending_age") or 0)
+    delivering_commands = int(diagnostics.get("delivering_commands") or 0)
+    oldest_delivering_age = int(diagnostics.get("oldest_delivering_age") or 0)
     delivered_commands = int(diagnostics.get("delivered_commands") or 0)
     oldest_delivered_age = int(diagnostics.get("oldest_delivered_age") or 0)
     connection_quality = device_connection_quality(device, diagnostics)
@@ -4028,6 +4158,9 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     if pending_commands >= 3 or oldest_pending_age > 60:
         issues.append("command_queue_stuck")
         hints.append("Есть зависшие команды. Если агент online, попробуй перезапустить его.")
+    if delivering_commands and oldest_delivering_age > COMMAND_RESERVATION_TIMEOUT_SECONDS:
+        issues.append("command_delivery_lease_stuck")
+        hints.append("Lease доставки завис. Watchdog вернёт команду в очередь без повторного действия.")
     if delivered_commands >= 2 and oldest_delivered_age > COMMAND_DELIVERED_TIMEOUT_SECONDS:
         issues.append("command_delivery_stuck")
         hints.append("Агент получил команды, но не завершил их. Watchdog попробует repair_agent.")
@@ -4053,7 +4186,7 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     elif "heartbeat_stale" in issues or "never_seen" in issues:
         state = "offline"
         label = "Offline"
-    elif "command_queue_stuck" in issues or "command_delivery_stuck" in issues:
+    elif "command_queue_stuck" in issues or "command_delivery_lease_stuck" in issues or "command_delivery_stuck" in issues:
         state = "degraded"
         label = "Команды ждут агент"
     else:
@@ -5013,7 +5146,7 @@ def clear_device_command_queue(owner_id: str, device_id: str) -> int:
             """
             UPDATE commands
             SET status = 'cancelled', result = ?, updated_at = ?
-            WHERE owner_id = ? AND device_id = ? AND status IN ('pending', 'delivered')
+            WHERE owner_id = ? AND device_id = ? AND status IN ('pending', 'delivering', 'delivered')
             """,
             (
                 "Команда отменена пользователем из пульта.",
@@ -5094,6 +5227,8 @@ def health_status_payload() -> dict:
         "command_transport": {
             "mode": "long_poll",
             "max_wait_seconds": COMMAND_LONG_POLL_MAX_SECONDS,
+            "max_delivery_attempts": COMMAND_MAX_DELIVERY_ATTEMPTS,
+            "duplicate_guard": "agent_receipt_cache",
         },
     }
     if database_error:
@@ -6122,28 +6257,29 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             if not command:
                 self.send_json({"error": "command not found"}, HTTPStatus.NOT_FOUND)
                 return
-            audit_event(
-                str(command.get("owner_id") or payload.get("owner_id") or "device"),
-                "device_command_result",
-                command_audit_detail(
-                    "completed",
-                    str(command.get("type") or ""),
-                    str(command.get("device_id") or payload.get("device_id") or ""),
-                    str(command.get("command_id") or payload.get("command_id") or ""),
-                    command.get("payload") or {},
-                    str(command.get("result") or ""),
-                    str(command.get("status") or ""),
-                ),
-                {
-                    "owner_id": command.get("owner_id"),
-                    "device_id": command.get("device_id"),
-                    "command_id": command.get("command_id"),
-                    "type": command.get("type"),
-                    "status": command.get("status"),
-                    "result": command.get("result", ""),
-                },
-                notify=False,
-            )
+            if not command.get("duplicate_completion"):
+                audit_event(
+                    str(command.get("owner_id") or payload.get("owner_id") or "device"),
+                    "device_command_result",
+                    command_audit_detail(
+                        "completed",
+                        str(command.get("type") or ""),
+                        str(command.get("device_id") or payload.get("device_id") or ""),
+                        str(command.get("command_id") or payload.get("command_id") or ""),
+                        command.get("payload") or {},
+                        str(command.get("result") or ""),
+                        str(command.get("status") or ""),
+                    ),
+                    {
+                        "owner_id": command.get("owner_id"),
+                        "device_id": command.get("device_id"),
+                        "command_id": command.get("command_id"),
+                        "type": command.get("type"),
+                        "status": command.get("status"),
+                        "result": command.get("result", ""),
+                    },
+                    notify=False,
+                )
         except (json.JSONDecodeError, ValueError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return

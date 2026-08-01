@@ -175,9 +175,42 @@ public class HeartbeatService extends Service {
             if (command == null) {
                 break;
             }
-            status.append(handleCommand(command));
+            CommandReceiptStore.Receipt replay = CommandReceiptStore.find(this, command.commandId);
+            if (replay != null) {
+                DeviceApiClient.completeCommand(this, command, replay.status, replay.result);
+                SharedPreferences prefs = AgentConfig.prefs(this);
+                prefs.edit()
+                        .putInt(
+                                AgentConfig.KEY_COMMAND_REPLAYS_PREVENTED,
+                                prefs.getInt(AgentConfig.KEY_COMMAND_REPLAYS_PREVENTED, 0) + 1
+                        )
+                        .apply();
+                status.append("\nDuplicate command replay prevented: ").append(command.type);
+                continue;
+            }
+
+            CommandReceiptStore.markStarted(this, command.commandId);
+            try {
+                status.append(handleCommand(command));
+            } catch (Exception exc) {
+                CommandReceiptStore.Receipt saved = CommandReceiptStore.find(this, command.commandId);
+                String failure = "Command failed: " + safeErrorMessage(exc);
+                if (saved != null && saved.completed) {
+                    DeviceApiClient.completeCommand(this, command, saved.status, saved.result);
+                    status.append("\nCommand completion retried: ").append(command.type);
+                } else {
+                    CommandReceiptStore.complete(this, command.commandId, "failed", failure);
+                    DeviceApiClient.completeCommand(this, command, "failed", failure);
+                    status.append("\n").append(failure);
+                }
+            }
         }
         return status.toString();
+    }
+
+    private String safeErrorMessage(Exception exc) {
+        String message = exc == null ? "unknown error" : String.valueOf(exc.getMessage());
+        return message.length() <= 300 ? message : message.substring(0, 300);
     }
 
     private String handleCommand(DeviceApiClient.RemoteCommand command) throws Exception {
@@ -325,6 +358,7 @@ public class HeartbeatService extends Service {
                 .edit()
                 .putLong(AgentConfig.KEY_LAST_COMMAND_MS, System.currentTimeMillis() - started)
                 .apply();
+        CommandReceiptStore.complete(this, command.commandId, status, result);
         DeviceApiClient.completeCommand(this, command, status, result);
         return "\nCommand: " + command.type + "\n" + result;
     }

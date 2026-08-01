@@ -80,12 +80,14 @@ MINI_APP_URL=https://твой-проект.up.railway.app
 DEVICE_API_TOKEN=сложный_секрет_для_агента
 DEVICE_TTL_SECONDS=90
 COMMAND_LONG_POLL_MAX_SECONDS=10
+COMMAND_MAX_DELIVERY_ATTEMPTS=5
 PAIRING_TTL_SECONDS=600
 MAX_IMAGE_SIZE_MB=20
 STORAGE_DIR=storage
 ```
 
 `PORT` Railway задаёт сам. Приложение слушает `0.0.0.0:$PORT`.
+Сервер использует ограниченные delivery lease, а PC/Android Agent сохраняют локальные receipt-команды и блокируют повторное выполнение после сетевого обрыва.
 Для постоянного хранения устройств после redeploy лучше подключить Railway Volume и указать `STORAGE_DIR` на путь volume.
 Основные данные хранятся в SQLite базе `DB_PATH`, по умолчанию `storage/app.db`.
 

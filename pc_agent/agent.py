@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
+import zipfile
 from pathlib import Path
 from urllib import error, parse, request
 
@@ -27,12 +28,16 @@ except ImportError:  # The agent still provides heartbeat diagnostics without sc
 
 
 APP_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "HunterPCAgent"
+AGENT_VERSION = "0.4.0"
 CONFIG_PATH = APP_DIR / "config.json"
 CONFIG_BACKUP_PATH = APP_DIR / "config.backup.json"
+COMMAND_RECEIPTS_PATH = APP_DIR / "command_receipts.json"
 LOG_PATH = APP_DIR / "agent.log"
+WATCHDOG_LOG_PATH = APP_DIR / "watchdog.log"
 INSTALLED_EXECUTABLE_PATH = APP_DIR / "hunter-pc-agent.exe"
 BACKUP_EXECUTABLE_PATH = APP_DIR / "hunter-pc-agent.backup.exe"
 PENDING_EXECUTABLE_PATH = APP_DIR / "hunter-pc-agent.update.exe"
+STARTUP_SENTINEL_PATH = APP_DIR / "startup.enabled"
 STARTUP_SCRIPT_NAME = "Hunter ADB Bridge.cmd"
 API_TIMEOUT_SECONDS = float(os.getenv("HUNTER_PC_API_TIMEOUT", "12"))
 API_RETRY_ATTEMPTS = max(1, int(os.getenv("HUNTER_PC_API_RETRIES", "3")))
@@ -42,6 +47,8 @@ DEFAULT_POLL_INTERVAL_SECONDS = max(2, int(os.getenv("HUNTER_PC_POLL_INTERVAL", 
 HEARTBEAT_INTERVAL_SECONDS = max(10, int(os.getenv("HUNTER_PC_HEARTBEAT_INTERVAL", "15")))
 INSTALL_REPAIR_INTERVAL_SECONDS = max(60, int(os.getenv("HUNTER_PC_REPAIR_INTERVAL", "300")))
 COMMAND_LONG_POLL_SECONDS = max(0, min(10, int(os.getenv("HUNTER_PC_COMMAND_WAIT", "6"))))
+COMMAND_RECEIPT_LIMIT = max(32, min(1000, int(os.getenv("HUNTER_PC_COMMAND_RECEIPTS", "256"))))
+COMMAND_RECEIPT_TTL_SECONDS = max(3600, int(os.getenv("HUNTER_PC_COMMAND_RECEIPT_TTL", "604800")))
 ADB_INFO_CACHE: dict[str, dict] = {}
 ADB_PREPARED: set[str] = set()
 AGENT_METRICS = {
@@ -58,6 +65,8 @@ AGENT_METRICS = {
     "consecutive_errors": 0,
     "poll_interval_seconds": DEFAULT_POLL_INTERVAL_SECONDS,
     "commands_handled": 0,
+    "command_replays_prevented": 0,
+    "command_receipt_cache_size": 0,
     "last_error": "",
     "screen_quality": "balanced",
 }
@@ -292,6 +301,79 @@ def save_config(config: dict) -> None:
     write_bytes_atomic(CONFIG_BACKUP_PATH, content)
 
 
+def load_command_receipts(now: int | None = None) -> dict[str, dict]:
+    current = int(time.time()) if now is None else int(now)
+    try:
+        payload = json.loads(COMMAND_RECEIPTS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    receipts: dict[str, dict] = {}
+    for command_id, receipt in payload.items():
+        if not isinstance(command_id, str) or not command_id or not isinstance(receipt, dict):
+            continue
+        try:
+            completed_at = int(receipt.get("completed_at") or 0)
+        except (TypeError, ValueError):
+            continue
+        if completed_at and current - completed_at > COMMAND_RECEIPT_TTL_SECONDS:
+            continue
+        completed = receipt.get("state") == "completed"
+        receipts[command_id[:200]] = {
+            "state": "completed" if completed else "executing",
+            "status": str(receipt.get("status") or "failed")[:32] if completed else "failed",
+            "result": str(receipt.get("result") or "")[:500]
+            if completed
+            else "Command replay blocked after an interrupted execution.",
+            "completed_at": completed_at or current,
+        }
+    return dict(
+        sorted(receipts.items(), key=lambda item: int(item[1].get("completed_at") or 0), reverse=True)[
+            :COMMAND_RECEIPT_LIMIT
+        ]
+    )
+
+
+def command_receipt(command_id: str) -> dict | None:
+    receipts = load_command_receipts()
+    AGENT_METRICS["command_receipt_cache_size"] = len(receipts)
+    return receipts.get(str(command_id))
+
+
+def save_command_receipt(command_id: str, status: str, result: str, state: str) -> None:
+    safe_command_id = str(command_id).strip()[:200]
+    if not safe_command_id:
+        raise ValueError("command_id is required")
+    receipts = load_command_receipts()
+    receipts[safe_command_id] = {
+        "state": "completed" if state == "completed" else "executing",
+        "status": str(status or "failed")[:32],
+        "result": str(result or "")[:500],
+        "completed_at": int(time.time()),
+    }
+    receipts = dict(
+        sorted(receipts.items(), key=lambda item: int(item[1].get("completed_at") or 0), reverse=True)[
+            :COMMAND_RECEIPT_LIMIT
+        ]
+    )
+    write_bytes_atomic(
+        COMMAND_RECEIPTS_PATH,
+        json.dumps(receipts, ensure_ascii=False, indent=2).encode("utf-8"),
+    )
+    AGENT_METRICS["command_receipt_cache_size"] = len(receipts)
+
+
+def begin_command_receipt(command_id: str) -> None:
+    save_command_receipt(
+        command_id,
+        "failed",
+        "Command replay blocked after an interrupted execution.",
+        "executing",
+    )
+
+
 def api_request(
     method: str,
     url: str,
@@ -303,7 +385,7 @@ def api_request(
     body = json.dumps(payload or {}).encode("utf-8") if payload is not None else None
     headers = {
         "Content-Type": "application/json; charset=utf-8",
-        "User-Agent": "hunter-pc-agent",
+        "User-Agent": f"hunter-pc-agent/{AGENT_VERSION}",
     }
     if secret:
         headers["X-Device-Secret"] = secret
@@ -685,17 +767,43 @@ def adb_bridge_tick(config: dict) -> None:
             command = adb_next_command(config, device_id)
             if not command:
                 break
+            command_id = str(command.get("command_id") or "")
+            receipt = command_receipt(command_id)
+            if receipt:
+                AGENT_METRICS["command_replays_prevented"] += 1
+                LOGGER.warning(
+                    "Duplicate ADB command replay prevented: command_id=%s device_id=%s",
+                    command_id,
+                    device_id,
+                )
+                adb_complete_command(
+                    config,
+                    device_id,
+                    command,
+                    str(receipt.get("status") or "failed"),
+                    str(receipt.get("result") or "Command replay blocked."),
+                )
+                continue
+            try:
+                begin_command_receipt(command_id)
+            except Exception:
+                LOGGER.exception("Unable to persist ADB command start receipt: command_id=%s", command_id)
             started = time.perf_counter()
             try:
                 result = adb_handle_command(config, serial, device_id, command)
-                AGENT_METRICS["last_command_ms"] = round((time.perf_counter() - started) * 1000)
+                status = "acknowledged"
                 AGENT_METRICS["commands_handled"] += 1
                 AGENT_METRICS["last_error"] = ""
-                adb_complete_command(config, device_id, command, "acknowledged", result)
             except Exception as exc:
-                AGENT_METRICS["last_command_ms"] = round((time.perf_counter() - started) * 1000)
-                AGENT_METRICS["last_error"] = str(exc)[:160]
-                adb_complete_command(config, device_id, command, "failed", str(exc))
+                result = str(exc)
+                status = "failed"
+                AGENT_METRICS["last_error"] = result[:160]
+            AGENT_METRICS["last_command_ms"] = round((time.perf_counter() - started) * 1000)
+            try:
+                save_command_receipt(command_id, status, result, "completed")
+            except Exception:
+                LOGGER.exception("Unable to persist ADB command completion receipt: command_id=%s", command_id)
+            adb_complete_command(config, device_id, command, status, result)
 
 
 def file_digest(path: Path) -> str:
@@ -775,9 +883,12 @@ def startup_script_content(command: str, include_recovery: bool) -> str:
         "setlocal",
         "chcp 65001 >nul",
         f'set "HUNTER_DIR={APP_DIR}"',
-        f'set "HUNTER_LOG={LOG_PATH}"',
+        f'set "HUNTER_LOG={WATCHDOG_LOG_PATH}"',
+        f'set "HUNTER_SENTINEL={STARTUP_SENTINEL_PATH}"',
         'if not exist "%HUNTER_DIR%" mkdir "%HUNTER_DIR%"',
         'cd /d "%HUNTER_DIR%"',
+        ":watchdog",
+        'if not exist "%HUNTER_SENTINEL%" exit /b 0',
     ]
     if include_recovery:
         lines.extend([
@@ -789,8 +900,13 @@ def startup_script_content(command: str, include_recovery: bool) -> str:
         ])
     lines.extend([
         'echo [%date% %time%] starting Hunter PC Agent >> "%HUNTER_LOG%"',
-        f'{command} >> "%HUNTER_LOG%" 2>&1',
-        'echo [%date% %time%] Hunter PC Agent stopped with %ERRORLEVEL% >> "%HUNTER_LOG%"',
+        f'{command} >nul 2>&1',
+        'set "HUNTER_EXIT=%ERRORLEVEL%"',
+        'echo [%date% %time%] Hunter PC Agent stopped with %HUNTER_EXIT% >> "%HUNTER_LOG%"',
+        'if not exist "%HUNTER_SENTINEL%" exit /b 0',
+        'echo [%date% %time%] restarting Hunter PC Agent in 5 seconds >> "%HUNTER_LOG%"',
+        "timeout /t 5 /nobreak >nul",
+        "goto watchdog",
         "endlocal",
         "",
     ])
@@ -816,6 +932,7 @@ def install_startup(
         startup_script_content(command, include_recovery=installed_executable is not None),
         encoding="utf-8-sig",
     )
+    write_bytes_atomic(STARTUP_SENTINEL_PATH, b"enabled\n")
     active_config = config if config is not None else load_config()
     active_config["startup"] = {
         "enabled": True,
@@ -830,15 +947,17 @@ def install_startup(
 
 def uninstall_startup(config: dict | None = None) -> bool:
     script_path = windows_startup_dir() / STARTUP_SCRIPT_NAME
-    removed = script_path.exists()
-    if removed:
+    script_removed = script_path.exists()
+    if script_removed:
         script_path.unlink()
         LOGGER.info("Startup removed from %s", script_path)
+    sentinel_removed = STARTUP_SENTINEL_PATH.exists()
+    STARTUP_SENTINEL_PATH.unlink(missing_ok=True)
     active_config = config if config is not None else load_config()
     startup = active_config.get("startup") if isinstance(active_config.get("startup"), dict) else {}
     active_config["startup"] = {**startup, "enabled": False}
     save_config(active_config)
-    return removed
+    return script_removed or sentinel_removed
 
 
 def startup_installed() -> bool:
@@ -846,7 +965,7 @@ def startup_installed() -> bool:
         script_exists = (windows_startup_dir() / STARTUP_SCRIPT_NAME).exists()
     except RuntimeError:
         return False
-    if not script_exists:
+    if not script_exists or not STARTUP_SENTINEL_PATH.exists():
         return False
     if not getattr(sys, "frozen", False):
         return True
@@ -1045,6 +1164,26 @@ def pc_command_tick(config: dict) -> None:
         command = pc_next_command(config, wait_seconds=COMMAND_LONG_POLL_SECONDS if index == 0 else 0)
         if not command:
             return
+        command_id = str(command.get("command_id") or "")
+        receipt = command_receipt(command_id)
+        if receipt:
+            AGENT_METRICS["command_replays_prevented"] += 1
+            LOGGER.warning(
+                "Duplicate command replay prevented: command_id=%s state=%s",
+                command_id,
+                receipt.get("state"),
+            )
+            pc_complete_command(
+                config,
+                command,
+                str(receipt.get("status") or "failed"),
+                str(receipt.get("result") or "Command replay blocked."),
+            )
+            continue
+        try:
+            begin_command_receipt(command_id)
+        except Exception:
+            LOGGER.exception("Unable to persist command start receipt: command_id=%s", command_id)
         started = time.perf_counter()
         try:
             result = pc_handle_command(config, command)
@@ -1059,6 +1198,10 @@ def pc_command_tick(config: dict) -> None:
             status = "failed"
             AGENT_METRICS["last_error"] = result[:160]
         AGENT_METRICS["last_command_ms"] = round((time.perf_counter() - started) * 1000)
+        try:
+            save_command_receipt(command_id, status, result, "completed")
+        except Exception:
+            LOGGER.exception("Unable to persist command completion receipt: command_id=%s", command_id)
         pc_complete_command(config, command, status, result)
 
 
@@ -1073,6 +1216,7 @@ def heartbeat(config: dict) -> None:
         "agent": "pc-agent",
         "telemetry": {
             "hostname": socket.gethostname(),
+            "agent_version": AGENT_VERSION,
             "python": platform.python_version(),
             "machine": platform.machine(),
             "agent_enabled": True,
@@ -1099,10 +1243,13 @@ def heartbeat(config: dict) -> None:
             "network_failures_total": AGENT_METRICS["network_failures_total"],
             "consecutive_errors": AGENT_METRICS["consecutive_errors"],
             "commands_handled": AGENT_METRICS["commands_handled"],
+            "command_replays_prevented": AGENT_METRICS["command_replays_prevented"],
+            "command_receipt_cache_size": AGENT_METRICS["command_receipt_cache_size"],
             "screen_quality": AGENT_METRICS["screen_quality"],
             "last_error": AGENT_METRICS["last_error"],
             "log_path": str(LOG_PATH),
             "startup_installed": startup_installed(),
+            "watchdog_enabled": STARTUP_SENTINEL_PATH.exists(),
             "recovery_copy": BACKUP_EXECUTABLE_PATH.exists(),
             "poll_interval_seconds": AGENT_METRICS["poll_interval_seconds"],
             "heartbeat_interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
@@ -1204,6 +1351,7 @@ def print_doctor(adb_enabled: bool) -> bool:
     paired = bool(config.get("server_url") and config.get("owner_id") and config.get("device_secret"))
     print("Pairing:", "ok" if paired else "not paired")
     print("Startup:", "installed" if startup_installed() else "not installed")
+    print("Watchdog:", "enabled" if STARTUP_SENTINEL_PATH.exists() else "disabled")
     if getattr(sys, "frozen", False):
         print("Installed executable:", "ok" if INSTALLED_EXECUTABLE_PATH.exists() else "missing")
         print("Recovery executable:", "ok" if BACKUP_EXECUTABLE_PATH.exists() else "missing")
@@ -1217,6 +1365,67 @@ def print_doctor(adb_enabled: bool) -> bool:
     for line in lines:
         print(line)
     return paired and ok
+
+
+def redact_support_value(value, key: str = ""):
+    if any(marker in key.lower() for marker in ("secret", "token", "password", "pin")):
+        return "***redacted***" if value else ""
+    if isinstance(value, dict):
+        return {str(item_key): redact_support_value(item_value, str(item_key)) for item_key, item_value in value.items()}
+    if isinstance(value, list):
+        return [redact_support_value(item) for item in value]
+    return value
+
+
+def support_bundle_summary(config: dict) -> dict:
+    receipts = load_command_receipts()
+    receipt_summary = [
+        {
+            "command_hash": hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:12],
+            "state": receipt.get("state"),
+            "status": receipt.get("status"),
+            "completed_at": receipt.get("completed_at"),
+        }
+        for command_id, receipt in list(receipts.items())[:50]
+    ]
+    return {
+        "created_at": int(time.time()),
+        "agent_version": AGENT_VERSION,
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "paired": bool(config.get("server_url") and config.get("owner_id") and config.get("device_secret")),
+        "startup_installed": startup_installed(),
+        "watchdog_enabled": STARTUP_SENTINEL_PATH.exists(),
+        "installed_executable": INSTALLED_EXECUTABLE_PATH.exists(),
+        "recovery_executable": BACKUP_EXECUTABLE_PATH.exists(),
+        "pending_update": PENDING_EXECUTABLE_PATH.exists(),
+        "metrics": dict(AGENT_METRICS),
+        "config": redact_support_value(config),
+        "receipt_count": len(receipts),
+        "receipts": receipt_summary,
+    }
+
+
+def build_support_bundle(output_path: str = "") -> Path:
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    target = Path(output_path).expanduser() if output_path else APP_DIR / f"hunter-support-{time.strftime('%Y%m%d-%H%M%S')}.zip"
+    protected_paths = {
+        path.resolve()
+        for path in (CONFIG_PATH, CONFIG_BACKUP_PATH, COMMAND_RECEIPTS_PATH, LOG_PATH, WATCHDOG_LOG_PATH)
+    }
+    if target.resolve() in protected_paths:
+        raise ValueError("support bundle output must not overwrite agent data or logs")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    summary = support_bundle_summary(load_config())
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("summary.json", json.dumps(summary, ensure_ascii=False, indent=2))
+        log_paths = [LOG_PATH, WATCHDOG_LOG_PATH, *sorted(APP_DIR.glob(f"{LOG_PATH.name}.*"))]
+        for log_path in log_paths:
+            if log_path.exists() and log_path.is_file():
+                archive.write(log_path, f"logs/{log_path.name}")
+    LOGGER.info("Support bundle created at %s", target)
+    return target
 
 
 def main() -> int:
@@ -1243,6 +1452,9 @@ def main() -> int:
 
     doctor_parser = subparsers.add_parser("doctor", help="Check pairing, installation and ADB readiness")
     doctor_parser.add_argument("--adb", action="store_true", help="Check Android Debug Bridge too")
+
+    support_parser = subparsers.add_parser("support-bundle", help="Create a redacted ZIP with diagnostics and logs")
+    support_parser.add_argument("--output", default="", help="Optional output ZIP path")
 
     startup_parser = subparsers.add_parser("startup", help="Install or remove Windows startup")
     startup_subparsers = startup_parser.add_subparsers(dest="startup_command")
@@ -1288,6 +1500,10 @@ def main() -> int:
 
     if args.command == "doctor":
         return 0 if print_doctor(args.adb) else 2
+
+    if args.command == "support-bundle":
+        print(build_support_bundle(args.output))
+        return 0
 
     if args.command == "startup":
         if args.startup_command == "install":
