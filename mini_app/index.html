@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Hunter Agent</title>
     <meta name="theme-color" content="#0b2334">
-    <link rel="manifest" href="./manifest.webmanifest?v=16">
-    <link rel="stylesheet" href="./styles.css?v=16">
+    <link rel="manifest" href="./manifest.webmanifest?v=17">
+    <link rel="stylesheet" href="./styles.css?v=17">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -48,6 +48,25 @@
         </div>
       </section>
 
+      <section class="fleet-pulse-card" id="fleetPulseCard" data-state="empty" aria-labelledby="fleetPulseTitle">
+        <div class="fleet-pulse-score" id="fleetPulseGauge" role="img" aria-label="Качество связи пока не определено">
+          <span id="fleetPulseScore">—</span>
+          <small>Smart Link</small>
+        </div>
+        <div class="fleet-pulse-copy">
+          <p class="eyebrow">Fleet Pulse</p>
+          <h2 id="fleetPulseTitle">Подключаем центр управления</h2>
+          <p id="fleetPulseDetail" aria-live="polite">Собираю качество связи, защиту команд и готовность самовосстановления.</p>
+          <div class="fleet-pulse-facts" aria-label="Ключевые показатели стабильности">
+            <span><i aria-hidden="true"></i><strong id="fleetPulseOnline">0 / 0</strong> online</span>
+            <span><i aria-hidden="true"></i><strong id="fleetPulseAttention">0</strong> требуют внимания</span>
+            <span><i aria-hidden="true"></i><strong id="fleetPulseRecovery">—</strong> recovery</span>
+            <span><i aria-hidden="true"></i><strong id="fleetPulseReplay">0</strong> дублей блокировано</span>
+          </div>
+        </div>
+        <button class="secondary-button fleet-pulse-action" id="fleetPulseAction" type="button">Подключить устройство</button>
+      </section>
+
       <section class="trust-strip" aria-label="Безопасность подключения">
         <span class="trust-icon" aria-hidden="true">✓</span>
         <div>
@@ -61,17 +80,17 @@
           <div><p class="eyebrow">Trust Timeline</p><h2>Что происходит сейчас</h2></div>
           <div class="timeline-head-actions">
             <span class="timeline-integrity" id="timelineIntegrity">Проверяю журнал</span>
-            <button class="ghost-button neutral" id="timelineRefreshButton" type="button">Обновить</button>
+            <button class="ghost-button neutral" id="timelineRefreshButton" type="button" aria-label="Обновить ленту событий" title="Обновить ленту событий">Обновить</button>
           </div>
         </div>
         <div class="timeline-list" id="timelineList"><p class="hint">Загружаю последние события…</p></div>
       </section>
 
       <nav class="quick-nav" aria-label="Основные разделы">
-        <a class="active" href="#overview"><span>Обзор</span><small>Статус</small></a>
-        <a href="#devices"><span>Устройства</span><small>Список</small></a>
-        <a href="#remotePanel"><span>Пульт</span><small>Управление</small></a>
-        <a href="#setupPanel"><span>Подключение</span><small>Agent / Browser</small></a>
+        <a class="active" href="#overview"><b aria-hidden="true">⌂</b><span>Обзор</span><small>Статус</small></a>
+        <a href="#devices"><b aria-hidden="true">▦</b><span>Устройства</span><small>Список</small></a>
+        <a href="#remotePanel"><b aria-hidden="true">⌁</b><span>Пульт</span><small>Управление</small></a>
+        <a href="#setupPanel"><b aria-hidden="true">＋</b><span>Подключить</span><small>Agent / Browser</small></a>
       </nav>
 
       <section class="setup-panel" id="setupPanel" aria-label="Подключение телефона">
@@ -518,11 +537,11 @@
       </section>
     </div>
 
-    <script src="./app.js?v=16"></script>
+    <script src="./app.js?v=17"></script>
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', async () => {
-          const registration = await navigator.serviceWorker.register('./service-worker.js?v=16');
+          const registration = await navigator.serviceWorker.register('./service-worker.js?v=17');
           registration.update?.();
           if (registration.waiting) registration.waiting.postMessage({ type: 'SKIP_WAITING' });
         });

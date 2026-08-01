@@ -150,7 +150,7 @@ def request_rate_allowed(client_id: str, method: str, now: float | None = None) 
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
 APP_STARTED_AT = time.time()
-PWA_CACHE_VERSION = "hunter-control-v16"
+PWA_CACHE_VERSION = "hunter-control-v17"
 DEVICE_COMMAND_CONDITION = threading.Condition()
 BOT_POLLING_READY = False
 BOT_POLLING_STATUS = "starting"
@@ -2122,7 +2122,7 @@ def mini_app_url_for_user(user_id: str | int | None = None) -> str:
     separator = "&" if "?" in MINI_APP_URL else "?"
     return (
         f"{MINI_APP_URL}{separator}"
-        f"v=16&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
+        f"v=17&owner_id={quote(clean_user_id, safe='')}&web_token={quote(token, safe='')}"
     )
 
 

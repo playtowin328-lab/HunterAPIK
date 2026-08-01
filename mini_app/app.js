@@ -3,7 +3,7 @@ const tg = window.Telegram?.WebApp;
 if (tg) {
   tg.ready();
   tg.expand();
-  tg.disableVerticalSwipes?.();
+  if (tg.isVersionAtLeast?.("7.7")) tg.disableVerticalSwipes?.();
 }
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -34,6 +34,17 @@ const setupText = $("#setupText");
 const fleetLiveStatus = $("#fleetLiveStatus");
 const fleetAttentionStatus = $("#fleetAttentionStatus");
 const localClock = $("#localClock");
+const fleetPulseCard = $("#fleetPulseCard");
+const fleetPulseGauge = $("#fleetPulseGauge");
+const fleetPulseScore = $("#fleetPulseScore");
+const fleetPulseTitle = $("#fleetPulseTitle");
+const fleetPulseDetail = $("#fleetPulseDetail");
+const fleetPulseOnline = $("#fleetPulseOnline");
+const fleetPulseAttention = $("#fleetPulseAttention");
+const fleetPulseRecovery = $("#fleetPulseRecovery");
+const fleetPulseReplay = $("#fleetPulseReplay");
+const fleetPulseAction = $("#fleetPulseAction");
+const quickNavLinks = $$(".quick-nav a");
 const installAgentButton = $("#installAgentButton");
 const openInstalledAgentButton = $("#openInstalledAgentButton");
 const openDesktopAppButton = $("#openDesktopAppButton");
@@ -317,7 +328,11 @@ function companionFeatures() {
 function renderCompanionCapabilities() {
   if (!companionCapabilities) return;
   companionCapabilities.innerHTML = companionFeatures()
-    .map((feature) => `<span data-ready="${feature.ready}"><i></i>${feature.label}<strong>${feature.ready ? "готово" : "нет"}</strong></span>`)
+    .map((feature) => {
+      const ready = typeof feature.ready === "boolean" ? feature.ready : feature.status === "ready";
+      const label = feature.label || feature.title || "Возможность";
+      return `<span data-ready="${ready}"><i></i>${escapeHtml(label)}<strong>${ready ? "готово" : "нужно действие"}</strong></span>`;
+    })
     .join("");
   companionScreenButton.disabled = !window.isSecureContext || !navigator.mediaDevices?.getDisplayMedia;
   companionCameraButton.disabled = !window.isSecureContext || !navigator.mediaDevices?.getUserMedia;
@@ -407,6 +422,13 @@ function renderFleetPulse(onlineCount) {
     ? Math.round(devices.reduce((total, device) => total + deviceConnectionQuality(device).score, 0) / devices.length)
     : 0;
   const fleetReady = allOnline && attentionCount === 0;
+  const pcDevices = devices.filter((device) => device.type === "pc" || /windows|pc/i.test(`${device.platform || ""} ${device.agent || ""}`));
+  const recoveryReadyCount = pcDevices.filter((device) => {
+    const telemetry = device.telemetry || {};
+    return telemetry.startup_installed === true && telemetry.watchdog_enabled === true && telemetry.recovery_copy === true;
+  }).length;
+  const replayCount = devices.reduce((total, device) => total + Math.max(0, Number(device.telemetry?.command_replays_prevented || 0)), 0);
+  const fleetState = !devices.length ? "empty" : (!onlineCount ? "critical" : (fleetReady && fleetQuality >= 85 ? "stable" : "attention"));
 
   document.documentElement.dataset.fleet = !devices.length ? "empty" : (fleetReady ? "ready" : "attention");
   if (fleetLiveStatus) {
@@ -418,6 +440,53 @@ function renderFleetPulse(onlineCount) {
       ? `Внимание: ${attentionCount}`
       : (devices.length ? "Система стабильна" : "Добавьте первое устройство");
   }
+
+  if (!fleetPulseCard) return;
+  fleetPulseCard.dataset.state = fleetState;
+  fleetPulseCard.style.setProperty("--pulse-angle", `${fleetQuality * 3.6}deg`);
+  fleetPulseScore.textContent = devices.length ? `${fleetQuality}%` : "—";
+  fleetPulseGauge.setAttribute("aria-label", devices.length ? `Среднее качество связи ${fleetQuality} процентов` : "Качество связи пока не определено");
+  fleetPulseOnline.textContent = `${onlineCount} / ${devices.length}`;
+  fleetPulseAttention.textContent = String(attentionCount);
+  fleetPulseRecovery.textContent = pcDevices.length ? `${recoveryReadyCount} / ${pcDevices.length}` : "нет ПК";
+  fleetPulseReplay.textContent = String(replayCount);
+
+  if (!devices.length) {
+    fleetPulseTitle.textContent = "Подключите первое устройство";
+    fleetPulseDetail.textContent = "Android и Windows Agent появятся здесь сразу после безопасной привязки.";
+    fleetPulseAction.textContent = "Подключить устройство";
+    fleetPulseAction.dataset.action = "connect";
+    delete fleetPulseAction.dataset.deviceId;
+    return;
+  }
+
+  if (fleetState === "stable") {
+    const recoveryText = pcDevices.length ? ` Самовосстановление ПК готово на ${recoveryReadyCount} из ${pcDevices.length}.` : "";
+    fleetPulseTitle.textContent = "Связь стабильна";
+    fleetPulseDetail.textContent = `Все устройства отвечают, средний Smart Link — ${fleetQuality}%.${recoveryText}`;
+    fleetPulseAction.textContent = "Проверить сейчас";
+    fleetPulseAction.dataset.action = "refresh";
+    delete fleetPulseAction.dataset.deviceId;
+    return;
+  }
+
+  const targetDevice = devices
+    .filter((device) => needsAttention(device) || deviceConnectionQuality(device).score < 85)
+    .sort((left, right) => deviceConnectionQuality(left).score - deviceConnectionQuality(right).score)[0] || devices[0];
+  fleetPulseTitle.textContent = fleetState === "critical" ? "Устройства не отвечают" : "Связь можно усилить";
+  fleetPulseDetail.textContent = `${attentionCount || 1} ${attentionCount === 1 ? "устройство требует" : "устройств требуют"} внимания. Самый слабый канал: ${targetDevice.name}, ${deviceConnectionQuality(targetDevice).score}%.`;
+  fleetPulseAction.textContent = "Открыть диагностику";
+  fleetPulseAction.dataset.action = "diagnose";
+  fleetPulseAction.dataset.deviceId = targetDevice.device_id;
+}
+
+function setInterfaceLoading(loading) {
+  document.documentElement.classList.toggle("app-loading", loading);
+  document.querySelector(".app-shell")?.setAttribute("aria-busy", String(loading));
+  if (!refreshButton) return;
+  refreshButton.disabled = loading;
+  refreshButton.classList.toggle("is-loading", loading);
+  refreshButton.textContent = loading ? "Обновляю" : "Обновить";
 }
 
 function needsAttention(device) {
@@ -2546,6 +2615,7 @@ function renderCurrentDevice() {
 async function refreshDevices() {
   if (refreshInFlight) return;
   refreshInFlight = true;
+  const loadingTimer = setTimeout(() => setInterfaceLoading(true), 180);
   try {
     await loadDevicesFromApi();
     render();
@@ -2561,6 +2631,8 @@ async function refreshDevices() {
     }
     setupText.textContent = `Связь с API: ${error.message}. ${authHint}`;
   } finally {
+    clearTimeout(loadingTimer);
+    setInterfaceLoading(false);
     refreshInFlight = false;
   }
 }
@@ -2842,6 +2914,25 @@ refreshButton.addEventListener("click", async () => {
   await Promise.all(tasks);
 });
 
+fleetPulseAction?.addEventListener("click", async () => {
+  const action = fleetPulseAction.dataset.action;
+  if (action === "connect") {
+    document.querySelector("#setupPanel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  if (action === "refresh") {
+    setupText.textContent = "Проверяю связь со всеми устройствами...";
+    await refreshDevices();
+    return;
+  }
+  const device = devices.find((item) => item.device_id === fleetPulseAction.dataset.deviceId);
+  if (!device) return;
+  selectDevice(device);
+  setRemoteTab("setup");
+  render();
+  requestAnimationFrame(() => remotePanel?.scrollIntoView({ behavior: "smooth", block: "start" }));
+});
+
 deployRefreshButton?.addEventListener("click", loadSetupStatus);
 deviceAlertRefreshButton?.addEventListener("click", loadDeviceAlerts);
 timelineRefreshButton?.addEventListener("click", loadTimeline);
@@ -2898,6 +2989,30 @@ function startRefreshLoop() {
   refreshTimer = setInterval(() => {
     if (!document.hidden) refreshDevices();
   }, 15000);
+}
+
+function setActiveQuickNav(activeLink) {
+  quickNavLinks.forEach((link) => {
+    const active = link === activeLink;
+    link.classList.toggle("active", active);
+    if (active) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  });
+}
+
+setActiveQuickNav(quickNavLinks.find((link) => link.classList.contains("active")) || quickNavLinks[0]);
+quickNavLinks.forEach((link) => link.addEventListener("click", () => setActiveQuickNav(link)));
+if ("IntersectionObserver" in window) {
+  const quickNavObserver = new IntersectionObserver((entries) => {
+    const visibleEntry = entries.find((entry) => entry.isIntersecting);
+    if (!visibleEntry) return;
+    const activeLink = quickNavLinks.find((link) => link.getAttribute("href") === `#${visibleEntry.target.id}`);
+    if (activeLink) setActiveQuickNav(activeLink);
+  }, { rootMargin: "-18% 0px -68%", threshold: 0 });
+  quickNavLinks.forEach((link) => {
+    const section = document.querySelector(link.getAttribute("href"));
+    if (section) quickNavObserver.observe(section);
+  });
 }
 
 document.addEventListener("visibilitychange", () => {
