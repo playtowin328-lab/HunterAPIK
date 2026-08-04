@@ -284,6 +284,7 @@ let activeDeviceFilter = localStorage.getItem("hunter_device_filter") || "all";
 let deviceSearchQuery = "";
 if (!["all", "online", "attention"].includes(activeDeviceFilter)) activeDeviceFilter = "all";
 const screenPollers = new Map();
+const latestScreenFrames = new Map();
 const pendingScreenRequests = new Set();
 const companionStreams = new Set();
 window.currentDeviceScope = "own";
@@ -953,6 +954,13 @@ function formatTelemetry(device) {
   if (typeof telemetry.battery_ready === "boolean") items.push(`фон: ${telemetry.battery_ready ? "on" : "off"}`);
   if (typeof telemetry.accessibility === "boolean") items.push(`жесты: ${telemetry.accessibility ? "on" : "off"}`);
   if (typeof telemetry.screen_streaming === "boolean") items.push(`экран: ${telemetry.screen_streaming ? "on" : "off"}`);
+  if (telemetry.screen_width && telemetry.screen_height) {
+    items.push(`screen: ${telemetry.screen_width}×${telemetry.screen_height} @ ${telemetry.screen_rotation || 0}°`);
+  }
+  if (typeof telemetry.screen_frame_sequence === "number") items.push(`frame seq: ${telemetry.screen_frame_sequence}`);
+  if (typeof telemetry.screen_display_changes === "number" && telemetry.screen_display_changes > 0) {
+    items.push(`display changes: ${telemetry.screen_display_changes}`);
+  }
   if (typeof telemetry.loop_ms === "number" && telemetry.loop_ms > 0) items.push(`agent: ${telemetry.loop_ms} ms`);
   if (typeof telemetry.command_ms === "number" && telemetry.command_ms > 0) items.push(`cmd: ${telemetry.command_ms} ms`);
   if (typeof telemetry.gesture_ms === "number" && telemetry.gesture_ms > 0) items.push(`gesture: ${telemetry.gesture_ms} ms`);
@@ -1190,6 +1198,16 @@ function primaryDeviceIssue(device) {
       detail: String(telemetry.screen_error).slice(0, 160),
       action: "screen",
       actionLabel: "Запустить экран",
+    };
+  }
+  if (telemetry.screen_streaming === true && Number(telemetry.screen_last_frame_age) > 6) {
+    return {
+      status: "warn",
+      label: "Экран",
+      title: "Поток экрана восстанавливается",
+      detail: `Последний кадр был ${Math.round(Number(telemetry.screen_last_frame_age))} сек назад. Пульт блокирует жесты по старой картинке и ждёт свежий frame.`,
+      action: "screen",
+      actionLabel: "Обновить поток",
     };
   }
   if (isPcDevice(device)) {
@@ -2234,6 +2252,7 @@ function stopScreenPolling(deviceId) {
   if (poller.requestTimer) clearInterval(poller.requestTimer);
   screenPollers.delete(deviceId);
   pendingScreenRequests.delete(deviceId);
+  latestScreenFrames.delete(deviceId);
 }
 
 function startScreenPolling(device, screenPreview, screenImage, controlNote) {
@@ -2242,10 +2261,14 @@ function startScreenPolling(device, screenPreview, screenImage, controlNote) {
   const loadFrame = async () => {
     try {
       const payload = await loadScreenFrame(device);
+      latestScreenFrames.set(device.device_id, payload.frame);
       screenImage.src = payload.frame.image_data;
       screenPreview.hidden = false;
       screenPreview.dataset.capture = payload.frame.black_frame ? "blocked" : "live";
       const frameAge = Math.max(0, Math.round(Date.now() / 1000 - payload.frame.updated_at));
+      const geometry = payload.frame.width && payload.frame.height
+        ? ` · ${payload.frame.width}×${payload.frame.height} · ${payload.frame.rotation || 0}°`
+        : "";
       if (payload.frame.black_frame) {
         const ratio = Math.round(Number(payload.frame.black_ratio || 0) * 100);
         controlNote.textContent = `Кадр почти черный (${ratio}%). Обычно это защищенное приложение/DRM/FLAG_SECURE: Android блокирует трансляцию. Можно нажать Домой или управлять жестами вслепую.`;
@@ -2253,7 +2276,7 @@ function startScreenPolling(device, screenPreview, screenImage, controlNote) {
       }
       controlNote.textContent = frameAge > 4
         ? `Кадр устарел на ${frameAge} сек. Проверь Agent, доступ к экрану и состояние устройства.`
-        : `Кадр обновлён: ${formatLastSeen(payload.frame.updated_at)}. Тапай по экрану для управления.`;
+        : `Кадр обновлён: ${formatLastSeen(payload.frame.updated_at)}${geometry}. Тапай по экрану для управления.`;
     } catch (error) {
       controlNote.textContent = `Жду кадр. ${error.message}`;
     }
@@ -2657,10 +2680,48 @@ function normalizedPoint(event, image) {
   };
 }
 
+function screenFrameAgeMs(frame) {
+  if (!frame) return Number.POSITIVE_INFINITY;
+  const timestamp = Number(frame.updated_at_ms || Number(frame.updated_at || 0) * 1000);
+  return timestamp > 0 ? Math.max(0, Date.now() - timestamp) : Number.POSITIVE_INFINITY;
+}
+
+function screenGeometryKey(frame) {
+  if (!frame) return "";
+  return [frame.frame_session_id || "", frame.width || 0, frame.height || 0, frame.rotation || 0].join(":");
+}
+
+function screenGesturePayload(device, payload) {
+  const frame = latestScreenFrames.get(device.device_id);
+  if (!frame) {
+    throw new Error("Жду первый кадр перед управлением.");
+  }
+  const ageMs = screenFrameAgeMs(frame);
+  if (ageMs > 5_000) {
+    throw new Error(`Кадр устарел на ${Math.ceil(ageMs / 1000)} сек. Жду свежую картинку перед жестом.`);
+  }
+  if (!frame.frame_session_id || !Number.isFinite(Number(frame.frame_sequence))) {
+    return payload;
+  }
+  return {
+    ...payload,
+    frame_session_id: frame.frame_session_id,
+    frame_sequence: Number(frame.frame_sequence),
+    frame_width: Number(frame.width || 0),
+    frame_height: Number(frame.height || 0),
+    frame_rotation: Number(frame.rotation || 0),
+  };
+}
+
 function bindScreenGestures(image, getDevice, note) {
   let pointerStart = null;
   image.addEventListener("pointerdown", (event) => {
-    pointerStart = normalizedPoint(event, image);
+    const device = getDevice();
+    const frame = device ? latestScreenFrames.get(device.device_id) : null;
+    pointerStart = {
+      point: normalizedPoint(event, image),
+      geometry: screenGeometryKey(frame),
+    };
     image.setPointerCapture?.(event.pointerId);
   });
   image.addEventListener("pointercancel", () => {
@@ -2673,20 +2734,26 @@ function bindScreenGestures(image, getDevice, note) {
       pointerStart = null;
       return;
     }
-    const start = pointerStart || normalizedPoint(event, image);
+    const activeFrame = latestScreenFrames.get(device.device_id);
+    if (pointerStart?.geometry && pointerStart.geometry !== screenGeometryKey(activeFrame)) {
+      note.textContent = "Экран изменился во время жеста. Новый кадр уже загружен — повтори действие.";
+      pointerStart = null;
+      return;
+    }
+    const start = pointerStart?.point || normalizedPoint(event, image);
     const end = normalizedPoint(event, image);
     const distance = Math.hypot(end.x - start.x, end.y - start.y);
     pointerStart = null;
     try {
       if (distance > 0.06) {
-        const payload = { x: start.x, y: start.y, end_x: end.x, end_y: end.y };
+        const payload = screenGesturePayload(device, { x: start.x, y: start.y, end_x: end.x, end_y: end.y });
         addRemoteLog("Свайп по экрану", commandLogDetail(device, "swipe", payload), "pending", { device });
         const result = await sendCommandAndWait(device, "swipe", payload);
         note.textContent = commandResultText(result, "Свайп выполнен.");
         addRemoteLog("Свайп по экрану", commandLogDetail(device, "swipe", payload, result), result?.command?.status === "rejected" ? "warn" : "done", { device, command_id: result?.command?.command_id });
         return;
       }
-      const payload = { x: end.x, y: end.y };
+      const payload = screenGesturePayload(device, { x: end.x, y: end.y });
       addRemoteLog("Тап по экрану", commandLogDetail(device, "tap", payload), "pending", { device });
       const result = await sendCommandAndWait(device, "tap", payload);
       note.textContent = commandResultText(result, `Тап: ${Math.round(end.x * 100)}%, ${Math.round(end.y * 100)}%.`);
@@ -2703,7 +2770,7 @@ function bindScreenGestures(image, getDevice, note) {
       return;
     }
     try {
-      const payload = normalizedPoint(event, image);
+      const payload = screenGesturePayload(device, normalizedPoint(event, image));
       addRemoteLog("Long tap по экрану", commandLogDetail(device, "long_tap", payload), "pending", { device });
       const result = await sendCommandAndWait(device, "long_tap", payload);
       note.textContent = commandResultText(result, "Long tap выполнен.");

@@ -484,6 +484,10 @@ public class HeartbeatService extends Service {
         if (command.x < 0 || command.y < 0) {
             return "Tap rejected. Coordinates are missing.";
         }
+        String frameProblem = validateGestureFrame(command, "Tap");
+        if (!frameProblem.isEmpty()) {
+            return frameProblem;
+        }
         return TouchControlService.tapNormalized(command.x, command.y) ? "Tap dispatched." : "Tap dispatch failed.";
     }
 
@@ -497,6 +501,10 @@ public class HeartbeatService extends Service {
         if (command.x < 0 || command.y < 0) {
             return "Long tap rejected. Coordinates are missing.";
         }
+        String frameProblem = validateGestureFrame(command, "Long tap");
+        if (!frameProblem.isEmpty()) {
+            return frameProblem;
+        }
         return TouchControlService.longTapNormalized(command.x, command.y) ? "Long tap dispatched." : "Long tap dispatch failed.";
     }
 
@@ -509,6 +517,10 @@ public class HeartbeatService extends Service {
         }
         if (command.x < 0 || command.y < 0 || command.endX < 0 || command.endY < 0) {
             return "Swipe rejected. Coordinates are missing.";
+        }
+        String frameProblem = validateGestureFrame(command, "Swipe");
+        if (!frameProblem.isEmpty()) {
+            return frameProblem;
         }
         return TouchControlService.swipeNormalized(command.x, command.y, command.endX, command.endY)
                 ? "Swipe dispatched."
@@ -534,6 +546,32 @@ public class HeartbeatService extends Service {
         AgentConfig.prefs(this).edit()
                 .putInt(AgentConfig.KEY_SCREEN_MAX_SIZE, command.maxSize)
                 .apply();
+        ScreenCaptureService.requestConfigurationRefresh(this);
+    }
+
+    private String validateGestureFrame(DeviceApiClient.RemoteCommand command, String action) {
+        if (command.frameSessionId == null || command.frameSessionId.isEmpty()) {
+            return "";
+        }
+        if (!ScreenCaptureService.isRunning()) {
+            return action + " rejected. The screen session ended; start a fresh preview first.";
+        }
+        if (!command.frameSessionId.equals(ScreenCaptureService.getSessionId(this))) {
+            return action + " rejected. Preview belongs to an older screen session; refresh it and retry.";
+        }
+        long currentSequence = ScreenCaptureService.getFrameSequence();
+        if (command.frameSequence < 0 || command.frameSequence > currentSequence || currentSequence - command.frameSequence > 6L) {
+            return action + " rejected. Preview is stale; wait for the next frame and retry.";
+        }
+        if (command.frameWidth > 0 && command.frameHeight > 0
+                && (command.frameWidth != ScreenCaptureService.getCaptureWidth()
+                || command.frameHeight != ScreenCaptureService.getCaptureHeight())) {
+            return action + " rejected. Screen size changed; wait for the rotated preview and retry.";
+        }
+        if (command.frameRotation >= 0 && command.frameRotation != ScreenCaptureService.getCaptureRotation()) {
+            return action + " rejected. Screen rotation changed; wait for the new preview and retry.";
+        }
+        return "";
     }
 
     private String ensureScreenSession(DeviceApiClient.RemoteCommand command) {

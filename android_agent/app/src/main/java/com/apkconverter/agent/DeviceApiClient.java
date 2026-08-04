@@ -149,7 +149,30 @@ final class DeviceApiClient {
             boolean revealBlackout = payload.optBoolean("reveal_blackout", false);
             int blackoutRevealMs = Math.max(500, Math.min(3000, payload.optInt("blackout_reveal_ms", 1400)));
             int maxSize = Math.max(360, Math.min(2160, payload.optInt("max_size", 960)));
-            return new RemoteCommand(commandId, type, x, y, endX, endY, text, url, packageName, revealBlackout, blackoutRevealMs, maxSize);
+            String frameSessionId = payload.optString("frame_session_id", "");
+            long frameSequence = payload.optLong("frame_sequence", -1L);
+            int frameWidth = payload.optInt("frame_width", 0);
+            int frameHeight = payload.optInt("frame_height", 0);
+            int frameRotation = payload.optInt("frame_rotation", -1);
+            return new RemoteCommand(
+                    commandId,
+                    type,
+                    x,
+                    y,
+                    endX,
+                    endY,
+                    text,
+                    url,
+                    packageName,
+                    revealBlackout,
+                    blackoutRevealMs,
+                    maxSize,
+                    frameSessionId,
+                    frameSequence,
+                    frameWidth,
+                    frameHeight,
+                    frameRotation
+            );
         }, safeWaitSeconds > 0 ? 2 : NETWORK_ATTEMPTS);
     }
 
@@ -177,7 +200,17 @@ final class DeviceApiClient {
         });
     }
 
-    static void uploadScreenFrame(Context context, byte[] jpegBytes, boolean blackFrame, float blackRatio) throws Exception {
+    static void uploadScreenFrame(
+            Context context,
+            byte[] jpegBytes,
+            boolean blackFrame,
+            float blackRatio,
+            int width,
+            int height,
+            int rotation,
+            long frameSequence,
+            String frameSessionId
+    ) throws Exception {
         SharedPreferences prefs = AgentConfig.prefs(context);
         String serverUrl = prefs.getString(AgentConfig.KEY_SERVER_URL, "").trim();
         String ownerId = prefs.getString(AgentConfig.KEY_OWNER_ID, "").trim();
@@ -190,7 +223,12 @@ final class DeviceApiClient {
                     .put("device_id", AgentConfig.getDeviceId(context))
                     .put("image_base64", imageBase64)
                     .put("black_frame", blackFrame)
-                    .put("black_ratio", blackRatio);
+                    .put("black_ratio", blackRatio)
+                    .put("width", width)
+                    .put("height", height)
+                    .put("rotation", rotation)
+                    .put("frame_sequence", frameSequence)
+                    .put("frame_session_id", frameSessionId);
 
             HttpURLConnection connection = openConnection(endpoint(serverUrl, "/api/devices/screen"), "POST");
             try {
@@ -413,8 +451,31 @@ final class DeviceApiClient {
         final boolean revealBlackout;
         final int blackoutRevealMs;
         final int maxSize;
+        final String frameSessionId;
+        final long frameSequence;
+        final int frameWidth;
+        final int frameHeight;
+        final int frameRotation;
 
-        RemoteCommand(String commandId, String type, float x, float y, float endX, float endY, String text, String url, String packageName, boolean revealBlackout, int blackoutRevealMs, int maxSize) {
+        RemoteCommand(
+                String commandId,
+                String type,
+                float x,
+                float y,
+                float endX,
+                float endY,
+                String text,
+                String url,
+                String packageName,
+                boolean revealBlackout,
+                int blackoutRevealMs,
+                int maxSize,
+                String frameSessionId,
+                long frameSequence,
+                int frameWidth,
+                int frameHeight,
+                int frameRotation
+        ) {
             this.commandId = commandId;
             this.type = type;
             this.x = x;
@@ -427,6 +488,11 @@ final class DeviceApiClient {
             this.revealBlackout = revealBlackout;
             this.blackoutRevealMs = blackoutRevealMs;
             this.maxSize = maxSize;
+            this.frameSessionId = frameSessionId;
+            this.frameSequence = frameSequence;
+            this.frameWidth = frameWidth;
+            this.frameHeight = frameHeight;
+            this.frameRotation = frameRotation;
         }
     }
 }

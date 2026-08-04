@@ -748,6 +748,27 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertIn(f'"{main.PWA_CACHE_VERSION}"', service_worker)
         self.assertEqual(main.PWA_CACHE_VERSION, health["pwa_cache"])
 
+    def test_screen_frame_preserves_rotation_identity_metadata(self) -> None:
+        image_base64 = main.base64.b64encode(b"\xff\xd8\xff\xd9").decode("ascii")
+        meta = main.save_screen_frame(
+            "100",
+            "phone-rotation",
+            image_base64,
+            width=540,
+            height=960,
+            rotation=90,
+            frame_sequence=42,
+            frame_session_id="session-rotation",
+        )
+        loaded = main.load_screen_frame("100", "phone-rotation")
+
+        self.assertEqual(540, meta["width"])
+        self.assertEqual(960, loaded["height"])
+        self.assertEqual(90, loaded["rotation"])
+        self.assertEqual(42, loaded["frame_sequence"])
+        self.assertEqual("session-rotation:42", loaded["frame_id"])
+        self.assertGreater(loaded["updated_at_ms"], 0)
+
     def test_health_status_fails_when_database_is_unavailable(self) -> None:
         with patch.object(main, "db_connect", side_effect=main.sqlite3.OperationalError("database down")):
             health = main.health_status_payload()

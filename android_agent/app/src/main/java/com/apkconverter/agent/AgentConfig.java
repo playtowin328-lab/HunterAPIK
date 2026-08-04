@@ -38,6 +38,11 @@ final class AgentConfig {
     static final String KEY_SCREEN_PERMISSION_REQUIRED = "screen_permission_required";
     static final String KEY_SCREEN_PERMISSION_PENDING = "screen_permission_pending";
     static final String KEY_SCREEN_PERMISSION_REQUESTED_AT = "screen_permission_requested_at";
+    static final String KEY_SCREEN_WIDTH = "screen_width";
+    static final String KEY_SCREEN_HEIGHT = "screen_height";
+    static final String KEY_SCREEN_ROTATION = "screen_rotation";
+    static final String KEY_SCREEN_DISPLAY_CHANGES = "screen_display_changes";
+    static final String KEY_SCREEN_FRAME_SEQUENCE = "screen_frame_sequence";
     static final String KEY_ACCESSIBILITY_CONNECTED_AT = "accessibility_connected_at";
     static final String KEY_ACCESSIBILITY_DISCONNECTED_AT = "accessibility_disconnected_at";
     static final String KEY_ACCESSIBILITY_SESSION_ID = "accessibility_session_id";

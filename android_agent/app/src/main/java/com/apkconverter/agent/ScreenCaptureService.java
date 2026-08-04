@@ -34,6 +34,7 @@ import java.util.UUID;
 public class ScreenCaptureService extends Service {
     static final String ACTION_START = "com.apkconverter.agent.SCREEN_START";
     static final String ACTION_STOP = "com.apkconverter.agent.SCREEN_STOP";
+    static final String ACTION_REFRESH = "com.apkconverter.agent.SCREEN_REFRESH";
     static final String EXTRA_RESULT_CODE = "result_code";
     static final String EXTRA_RESULT_DATA = "result_data";
 
@@ -50,15 +51,26 @@ public class ScreenCaptureService extends Service {
     private static volatile long sessionStartedAt;
     private static volatile long lastFrameAt;
     private static volatile String sessionId = "";
+    private static final AtomicLong frameSequence = new AtomicLong();
+    private static final AtomicLong displayChanges = new AtomicLong();
+    private static volatile int captureWidth;
+    private static volatile int captureHeight;
+    private static volatile int captureRotation;
 
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
     private ImageReader imageReader;
     private HandlerThread handlerThread;
+    private Handler captureHandler;
+    private WindowManager windowManager;
+    private DisplayManager displayManager;
+    private DisplayManager.DisplayListener displayListener;
+    private CaptureGeometry currentGeometry;
     private PowerManager.WakeLock wakeLock;
     private final ExecutorService uploadExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean uploadInProgress = new AtomicBoolean(false);
     private final AtomicBoolean stopping = new AtomicBoolean(false);
+    private final Runnable refreshDisplayRunnable = this::refreshDisplayConfiguration;
     private long lastUploadAt;
 
     @Override
@@ -72,6 +84,14 @@ public class ScreenCaptureService extends Service {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
             stopCapture("user_stopped", true);
             return START_NOT_STICKY;
+        }
+        if (intent != null && ACTION_REFRESH.equals(intent.getAction())) {
+            Handler handler = captureHandler;
+            if (handler != null && running) {
+                handler.removeCallbacks(refreshDisplayRunnable);
+                handler.postDelayed(refreshDisplayRunnable, 150L);
+            }
+            return running ? START_STICKY : START_NOT_STICKY;
         }
 
         if (intent == null || !ACTION_START.equals(intent.getAction())) {
@@ -134,76 +154,34 @@ public class ScreenCaptureService extends Service {
             return;
         }
 
-        DisplayMetrics metrics = new DisplayMetrics();
-        WindowManager windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+        windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
         if (windowManager == null) {
             lastError = "Window service is unavailable";
             stopCapture("window_unavailable", true);
             return;
         }
-        windowManager.getDefaultDisplay().getRealMetrics(metrics);
-
-        int sourceWidth = metrics.widthPixels;
-        int sourceHeight = metrics.heightPixels;
-        int maxSize = AgentConfig.prefs(this).getInt(AgentConfig.KEY_SCREEN_MAX_SIZE, 960);
-        maxSize = Math.max(360, Math.min(1440, maxSize));
-        int longestSide = Math.max(sourceWidth, sourceHeight);
-        float displayScale = longestSide <= maxSize ? 1f : (float) maxSize / longestSide;
-        int width = Math.max(1, Math.round(sourceWidth * displayScale));
-        int height = Math.max(1, Math.round(sourceHeight * displayScale));
-        int density = metrics.densityDpi;
-
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
         handlerThread = new HandlerThread("screen-capture");
         handlerThread.start();
-        Handler handler = new Handler(handlerThread.getLooper());
+        captureHandler = new Handler(handlerThread.getLooper());
+        currentGeometry = captureGeometry();
+        imageReader = createImageReader(currentGeometry, captureHandler);
         mediaProjection.registerCallback(new MediaProjection.Callback() {
             @Override
             public void onStop() {
                 stopCapture("android_stopped_projection", false);
             }
-        }, handler);
-
-        imageReader.setOnImageAvailableListener(reader -> {
-            acquireWakeLock();
-            long now = System.currentTimeMillis();
-            if (now - lastUploadAt < 900) {
-                Image skipped = reader.acquireLatestImage();
-                if (skipped != null) {
-                    skipped.close();
-                }
-                return;
-            }
-            lastUploadAt = now;
-            Image image = reader.acquireLatestImage();
-            if (image == null) {
-                return;
-            }
-            if (!uploadInProgress.compareAndSet(false, true)) {
-                droppedFrames.incrementAndGet();
-                image.close();
-                return;
-            }
-            try {
-                uploadExecutor.execute(() -> captureAndUpload(image));
-            } catch (RuntimeException exc) {
-                droppedFrames.incrementAndGet();
-                lastError = String.valueOf(exc.getMessage());
-                image.close();
-                uploadInProgress.set(false);
-            }
-        }, handler);
+        }, captureHandler);
 
         try {
             virtualDisplay = mediaProjection.createVirtualDisplay(
                     "apk-agent-screen",
-                    width,
-                    height,
-                    density,
+                    currentGeometry.width,
+                    currentGeometry.height,
+                    currentGeometry.density,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                     imageReader.getSurface(),
                     null,
-                    handler
+                    captureHandler
             );
         } catch (RuntimeException exc) {
             lastError = safeMessage(exc, "Unable to create screen session");
@@ -218,20 +196,72 @@ public class ScreenCaptureService extends Service {
         sessionStartedAt = System.currentTimeMillis();
         lastFrameAt = 0L;
         sessionId = UUID.randomUUID().toString();
+        frameSequence.set(0L);
+        captureWidth = currentGeometry.width;
+        captureHeight = currentGeometry.height;
+        captureRotation = currentGeometry.rotation;
         running = true;
         lastError = "";
+        registerDisplayListener();
         AgentConfig.prefs(this).edit()
                 .putString(AgentConfig.KEY_SCREEN_SESSION_STATE, "active")
                 .putString(AgentConfig.KEY_SCREEN_SESSION_ID, sessionId)
                 .putLong(AgentConfig.KEY_SCREEN_SESSION_STARTED_AT, sessionStartedAt)
                 .putLong(AgentConfig.KEY_SCREEN_LAST_FRAME_AT, 0L)
+                .putInt(AgentConfig.KEY_SCREEN_WIDTH, captureWidth)
+                .putInt(AgentConfig.KEY_SCREEN_HEIGHT, captureHeight)
+                .putInt(AgentConfig.KEY_SCREEN_ROTATION, captureRotation)
+                .putLong(AgentConfig.KEY_SCREEN_FRAME_SEQUENCE, 0L)
                 .putString(AgentConfig.KEY_SCREEN_STOP_REASON, "")
                 .putBoolean(AgentConfig.KEY_SCREEN_PERMISSION_REQUIRED, false)
                 .putBoolean(AgentConfig.KEY_SCREEN_PERMISSION_PENDING, false)
                 .apply();
     }
 
-    private void captureAndUpload(Image image) {
+    private ImageReader createImageReader(CaptureGeometry geometry, Handler handler) {
+        ImageReader reader = ImageReader.newInstance(
+                geometry.width,
+                geometry.height,
+                PixelFormat.RGBA_8888,
+                2
+        );
+        reader.setOnImageAvailableListener(source -> onImageAvailable(source, geometry), handler);
+        return reader;
+    }
+
+    private void onImageAvailable(ImageReader reader, CaptureGeometry geometry) {
+        acquireWakeLock();
+        long now = System.currentTimeMillis();
+        if (now - lastUploadAt < 900) {
+            Image skipped = reader.acquireLatestImage();
+            if (skipped != null) {
+                skipped.close();
+            }
+            return;
+        }
+        lastUploadAt = now;
+        Image image = reader.acquireLatestImage();
+        if (image == null) {
+            return;
+        }
+        if (!uploadInProgress.compareAndSet(false, true)) {
+            droppedFrames.incrementAndGet();
+            image.close();
+            return;
+        }
+        long sequence = frameSequence.incrementAndGet();
+        String activeSessionId = sessionId;
+        try {
+            uploadExecutor.execute(() -> captureAndUpload(image, geometry, sequence, activeSessionId));
+        } catch (RuntimeException exc) {
+            droppedFrames.incrementAndGet();
+            lastError = String.valueOf(exc.getMessage());
+            image.close();
+            uploadInProgress.set(false);
+        }
+    }
+
+    private void captureAndUpload(Image image, CaptureGeometry geometry, long sequence, String activeSessionId) {
         long started = System.currentTimeMillis();
         Bitmap bitmap = null;
         Bitmap cropped = null;
@@ -263,11 +293,25 @@ public class ScreenCaptureService extends Service {
 
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
             scaled.compress(Bitmap.CompressFormat.JPEG, 65, outputStream);
-            DeviceApiClient.uploadScreenFrame(this, outputStream.toByteArray(), blackFrame, blackRatio);
+            DeviceApiClient.uploadScreenFrame(
+                    this,
+                    outputStream.toByteArray(),
+                    blackFrame,
+                    blackRatio,
+                    scaled.getWidth(),
+                    scaled.getHeight(),
+                    geometry.rotation,
+                    sequence,
+                    activeSessionId
+            );
             AgentConfig.prefs(this)
                     .edit()
                     .putBoolean(AgentConfig.KEY_SCREEN_BLACK_FRAME, blackFrame)
                     .putFloat(AgentConfig.KEY_SCREEN_BLACK_RATIO, blackRatio)
+                    .putInt(AgentConfig.KEY_SCREEN_WIDTH, scaled.getWidth())
+                    .putInt(AgentConfig.KEY_SCREEN_HEIGHT, scaled.getHeight())
+                    .putInt(AgentConfig.KEY_SCREEN_ROTATION, geometry.rotation)
+                    .putLong(AgentConfig.KEY_SCREEN_FRAME_SEQUENCE, sequence)
                     .apply();
             uploadedFrames.incrementAndGet();
             lastUploadMs = System.currentTimeMillis() - started;
@@ -317,11 +361,120 @@ public class ScreenCaptureService extends Service {
         return total == 0 ? 0f : (float) black / total;
     }
 
+    private CaptureGeometry captureGeometry() {
+        DisplayMetrics metrics = new DisplayMetrics();
+        windowManager.getDefaultDisplay().getRealMetrics(metrics);
+        int maxSize = AgentConfig.prefs(this).getInt(AgentConfig.KEY_SCREEN_MAX_SIZE, 960);
+        maxSize = Math.max(360, Math.min(1440, maxSize));
+        int longestSide = Math.max(metrics.widthPixels, metrics.heightPixels);
+        float scale = longestSide <= maxSize ? 1f : (float) maxSize / longestSide;
+        return new CaptureGeometry(
+                Math.max(1, Math.round(metrics.widthPixels * scale)),
+                Math.max(1, Math.round(metrics.heightPixels * scale)),
+                metrics.densityDpi,
+                rotationDegrees(windowManager.getDefaultDisplay().getRotation())
+        );
+    }
+
+    private void registerDisplayListener() {
+        displayManager = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
+        if (displayManager == null || captureHandler == null) {
+            return;
+        }
+        displayListener = new DisplayManager.DisplayListener() {
+            @Override
+            public void onDisplayAdded(int displayId) {
+            }
+
+            @Override
+            public void onDisplayRemoved(int displayId) {
+            }
+
+            @Override
+            public void onDisplayChanged(int displayId) {
+                if (displayId != android.view.Display.DEFAULT_DISPLAY || captureHandler == null) {
+                    return;
+                }
+                captureHandler.removeCallbacks(refreshDisplayRunnable);
+                captureHandler.postDelayed(refreshDisplayRunnable, 250L);
+            }
+        };
+        displayManager.registerDisplayListener(displayListener, captureHandler);
+    }
+
+    private void refreshDisplayConfiguration() {
+        if (!running || stopping.get() || virtualDisplay == null || windowManager == null || captureHandler == null) {
+            return;
+        }
+        CaptureGeometry nextGeometry = captureGeometry();
+        CaptureGeometry previousGeometry = currentGeometry;
+        if (previousGeometry != null && previousGeometry.matches(nextGeometry)) {
+            return;
+        }
+        ImageReader nextReader = createImageReader(nextGeometry, captureHandler);
+        ImageReader previousReader = imageReader;
+        try {
+            virtualDisplay.resize(nextGeometry.width, nextGeometry.height, nextGeometry.density);
+            virtualDisplay.setSurface(nextReader.getSurface());
+        } catch (RuntimeException exc) {
+            nextReader.close();
+            lastError = safeMessage(exc, "Screen rotation adaptation failed");
+            if (previousGeometry != null && previousReader != null) {
+                try {
+                    virtualDisplay.resize(previousGeometry.width, previousGeometry.height, previousGeometry.density);
+                    virtualDisplay.setSurface(previousReader.getSurface());
+                } catch (RuntimeException ignored) {
+                }
+            }
+            return;
+        }
+        imageReader = nextReader;
+        currentGeometry = nextGeometry;
+        captureWidth = nextGeometry.width;
+        captureHeight = nextGeometry.height;
+        captureRotation = nextGeometry.rotation;
+        displayChanges.incrementAndGet();
+        lastError = "";
+        if (previousReader != null) {
+            previousReader.close();
+        }
+        AgentConfig.prefs(this).edit()
+                .putInt(AgentConfig.KEY_SCREEN_WIDTH, captureWidth)
+                .putInt(AgentConfig.KEY_SCREEN_HEIGHT, captureHeight)
+                .putInt(AgentConfig.KEY_SCREEN_ROTATION, captureRotation)
+                .putLong(AgentConfig.KEY_SCREEN_DISPLAY_CHANGES, displayChanges.get())
+                .apply();
+    }
+
+    private static int rotationDegrees(int rotation) {
+        if (rotation == android.view.Surface.ROTATION_90) {
+            return 90;
+        }
+        if (rotation == android.view.Surface.ROTATION_180) {
+            return 180;
+        }
+        if (rotation == android.view.Surface.ROTATION_270) {
+            return 270;
+        }
+        return 0;
+    }
+
     private void stopCapture(String reason, boolean stopProjection) {
         if (!stopping.compareAndSet(false, true)) {
             return;
         }
         running = false;
+        if (captureHandler != null) {
+            captureHandler.removeCallbacks(refreshDisplayRunnable);
+        }
+        if (displayManager != null && displayListener != null) {
+            try {
+                displayManager.unregisterDisplayListener(displayListener);
+            } catch (RuntimeException ignored) {
+            }
+        }
+        displayListener = null;
+        displayManager = null;
         if (virtualDisplay != null) {
             virtualDisplay.release();
             virtualDisplay = null;
@@ -344,6 +497,8 @@ public class ScreenCaptureService extends Service {
             handlerThread.quitSafely();
             handlerThread = null;
         }
+        captureHandler = null;
+        currentGeometry = null;
         releaseWakeLock();
         uploadInProgress.set(false);
         markStopped(reason, lastError);
@@ -442,6 +597,33 @@ public class ScreenCaptureService extends Service {
         return AgentConfig.prefs(context).getString(AgentConfig.KEY_SCREEN_STOP_REASON, "");
     }
 
+    static long getFrameSequence() {
+        return frameSequence.get();
+    }
+
+    static int getCaptureWidth() {
+        return captureWidth;
+    }
+
+    static int getCaptureHeight() {
+        return captureHeight;
+    }
+
+    static int getCaptureRotation() {
+        return captureRotation;
+    }
+
+    static long getDisplayChanges() {
+        return displayChanges.get();
+    }
+
+    static void requestConfigurationRefresh(Context context) {
+        if (!running) {
+            return;
+        }
+        context.startService(new Intent(context, ScreenCaptureService.class).setAction(ACTION_REFRESH));
+    }
+
     static long getLastUploadMs() {
         return lastUploadMs;
     }
@@ -521,6 +703,28 @@ public class ScreenCaptureService extends Service {
         }
         String message = exc.getMessage().trim();
         return message.length() <= 240 ? message : message.substring(0, 240);
+    }
+
+    private static final class CaptureGeometry {
+        final int width;
+        final int height;
+        final int density;
+        final int rotation;
+
+        CaptureGeometry(int width, int height, int density, int rotation) {
+            this.width = width;
+            this.height = height;
+            this.density = density;
+            this.rotation = rotation;
+        }
+
+        boolean matches(CaptureGeometry other) {
+            return other != null
+                    && width == other.width
+                    && height == other.height
+                    && density == other.density
+                    && rotation == other.rotation;
+        }
     }
 
     private void createNotificationChannel() {

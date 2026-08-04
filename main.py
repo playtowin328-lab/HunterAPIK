@@ -191,7 +191,7 @@ def agent_request_rate_allowed(path: str, device_secret: str, client_id: str, me
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
 APP_STARTED_AT = time.time()
-PWA_CACHE_VERSION = "hunter-control-v24"
+PWA_CACHE_VERSION = "hunter-control-v25"
 DEVICE_COMMAND_CONDITION = threading.Condition()
 BOT_POLLING_READY = False
 BOT_POLLING_STATUS = "starting"
@@ -4991,7 +4991,18 @@ def screen_paths(owner_id: str, device_id: str) -> tuple[Path, Path]:
     return device_dir / f"{safe_device}.jpg", device_dir / f"{safe_device}.json"
 
 
-def save_screen_frame(owner_id: str, device_id: str, image_base64: str, black_frame: bool = False, black_ratio: float = 0.0) -> dict:
+def save_screen_frame(
+    owner_id: str,
+    device_id: str,
+    image_base64: str,
+    black_frame: bool = False,
+    black_ratio: float = 0.0,
+    width: int = 0,
+    height: int = 0,
+    rotation: int = 0,
+    frame_sequence: int = 0,
+    frame_session_id: str = "",
+) -> dict:
     if not owner_id or not device_id:
         raise ValueError("owner_id and device_id are required")
 
@@ -5002,13 +5013,31 @@ def save_screen_frame(owner_id: str, device_id: str, image_base64: str, black_fr
     image_path, meta_path = screen_paths(owner_id, device_id)
     image_path.write_bytes(image_bytes)
     content_type = "image/png" if image_bytes.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg"
+    updated_at_ms = int(time.time() * 1000)
+    safe_width = max(0, min(4096, int(width or 0)))
+    safe_height = max(0, min(4096, int(height or 0)))
+    safe_rotation = int(rotation or 0)
+    if safe_rotation not in {0, 90, 180, 270}:
+        safe_rotation = 0
+    safe_sequence = max(0, int(frame_sequence or 0))
+    safe_session_id = "".join(
+        char for char in str(frame_session_id or "")[:80]
+        if char.isalnum() or char in {"-", "_"}
+    )
     meta = {
         "owner_id": str(owner_id),
         "device_id": str(device_id),
-        "updated_at": int(time.time()),
+        "updated_at": updated_at_ms // 1000,
+        "updated_at_ms": updated_at_ms,
         "content_type": content_type,
         "black_frame": bool(black_frame),
         "black_ratio": max(0.0, min(1.0, float(black_ratio or 0))),
+        "width": safe_width,
+        "height": safe_height,
+        "rotation": safe_rotation,
+        "frame_sequence": safe_sequence,
+        "frame_session_id": safe_session_id,
+        "frame_id": f"{safe_session_id}:{safe_sequence}" if safe_session_id else str(updated_at_ms),
     }
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
@@ -7402,6 +7431,11 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
                 str(payload.get("image_base64", "")).strip(),
                 bool(payload.get("black_frame", False)),
                 float(payload.get("black_ratio", 0) or 0),
+                int(payload.get("width", 0) or 0),
+                int(payload.get("height", 0) or 0),
+                int(payload.get("rotation", 0) or 0),
+                int(payload.get("frame_sequence", 0) or 0),
+                str(payload.get("frame_session_id", "")).strip(),
             )
         except (json.JSONDecodeError, ValueError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)

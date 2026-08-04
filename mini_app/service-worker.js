@@ -1,4 +1,4 @@
-const CACHE = "hunter-control-v24";
+const CACHE = "hunter-control-v25";
 const STATIC = ["./", "./index.html", "./styles.css?v=23", "./app.js?v=23", "./manifest.webmanifest?v=23", "./assets/hunter-pwa-icon.svg", "./assets/hunter-alert-cover.png"];
 self.addEventListener("install", (event) => {
   self.skipWaiting();
