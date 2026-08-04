@@ -27,6 +27,7 @@ final class AgentTelemetry {
                     .put("battery_percent", battery.percent)
                     .put("charging", battery.charging)
                     .put("network", networkType(context))
+                    .put("network_available", networkAvailable(context))
                     .put("android", Build.VERSION.RELEASE)
                     .put("agent_version", BuildConfig.VERSION_NAME)
                     .put("manufacturer", Build.MANUFACTURER)
@@ -49,6 +50,12 @@ final class AgentTelemetry {
                     .put("boot_recovery_age", recoveryAge(prefs))
                     .put("boot_recovery_action", prefs.getString(AgentConfig.KEY_BOOT_RECOVERY_ACTION, ""))
                     .put("last_success_age", lastSuccess > 0 ? Math.max(0, (System.currentTimeMillis() - lastSuccess) / 1000) : -1)
+                    .put("connection_session_id", HeartbeatService.getConnectionSessionId())
+                    .put("connection_uptime_seconds", HeartbeatService.getConnectionUptimeSeconds())
+                    .put("heartbeat_sequence", HeartbeatService.getHeartbeatSequence())
+                    .put("connection_restored_total", HeartbeatService.getConnectionRestoredTotal())
+                    .put("last_outage_seconds", HeartbeatService.getLastOutageSeconds())
+                    .put("connection_state", prefs.getInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0) > 0 ? "recovering" : "connected")
                     .put("request_ms", DeviceApiClient.getLastRequestMs())
                     .put("long_poll_ms", DeviceApiClient.getLastLongPollMs())
                     .put("network_attempts", DeviceApiClient.getLastAttemptCount())
@@ -119,6 +126,17 @@ final class AgentTelemetry {
         }
         PowerManager manager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
         return manager == null || manager.isIgnoringBatteryOptimizations(context.getPackageName());
+    }
+
+    private static boolean networkAvailable(Context context) {
+        ConnectivityManager manager = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (manager == null || manager.getActiveNetwork() == null) {
+            return false;
+        }
+        NetworkCapabilities capabilities = manager.getNetworkCapabilities(manager.getActiveNetwork());
+        return capabilities != null
+                && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
     }
 
     private static BatteryStatus batteryStatus(Context context) {

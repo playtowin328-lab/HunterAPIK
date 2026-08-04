@@ -154,7 +154,7 @@ def request_rate_allowed(client_id: str, method: str, now: float | None = None) 
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
 APP_STARTED_AT = time.time()
-PWA_CACHE_VERSION = "hunter-control-v19"
+PWA_CACHE_VERSION = "hunter-control-v20"
 DEVICE_COMMAND_CONDITION = threading.Condition()
 BOT_POLLING_READY = False
 BOT_POLLING_STATUS = "starting"
@@ -4261,6 +4261,10 @@ def device_connection_quality(device: dict, diagnostics: dict) -> dict:
     consecutive_errors = max(0, metric_int(telemetry.get("consecutive_errors") or telemetry.get("error_count")))
     last_success_age = max(-1, metric_int(telemetry.get("last_success_age"), -1))
     network_backoff_ms = max(0, metric_int(telemetry.get("network_backoff_ms")))
+    network_available = telemetry.get("network_available")
+    connection_uptime_seconds = max(0, metric_int(telemetry.get("connection_uptime_seconds")))
+    connection_restored_total = max(0, metric_int(telemetry.get("connection_restored_total")))
+    last_outage_seconds = max(0, metric_int(telemetry.get("last_outage_seconds")))
     command_channel_state = str(telemetry.get("command_channel_state") or "closed").strip().lower()
     command_channel_failures = max(0, metric_int(telemetry.get("command_channel_failures")))
     pending_commands = max(0, metric_int(diagnostics.get("pending_commands")))
@@ -4297,6 +4301,14 @@ def device_connection_quality(device: dict, diagnostics: dict) -> dict:
                 penalize("heartbeat_age", 25, f"heartbeat {last_seen_age} сек", "Проверь фоновую работу Agent.")
             elif last_seen_age > 30:
                 penalize("heartbeat_age", 12, f"heartbeat {last_seen_age} сек", "Соединение отвечает с задержкой.")
+
+        if network_available is False:
+            penalize(
+                "network_unvalidated",
+                18,
+                "система не подтвердила доступ в интернет",
+                "Переключи Wi-Fi/мобильную сеть или отключи captive portal.",
+            )
 
         if request_ms > 5000:
             penalize("latency", 35, f"API {request_ms} мс", "Проверь интернет устройства и доступность сервера.")
@@ -4407,6 +4419,10 @@ def device_connection_quality(device: dict, diagnostics: dict) -> dict:
         summary_parts.append(f"{attempts} попытки")
     if command_channel_state != "closed":
         summary_parts.append(f"канал команд {command_channel_state}")
+    if connection_restored_total and last_outage_seconds:
+        summary_parts.append(f"recovery x{connection_restored_total}, сбой {last_outage_seconds} сек")
+    elif connection_uptime_seconds:
+        summary_parts.append(f"сессия {connection_uptime_seconds} сек")
     if last_seen_age is not None:
         summary_parts.append(f"heartbeat {last_seen_age} сек")
     if pending_commands or delivering_commands or delivered_commands:
@@ -4499,6 +4515,9 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     if str(telemetry.get("command_channel_state") or "") == "open":
         issues.append("command_channel_open")
         hints.append("Circuit breaker временно остановил опрос команд, heartbeat остаётся активным.")
+    if online and telemetry.get("network_available") is False:
+        issues.append("network_unvalidated")
+        hints.append("Agent видит сеть, но система не подтверждает доступ в интернет. Проверь captive portal, Wi-Fi или VPN.")
     if online and int(connection_quality.get("score") or 0) < 55:
         issues.append("connection_unstable")
         recommendations = connection_quality.get("recommendations") or []

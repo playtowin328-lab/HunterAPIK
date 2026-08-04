@@ -286,6 +286,27 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertIn("command_channel_open", [factor["key"] for factor in quality["factors"]])
         self.assertIn("command_channel_open", health["issues"])
 
+    def test_connection_health_detects_unvalidated_network_path(self) -> None:
+        device = {
+            "online": True,
+            "last_seen": main.now_ts(),
+            "type": "phone",
+            "secret": "secret",
+            "agent": "android-agent",
+            "telemetry": {
+                "network": "wifi",
+                "network_available": False,
+                "connection_uptime_seconds": 90,
+            },
+        }
+
+        quality = main.device_connection_quality(device, {})
+        health = main.device_health(device, {})
+
+        self.assertIn("network_unvalidated", [factor["key"] for factor in quality["factors"]])
+        self.assertIn("network_unvalidated", health["issues"])
+        self.assertIn("captive portal", " ".join(health["hints"]))
+
     def test_auto_repair_confirms_transient_channel_failure(self) -> None:
         main.upsert_device({"owner_id": "100", "device_id": "pc-1", "name": "PC", "type": "pc", "agent": "pc-agent"})
         degraded = {

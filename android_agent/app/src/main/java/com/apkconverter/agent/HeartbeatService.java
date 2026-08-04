@@ -9,19 +9,25 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.net.Uri;
 import android.provider.Settings;
 
 import java.text.DateFormat;
 import java.util.Date;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class HeartbeatService extends Service {
     static final String ACTION_START = "com.apkconverter.agent.START";
@@ -35,18 +41,30 @@ public class HeartbeatService extends Service {
     private static final int MAX_COMMANDS_PER_TICK = 2;
     private static final long HEARTBEAT_INTERVAL_MS = 15_000L;
     private static final long MAX_TICK_WORK_MS = 12_000L;
+    private static final long RECONNECT_MAX_DELAY_MS = 15_000L;
+    private static final String CONNECTION_SESSION_ID = UUID.randomUUID().toString();
+    private static final long CONNECTION_SESSION_STARTED_AT = SystemClock.elapsedRealtime();
+    private static final AtomicLong HEARTBEAT_SEQUENCE = new AtomicLong();
+    private static volatile int connectionRestoredTotal;
+    private static volatile long lastOutageSeconds;
 
     private ScheduledExecutorService executor;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
     private PowerManager.WakeLock wakeLock;
     private Ringtone activeAlarm;
     private long lastHeartbeatAt;
-    private long backoffUntilAt;
+    private volatile long backoffUntilAt;
+    private volatile long lastNetworkWakeAt;
+    private long outageStartedAt;
+    private int heartbeatErrors;
     private int consecutiveErrors;
 
     @Override
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
+        registerConnectivityCallback();
     }
 
     @Override
@@ -70,6 +88,7 @@ public class HeartbeatService extends Service {
 
     @Override
     public void onDestroy() {
+        unregisterConnectivityCallback();
         if (executor != null) {
             executor.shutdownNow();
         }
@@ -114,7 +133,9 @@ public class HeartbeatService extends Service {
                 // Heartbeat is the connection's source of truth. A failed command poll
                 // must never prevent the device from attempting to stay online.
                 DeviceApiClient.heartbeat(this);
-                lastHeartbeatAt = now;
+                long heartbeatCompletedAt = System.currentTimeMillis();
+                lastHeartbeatAt = heartbeatCompletedAt;
+                markHeartbeatConnected(heartbeatCompletedAt);
             }
             String commandStatus = "";
             Exception commandError = null;
@@ -143,6 +164,7 @@ public class HeartbeatService extends Service {
                 updateNotification("Online, command retrying");
             }
         } catch (Exception exc) {
+            markHeartbeatFailed(now);
             int errorCount = prefs.getInt(AgentConfig.KEY_LAST_ERROR_COUNT, 0) + 1;
             consecutiveErrors = Math.max(consecutiveErrors + 1, errorCount);
             editor.putString(KEY_LAST_STATUS, "Error: " + exc.getMessage());
@@ -157,8 +179,105 @@ public class HeartbeatService extends Service {
     }
 
     private void applyErrorBackoff(long now) {
-        long delayMs = Math.min(30_000L, 1_000L * Math.max(1, consecutiveErrors));
+        int exponent = Math.min(4, Math.max(0, heartbeatErrors - 1));
+        long baseDelayMs = Math.min(RECONNECT_MAX_DELAY_MS, 1_000L * (1L << exponent));
+        long delayMs = Math.min(RECONNECT_MAX_DELAY_MS, baseDelayMs + (long) (Math.random() * Math.min(1_000L, baseDelayMs * 0.2d)));
         backoffUntilAt = now + delayMs;
+    }
+
+    private void markHeartbeatFailed(long now) {
+        heartbeatErrors += 1;
+        if (outageStartedAt == 0) {
+            outageStartedAt = now;
+        }
+    }
+
+    private void markHeartbeatConnected(long now) {
+        if (heartbeatErrors > 0 && outageStartedAt > 0) {
+            connectionRestoredTotal += 1;
+            lastOutageSeconds = Math.max(1L, (now - outageStartedAt) / 1000L);
+        }
+        heartbeatErrors = 0;
+        outageStartedAt = 0;
+    }
+
+    private void registerConnectivityCallback() {
+        connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connectivityManager == null) {
+            return;
+        }
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                triggerNetworkReconnect();
+            }
+
+            @Override
+            public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                    triggerNetworkReconnect();
+                }
+            }
+
+            @Override
+            public void onLost(Network network) {
+                updateNotification("Waiting for network");
+            }
+        };
+        try {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback);
+        } catch (RuntimeException ignored) {
+            networkCallback = null;
+        }
+    }
+
+    private void unregisterConnectivityCallback() {
+        if (connectivityManager == null || networkCallback == null) {
+            return;
+        }
+        try {
+            connectivityManager.unregisterNetworkCallback(networkCallback);
+        } catch (RuntimeException ignored) {
+        }
+        networkCallback = null;
+    }
+
+    private synchronized void triggerNetworkReconnect() {
+        long now = System.currentTimeMillis();
+        if (now - lastNetworkWakeAt < 1_000L) {
+            return;
+        }
+        lastNetworkWakeAt = now;
+        backoffUntilAt = 0;
+        ScheduledExecutorService activeExecutor = executor;
+        if (activeExecutor != null && !activeExecutor.isShutdown()) {
+            activeExecutor.execute(this::agentTick);
+            updateNotification("Network restored, reconnecting");
+        }
+    }
+
+    static long nextHeartbeatSequence() {
+        return HEARTBEAT_SEQUENCE.incrementAndGet();
+    }
+
+    static long getHeartbeatSequence() {
+        return HEARTBEAT_SEQUENCE.get();
+    }
+
+    static String getConnectionSessionId() {
+        return CONNECTION_SESSION_ID;
+    }
+
+    static long getConnectionUptimeSeconds() {
+        return Math.max(0L, (SystemClock.elapsedRealtime() - CONNECTION_SESSION_STARTED_AT) / 1000L);
+    }
+
+    static int getConnectionRestoredTotal() {
+        return connectionRestoredTotal;
+    }
+
+    static long getLastOutageSeconds() {
+        return lastOutageSeconds;
     }
 
     private String handlePendingCommands(long tickStarted) throws Exception {

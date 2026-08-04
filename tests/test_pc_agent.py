@@ -41,6 +41,9 @@ class PcAgentTests(unittest.TestCase):
             "heartbeat_successes_total": 0,
             "heartbeat_failures_total": 0,
             "connection_restored_total": 0,
+            "heartbeat_sequence": 0,
+            "last_outage_seconds": 0,
+            "reconnect_eta_seconds": 0,
             "command_channel_state": "closed",
             "command_channel_failures": 0,
             "command_channel_backoff_seconds": 0,
@@ -73,6 +76,11 @@ class PcAgentTests(unittest.TestCase):
         self.assertIn("keyboard", payload["telemetry"]["capabilities"])
         self.assertEqual("connected", payload["telemetry"]["connection_state"])
         self.assertEqual("closed", payload["telemetry"]["command_channel_state"])
+        self.assertTrue(payload["telemetry"]["network_available"])
+        self.assertEqual(agent.CONNECTION_SESSION_ID, payload["telemetry"]["connection_session_id"])
+        self.assertEqual(1, payload["telemetry"]["heartbeat_sequence"])
+        self.assertEqual(agent.HEARTBEAT_API_ATTEMPTS, api.call_args.kwargs["attempts"])
+        self.assertEqual(agent.HEARTBEAT_API_TIMEOUT_SECONDS, api.call_args.kwargs["timeout_seconds"])
 
     def test_pc_agent_consumes_and_acknowledges_commands(self) -> None:
         command = {"command_id": "cmd-1", "type": "ping", "payload": {}}
@@ -193,6 +201,13 @@ class PcAgentTests(unittest.TestCase):
         self.assertGreater(agent.AGENT_METRICS["last_success_at"], 0)
         self.assertEqual(0, agent.AGENT_METRICS["network_backoff_ms"])
         sleep.assert_called_once()
+
+    def test_fast_reconnect_delay_is_exponential_and_capped(self) -> None:
+        with patch.object(agent.random, "uniform", return_value=0):
+            delays = [agent.reconnect_delay_seconds(streak) for streak in range(1, 8)]
+
+        self.assertEqual([1, 2, 4, 8, 15, 15, 15], delays)
+        self.assertLessEqual(max(delays), agent.RECONNECT_MAX_DELAY_SECONDS)
 
     def test_command_circuit_breaker_opens_probes_and_recovers(self) -> None:
         circuit = agent.AdaptiveCircuitBreaker(failure_threshold=2, base_delay_seconds=5, max_delay_seconds=20)

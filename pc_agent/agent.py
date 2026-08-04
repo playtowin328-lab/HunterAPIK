@@ -28,7 +28,7 @@ except ImportError:  # The agent still provides heartbeat diagnostics without sc
 
 
 APP_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "HunterPCAgent"
-AGENT_VERSION = "0.5.0"
+AGENT_VERSION = "0.6.0"
 CONFIG_PATH = APP_DIR / "config.json"
 CONFIG_BACKUP_PATH = APP_DIR / "config.backup.json"
 COMMAND_RECEIPTS_PATH = APP_DIR / "command_receipts.json"
@@ -45,6 +45,10 @@ API_RETRY_BASE_DELAY_SECONDS = float(os.getenv("HUNTER_PC_API_RETRY_BASE", "0.45
 API_RETRY_MAX_DELAY_SECONDS = float(os.getenv("HUNTER_PC_API_RETRY_MAX", "6"))
 DEFAULT_POLL_INTERVAL_SECONDS = max(2, int(os.getenv("HUNTER_PC_POLL_INTERVAL", "3")))
 HEARTBEAT_INTERVAL_SECONDS = max(10, int(os.getenv("HUNTER_PC_HEARTBEAT_INTERVAL", "15")))
+HEARTBEAT_API_ATTEMPTS = max(1, min(3, int(os.getenv("HUNTER_PC_HEARTBEAT_RETRIES", "2"))))
+HEARTBEAT_API_TIMEOUT_SECONDS = max(3.0, float(os.getenv("HUNTER_PC_HEARTBEAT_TIMEOUT", "7")))
+RECONNECT_BASE_DELAY_SECONDS = max(0.5, float(os.getenv("HUNTER_PC_RECONNECT_BASE", "1")))
+RECONNECT_MAX_DELAY_SECONDS = max(RECONNECT_BASE_DELAY_SECONDS, float(os.getenv("HUNTER_PC_RECONNECT_MAX", "15")))
 INSTALL_REPAIR_INTERVAL_SECONDS = max(60, int(os.getenv("HUNTER_PC_REPAIR_INTERVAL", "300")))
 COMMAND_LONG_POLL_SECONDS = max(0, min(10, int(os.getenv("HUNTER_PC_COMMAND_WAIT", "6"))))
 COMMAND_CIRCUIT_FAILURE_THRESHOLD = max(1, int(os.getenv("HUNTER_PC_CIRCUIT_FAILURES", "2")))
@@ -52,6 +56,8 @@ COMMAND_CIRCUIT_BASE_DELAY_SECONDS = max(1.0, float(os.getenv("HUNTER_PC_CIRCUIT
 COMMAND_CIRCUIT_MAX_DELAY_SECONDS = max(COMMAND_CIRCUIT_BASE_DELAY_SECONDS, float(os.getenv("HUNTER_PC_CIRCUIT_MAX_DELAY", "45")))
 COMMAND_RECEIPT_LIMIT = max(32, min(1000, int(os.getenv("HUNTER_PC_COMMAND_RECEIPTS", "256"))))
 COMMAND_RECEIPT_TTL_SECONDS = max(3600, int(os.getenv("HUNTER_PC_COMMAND_RECEIPT_TTL", "604800")))
+AGENT_STARTED_AT = time.monotonic()
+CONNECTION_SESSION_ID = uuid.uuid4().hex
 ADB_INFO_CACHE: dict[str, dict] = {}
 ADB_PREPARED: set[str] = set()
 AGENT_METRICS = {
@@ -72,6 +78,9 @@ AGENT_METRICS = {
     "heartbeat_successes_total": 0,
     "heartbeat_failures_total": 0,
     "connection_restored_total": 0,
+    "heartbeat_sequence": 0,
+    "last_outage_seconds": 0,
+    "reconnect_eta_seconds": 0,
     "command_channel_state": "closed",
     "command_channel_failures": 0,
     "command_channel_backoff_seconds": 0,
@@ -173,6 +182,12 @@ def retry_delay_seconds(attempt: int) -> float:
     base_delay = API_RETRY_BASE_DELAY_SECONDS * (2 ** max(0, attempt - 1))
     delay = min(API_RETRY_MAX_DELAY_SECONDS, base_delay)
     return delay + random.uniform(0, delay * 0.25)
+
+
+def reconnect_delay_seconds(failure_streak: int) -> float:
+    exponent = min(4, max(0, int(failure_streak) - 1))
+    base_delay = min(RECONNECT_MAX_DELAY_SECONDS, RECONNECT_BASE_DELAY_SECONDS * (2 ** exponent))
+    return min(RECONNECT_MAX_DELAY_SECONDS, base_delay + random.uniform(0, min(1.0, base_delay * 0.2)))
 
 
 def retryable_http_status(status_code: int) -> bool:
@@ -1280,6 +1295,7 @@ def pc_command_tick(config: dict) -> None:
 
 def heartbeat(config: dict) -> None:
     server = config["server_url"].rstrip("/")
+    AGENT_METRICS["heartbeat_sequence"] = max(0, int(AGENT_METRICS.get("heartbeat_sequence") or 0)) + 1
     last_success_at = max(0, int(AGENT_METRICS.get("last_success_at") or 0))
     AGENT_METRICS["last_success_age"] = max(0, int(time.time()) - last_success_at) if last_success_at else -1
     if int(AGENT_METRICS.get("consecutive_errors") or 0) > 0:
@@ -1328,7 +1344,13 @@ def heartbeat(config: dict) -> None:
             "heartbeat_successes_total": AGENT_METRICS["heartbeat_successes_total"],
             "heartbeat_failures_total": AGENT_METRICS["heartbeat_failures_total"],
             "connection_restored_total": AGENT_METRICS["connection_restored_total"],
+            "connection_session_id": CONNECTION_SESSION_ID,
+            "connection_uptime_seconds": max(0, int(time.monotonic() - AGENT_STARTED_AT)),
+            "heartbeat_sequence": AGENT_METRICS["heartbeat_sequence"],
+            "last_outage_seconds": AGENT_METRICS["last_outage_seconds"],
+            "reconnect_eta_seconds": AGENT_METRICS["reconnect_eta_seconds"],
             "connection_state": connection_state,
+            "network_available": True,
             "command_channel_state": AGENT_METRICS["command_channel_state"],
             "command_channel_failures": AGENT_METRICS["command_channel_failures"],
             "command_channel_backoff_seconds": AGENT_METRICS["command_channel_backoff_seconds"],
@@ -1348,7 +1370,14 @@ def heartbeat(config: dict) -> None:
             "command_wait_seconds": COMMAND_LONG_POLL_SECONDS,
         },
     }
-    api_request("POST", f"{server}/api/devices/heartbeat", payload, config["device_secret"])
+    api_request(
+        "POST",
+        f"{server}/api/devices/heartbeat",
+        payload,
+        config["device_secret"],
+        attempts=HEARTBEAT_API_ATTEMPTS,
+        timeout_seconds=HEARTBEAT_API_TIMEOUT_SECONDS,
+    )
 
 
 def run_loop(config: dict, interval: int, adb_enabled: bool) -> None:
@@ -1377,6 +1406,7 @@ def run_loop(config: dict, interval: int, adb_enabled: bool) -> None:
         adb_enabled,
     )
     error_streak = 0
+    outage_started_at = 0.0
     command_circuit = AdaptiveCircuitBreaker()
     update_command_circuit_metrics(command_circuit)
     next_heartbeat_at = 0.0
@@ -1386,6 +1416,7 @@ def run_loop(config: dict, interval: int, adb_enabled: bool) -> None:
         sleep_for = max(1, interval)
         heartbeat_due = time.monotonic() >= next_heartbeat_at
         if heartbeat_due:
+            AGENT_METRICS["reconnect_eta_seconds"] = 0
             try:
                 heartbeat(config)
                 AGENT_METRICS["heartbeat_successes_total"] += 1
@@ -1393,19 +1424,24 @@ def run_loop(config: dict, interval: int, adb_enabled: bool) -> None:
                 if error_streak:
                     LOGGER.info("Connection restored after %s failed heartbeat cycles.", error_streak)
                     AGENT_METRICS["connection_restored_total"] += 1
+                    AGENT_METRICS["last_outage_seconds"] = max(1, round(time.monotonic() - outage_started_at)) if outage_started_at else 0
                 error_streak = 0
+                outage_started_at = 0.0
                 AGENT_METRICS["consecutive_errors"] = 0
                 AGENT_METRICS["last_error"] = ""
                 AGENT_METRICS["network_backoff_ms"] = 0
                 print(time.strftime("%H:%M:%S"), "online")
             except Exception as exc:
                 error_streak += 1
+                if not outage_started_at:
+                    outage_started_at = time.monotonic()
                 AGENT_METRICS["heartbeat_failures_total"] += 1
                 AGENT_METRICS["last_loop_ms"] = round((time.perf_counter() - started) * 1000)
                 AGENT_METRICS["last_error"] = str(exc)[:160]
                 AGENT_METRICS["consecutive_errors"] = error_streak
-                sleep_for = max(interval, min(60, 2 ** min(error_streak, 6)))
+                sleep_for = reconnect_delay_seconds(error_streak)
                 AGENT_METRICS["network_backoff_ms"] = int(sleep_for * 1000)
+                AGENT_METRICS["reconnect_eta_seconds"] = max(1, round(sleep_for))
                 print(time.strftime("%H:%M:%S"), "connection error:", exc)
                 LOGGER.exception("heartbeat failed; retry in %ss", sleep_for)
                 time.sleep(sleep_for)

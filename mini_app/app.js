@@ -418,6 +418,13 @@ function recoveryTimeLabel(seconds) {
   return `${Math.max(1, Math.ceil(value / 60))} мин`;
 }
 
+function connectionDurationLabel(seconds) {
+  const value = Math.max(0, Math.round(Number(seconds || 0)));
+  if (value < 3600) return recoveryTimeLabel(value);
+  if (value < 86400) return `${Math.max(1, Math.floor(value / 3600))} ч`;
+  return `${Math.max(1, Math.floor(value / 86400))} д`;
+}
+
 function deviceRecovery(device) {
   const health = device?.health || {};
   const recovery = health.recovery || {};
@@ -775,6 +782,7 @@ function formatTelemetry(device) {
     items.push(`${telemetry.battery_percent}%${telemetry.charging ? " · зарядка" : ""}`);
   }
   if (telemetry.network) items.push(`сеть: ${telemetry.network}`);
+  if (telemetry.network_available === false) items.push("интернет: не подтверждён");
   if (telemetry.android) items.push(`Android ${telemetry.android}`);
   if (telemetry.agent_version) items.push(`agent v${telemetry.agent_version}`);
   if (typeof telemetry.full_control === "boolean") items.push(telemetry.full_control ? "Full APK" : "Lite APK");
@@ -794,6 +802,9 @@ function formatTelemetry(device) {
   if (typeof telemetry.command_channel_failures === "number" && telemetry.command_channel_failures > 0) items.push(`ошибок канала: ${telemetry.command_channel_failures}`);
   if (typeof telemetry.command_channel_backoff_seconds === "number" && telemetry.command_channel_backoff_seconds > 0) items.push(`проба через: ${telemetry.command_channel_backoff_seconds} сек`);
   if (typeof telemetry.connection_restored_total === "number" && telemetry.connection_restored_total > 0) items.push(`восстановлений: ${telemetry.connection_restored_total}`);
+  if (typeof telemetry.last_outage_seconds === "number" && telemetry.last_outage_seconds > 0) items.push(`последний сбой: ${connectionDurationLabel(telemetry.last_outage_seconds)}`);
+  if (typeof telemetry.connection_uptime_seconds === "number" && telemetry.connection_uptime_seconds >= 0) items.push(`сессия: ${connectionDurationLabel(telemetry.connection_uptime_seconds)}`);
+  if (typeof telemetry.heartbeat_sequence === "number" && telemetry.heartbeat_sequence > 0) items.push(`heartbeat #${telemetry.heartbeat_sequence}`);
   if (typeof telemetry.startup_installed === "boolean") items.push(`startup: ${telemetry.startup_installed ? "on" : "off"}`);
   if (typeof telemetry.watchdog_enabled === "boolean") items.push(`watchdog: ${telemetry.watchdog_enabled ? "on" : "off"}`);
   if (typeof telemetry.recovery_copy === "boolean") items.push(`recovery: ${telemetry.recovery_copy ? "ready" : "missing"}`);
@@ -854,6 +865,8 @@ function formatDiagnostics(device) {
   if (typeof telemetry.long_poll_ms === "number" && telemetry.long_poll_ms > 0) parts.push(`wait ${telemetry.long_poll_ms} ms`);
   if (typeof telemetry.network_attempts === "number" && telemetry.network_attempts > 1) parts.push(`retry x${telemetry.network_attempts}`);
   if (typeof telemetry.network_failures === "number" && telemetry.network_failures > 0) parts.push(`net failures ${telemetry.network_failures}`);
+  if (typeof telemetry.last_outage_seconds === "number" && telemetry.last_outage_seconds > 0) parts.push(`сбой ${connectionDurationLabel(telemetry.last_outage_seconds)}`);
+  if (typeof telemetry.connection_uptime_seconds === "number" && telemetry.connection_uptime_seconds >= 0) parts.push(`сессия ${connectionDurationLabel(telemetry.connection_uptime_seconds)}`);
   if (typeof telemetry.screen_ms === "number" && telemetry.screen_ms > 0) parts.push(`экран ${telemetry.screen_ms} ms`);
   if (telemetry.screen_black_frame) parts.push("кадр черный: приложение может блокировать захват");
   if (typeof telemetry.gesture_ms === "number" && telemetry.gesture_ms > 0) parts.push(`жест ${telemetry.gesture_ms} ms`);

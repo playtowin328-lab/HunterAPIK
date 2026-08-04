@@ -71,6 +71,7 @@ final class DeviceApiClient {
             throw new IllegalStateException("Owner ID is empty");
         }
 
+        HeartbeatService.nextHeartbeatSequence();
         return withRetry(() -> {
             JSONObject payload = new JSONObject()
                     .put("owner_id", ownerId)
@@ -93,7 +94,7 @@ final class DeviceApiClient {
             } finally {
                 connection.disconnect();
             }
-        });
+        }, 2);
     }
 
     static RemoteCommand nextCommand(Context context, int waitSeconds) throws Exception {
