@@ -6,7 +6,7 @@
     <title>Hunter Agent</title>
     <meta name="theme-color" content="#0b2334">
     <link rel="manifest" href="./manifest.webmanifest?v=18">
-    <link rel="stylesheet" href="./styles.css?v=21">
+    <link rel="stylesheet" href="./styles.css?v=22">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -65,6 +65,39 @@
           </div>
         </div>
         <button class="secondary-button fleet-pulse-action" id="fleetPulseAction" type="button">Подключить устройство</button>
+      </section>
+
+      <section class="mission-control-card" id="missionControlCard" data-state="empty" aria-labelledby="missionControlTitle">
+        <div class="mission-control-head">
+          <div>
+            <p class="eyebrow">Hunter Mission Control</p>
+            <h2 id="missionControlTitle">Надёжность как бизнес-показатель</h2>
+          </div>
+          <label class="mission-profile-field">
+            <span>Отраслевой режим</span>
+            <select id="missionProfileSelect" aria-label="Отраслевой профиль эксплуатации" disabled>
+              <option value="universal">Универсальный</option>
+            </select>
+          </label>
+        </div>
+        <div class="mission-control-grid">
+          <div class="mission-radar" aria-hidden="true"><span></span><span></span><span></span><i></i></div>
+          <div class="mission-brief">
+            <span class="mission-state" id="missionState">Подготовка</span>
+            <p id="missionBrief" aria-live="polite">Собираю историю доступности и строю прогноз риска.</p>
+            <small id="missionNextAction">Наблюдение запускается автоматически.</small>
+          </div>
+          <div class="mission-metrics" aria-label="Показатели надёжности за 24 часа">
+            <div><span>Доступность</span><strong id="missionAvailability">—</strong></div>
+            <div><span>Цель SLO</span><strong id="missionTarget">—</strong></div>
+            <div><span>Error budget</span><strong id="missionBudget">—</strong></div>
+            <div><span>Устройства риска</span><strong id="missionRisk">0</strong></div>
+          </div>
+        </div>
+        <div class="mission-control-foot">
+          <span id="missionTopRisk">24 часа · ожидаю телеметрию</span>
+          <button class="ghost-button mission-action" id="missionAction" type="button">Проверить флот</button>
+        </div>
       </section>
 
       <section class="trust-strip" aria-label="Безопасность подключения">
@@ -537,11 +570,11 @@
       </section>
     </div>
 
-    <script src="./app.js?v=21"></script>
+    <script src="./app.js?v=22"></script>
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', async () => {
-          const registration = await navigator.serviceWorker.register('./service-worker.js?v=21');
+          const registration = await navigator.serviceWorker.register('./service-worker.js?v=22');
           registration.update?.();
           if (registration.waiting) registration.waiting.postMessage({ type: 'SKIP_WAITING' });
         });

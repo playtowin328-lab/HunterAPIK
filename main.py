@@ -157,7 +157,7 @@ def request_rate_allowed(client_id: str, method: str, now: float | None = None) 
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
 APP_STARTED_AT = time.time()
-PWA_CACHE_VERSION = "hunter-control-v21"
+PWA_CACHE_VERSION = "hunter-control-v22"
 DEVICE_COMMAND_CONDITION = threading.Condition()
 BOT_POLLING_READY = False
 BOT_POLLING_STATUS = "starting"
@@ -751,10 +751,54 @@ ROOT_ONLY_PROGRAM_CALLBACKS = {
 DEFAULT_DEVICE_NOTIFY_SETTINGS = {
     "enabled": True,
     "travel_mode": False,
+    "operations_profile": "universal",
     "quiet_hours_enabled": False,
     "quiet_hours_start": 23,
     "quiet_hours_end": 8,
     "enabled_kinds": sorted(DEVICE_ALERT_KINDS),
+}
+
+OPERATIONS_PROFILES = {
+    "universal": {
+        "label": "Универсальный",
+        "icon": "◉",
+        "slo_target": 99.0,
+        "battery_floor": 15,
+        "recovery_target_seconds": 120,
+        "focus": "Сбалансированная работа устройств",
+    },
+    "retail": {
+        "label": "Ритейл",
+        "icon": "▦",
+        "slo_target": 99.9,
+        "battery_floor": 25,
+        "recovery_target_seconds": 75,
+        "focus": "Кассы, витрины и точки продаж",
+    },
+    "logistics": {
+        "label": "Логистика",
+        "icon": "⌁",
+        "slo_target": 99.7,
+        "battery_floor": 30,
+        "recovery_target_seconds": 90,
+        "focus": "Транспорт, курьеры и мобильные терминалы",
+    },
+    "field": {
+        "label": "Выездные команды",
+        "icon": "△",
+        "slo_target": 99.5,
+        "battery_floor": 35,
+        "recovery_target_seconds": 120,
+        "focus": "Нестабильные сети и автономная работа",
+    },
+    "infrastructure": {
+        "label": "Инфраструктура",
+        "icon": "⬡",
+        "slo_target": 99.95,
+        "battery_floor": 10,
+        "recovery_target_seconds": 60,
+        "focus": "ПК, серверы и критичные рабочие места",
+    },
 }
 
 
@@ -1165,6 +1209,9 @@ def save_device_notify_state(data: dict) -> None:
 
 def sanitize_device_notify_settings(data: dict | None) -> dict:
     source = data if isinstance(data, dict) else {}
+    operations_profile = str(source.get("operations_profile") or DEFAULT_DEVICE_NOTIFY_SETTINGS["operations_profile"]).strip().lower()
+    if operations_profile not in OPERATIONS_PROFILES:
+        operations_profile = DEFAULT_DEVICE_NOTIFY_SETTINGS["operations_profile"]
     enabled_kinds = source.get("enabled_kinds", DEFAULT_DEVICE_NOTIFY_SETTINGS["enabled_kinds"])
     if not isinstance(enabled_kinds, list):
         enabled_kinds = DEFAULT_DEVICE_NOTIFY_SETTINGS["enabled_kinds"]
@@ -1183,6 +1230,7 @@ def sanitize_device_notify_settings(data: dict | None) -> dict:
     return {
         "enabled": bool(source.get("enabled", DEFAULT_DEVICE_NOTIFY_SETTINGS["enabled"])),
         "travel_mode": bool(source.get("travel_mode", DEFAULT_DEVICE_NOTIFY_SETTINGS["travel_mode"])),
+        "operations_profile": operations_profile,
         "quiet_hours_enabled": bool(source.get("quiet_hours_enabled", DEFAULT_DEVICE_NOTIFY_SETTINGS["quiet_hours_enabled"])),
         "quiet_hours_start": max(0, min(23, quiet_hours_start)),
         "quiet_hours_end": max(0, min(23, quiet_hours_end)),
@@ -1205,6 +1253,13 @@ def save_device_notify_settings(data: dict) -> dict:
         encoding="utf-8",
     )
     return settings
+
+
+def operations_profile_config(profile_key: str = "") -> dict:
+    key = str(profile_key or load_device_notify_settings().get("operations_profile") or "universal").strip().lower()
+    if key not in OPERATIONS_PROFILES:
+        key = "universal"
+    return {"key": key, **OPERATIONS_PROFILES[key]}
 
 
 def is_quiet_hour(settings: dict) -> bool:
@@ -2070,6 +2125,7 @@ def device_connection_is_live(device: dict) -> bool:
 
 def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
     devices = list_all_devices() if project_scope else list_devices_for_user(str(owner_id))
+    mission = fleet_mission_control(devices)
     online = sum(1 for device in devices if device_connection_is_live(device))
     recovering = sum(1 for device in devices if device_recovery_view(device)["active"])
     attention = sum(
@@ -2082,6 +2138,8 @@ def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
     storage_line = "защищено Volume" if storage_ok else "ВНИМАНИЕ: временное хранилище"
     setup_line = "готова" if setup_ok else "требует настройки"
     fleet_state = "🟢 Стабильно" if devices and online == len(devices) and not attention else (f"🟡 Восстанавливаю связь: {recovering}" if recovering else ("🟡 Нужна проверка" if devices else "⚪ Не подключено"))
+    mission_availability = f"{mission['availability']:.3f}%" if mission.get("availability") is not None else "—"
+    mission_profile = mission.get("profile") or {}
     device_preview = []
     for device in devices[:5]:
         recovery = device_recovery_view(device)
@@ -2106,6 +2164,7 @@ def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
         "",
         fleet_state,
         f"📱 Всего: {len(devices)} · 🟢 Online: {online} · 🟡 Recovery: {recovering} · ⚠ Внимание: {attention}",
+        f"🎯 SLO 24ч: {mission_availability} / {mission.get('slo_target')}% · риск: {mission.get('at_risk_count', 0)} · {mission_profile.get('label', 'Универсальный')}",
         f"☁️ Инфраструктура: {setup_line} · 🛡 Данные: {storage_line}",
         *(["", "Быстрый обзор:", *device_preview] if device_preview else []),
         "",
@@ -5328,6 +5387,233 @@ def device_history(owner_id: str, device_id: str, hours: int = 24, limit: int = 
     return [{"created_at": int(row["created_at"]), "online": bool(row["online"]), "error": row["error"], "telemetry": decode_json_object(row["telemetry_json"])} for row in rows]
 
 
+def device_reliability(device: dict, hours: int = 24, reference_at: int | None = None, profile_key: str = "") -> dict:
+    profile = operations_profile_config(profile_key)
+    reference = int(reference_at or now_ts())
+    safe_hours = max(1, min(int(hours or 24), 48))
+    created_at = max(0, int(device.get("created_at") or 0))
+    window_start = max(reference - safe_hours * 3600, created_at if created_at else 0)
+    if window_start >= reference:
+        window_start = reference - 1
+
+    if device.get("pairing_required"):
+        return {
+            "availability": None,
+            "slo_target": profile["slo_target"],
+            "risk_score": 70,
+            "risk_level": "setup",
+            "risk_label": "Нужна привязка",
+            "recommendation": "Заверши безопасную QR-привязку, чтобы устройство вошло в SLO.",
+            "observation_seconds": 0,
+            "sample_count": 0,
+            "confidence": 0,
+            "outage_count": 0,
+            "mttr_seconds": 0,
+            "longest_outage_seconds": 0,
+            "current_outage_seconds": 0,
+            "error_budget_remaining_percent": None,
+        }
+
+    owner_id = str(device.get("owner_id") or "")
+    device_id = str(device.get("device_id") or "")
+    with db_connect() as connection:
+        previous = connection.execute(
+            "SELECT online, created_at FROM device_history WHERE owner_id=? AND device_id=? AND created_at<? ORDER BY created_at DESC LIMIT 1",
+            (owner_id, device_id, window_start),
+        ).fetchone()
+        rows = connection.execute(
+            "SELECT online, created_at FROM device_history WHERE owner_id=? AND device_id=? AND created_at>=? AND created_at<=? ORDER BY created_at ASC",
+            (owner_id, device_id, window_start, reference),
+        ).fetchall()
+
+    current_online = bool(device.get("online"))
+    state_online = bool(previous["online"]) if previous else (bool(rows[0]["online"]) if rows else current_online)
+    cursor = window_start
+    online_seconds = 0
+    outage_count = 1 if not state_online else 0
+    active_outage_started = window_start if not state_online else None
+    recovered_outages: list[int] = []
+
+    for row in rows:
+        point_at = max(window_start, min(reference, int(row["created_at"])))
+        if point_at > cursor and state_online:
+            online_seconds += point_at - cursor
+        next_online = bool(row["online"])
+        if state_online and not next_online:
+            outage_count += 1
+            active_outage_started = point_at
+        elif not state_online and next_online:
+            if active_outage_started is not None:
+                recovered_outages.append(max(0, point_at - active_outage_started))
+            active_outage_started = None
+        state_online = next_online
+        cursor = max(cursor, point_at)
+
+    if state_online != current_online:
+        last_seen = max(0, int(device.get("last_seen") or 0))
+        online_ttl = 45 if load_device_notify_settings().get("travel_mode") else DEVICE_TTL_SECONDS
+        transition_at = last_seen if current_online else last_seen + online_ttl
+        transition_at = max(cursor, min(reference, transition_at or reference))
+        if transition_at > cursor and state_online:
+            online_seconds += transition_at - cursor
+        if state_online and not current_online:
+            outage_count += 1
+            active_outage_started = transition_at
+        elif not state_online and current_online:
+            if active_outage_started is not None:
+                recovered_outages.append(max(0, transition_at - active_outage_started))
+            active_outage_started = None
+        state_online = current_online
+        cursor = transition_at
+
+    if reference > cursor and state_online:
+        online_seconds += reference - cursor
+    current_outage_seconds = max(0, reference - int(active_outage_started)) if active_outage_started is not None else 0
+    observed_seconds = max(1, reference - window_start)
+    downtime_seconds = max(0, observed_seconds - online_seconds)
+    completed_mttr = round(sum(recovered_outages) / len(recovered_outages)) if recovered_outages else 0
+    longest_outage = max([current_outage_seconds, *recovered_outages], default=0)
+    availability = round(online_seconds * 100 / observed_seconds, 3)
+    allowed_downtime = observed_seconds * (100 - float(profile["slo_target"])) / 100
+    budget_remaining = round((allowed_downtime - downtime_seconds) * 100 / allowed_downtime) if allowed_downtime else 100
+
+    telemetry = device.get("telemetry") if isinstance(device.get("telemetry"), dict) else {}
+    health = device.get("health") if isinstance(device.get("health"), dict) else {}
+    connection = health.get("connection") if isinstance(health.get("connection"), dict) else {}
+    quality_value = connection.get("score")
+    quality_score = max(0, min(100, int(quality_value if quality_value is not None else (100 if current_online else 0))))
+    risk_score = round((100 - quality_score) * 0.55)
+    if not current_online:
+        risk_score = max(risk_score, 82)
+    target_gap = max(0.0, float(profile["slo_target"]) - availability)
+    risk_score += min(40, round(target_gap * 12))
+    risk_score += min(20, outage_count * 5)
+    if completed_mttr > int(profile["recovery_target_seconds"]):
+        risk_score += min(15, round((completed_mttr - int(profile["recovery_target_seconds"])) / 15))
+    battery = telemetry.get("battery_percent", telemetry.get("battery"))
+    if isinstance(battery, (int, float)) and 0 <= battery < int(profile["battery_floor"]):
+        risk_score += min(20, int(profile["battery_floor"]) - int(battery))
+    recovery = health.get("recovery") if isinstance(health.get("recovery"), dict) else {}
+    if recovery.get("active"):
+        risk_score += 8
+    if current_outage_seconds > int(profile["recovery_target_seconds"]):
+        risk_score += 8
+    risk_score = max(0, min(100, int(risk_score)))
+
+    if risk_score >= 75:
+        risk_level, risk_label = "critical", "Критический"
+    elif risk_score >= 50:
+        risk_level, risk_label = "high", "Высокий"
+    elif risk_score >= 25:
+        risk_level, risk_label = "medium", "Контроль"
+    else:
+        risk_level, risk_label = "low", "Низкий"
+
+    if not current_online:
+        recommendation = "Автовосстановление уже контролирует канал; проверь питание и запуск Agent."
+    elif availability < float(profile["slo_target"]):
+        recommendation = f"Доступность ниже SLO {profile['slo_target']}%: запусти стабилизацию самого слабого канала."
+    elif isinstance(battery, (int, float)) and 0 <= battery < int(profile["battery_floor"]):
+        recommendation = f"Заряди устройство: для профиля «{profile['label']}» нужен запас от {profile['battery_floor']}%."
+    elif quality_score < 85:
+        recommendation = "Проверь задержку, VPN/DNS и фоновые ограничения Agent."
+    else:
+        recommendation = "Риск низкий; продолжай автоматический контроль без ручных действий."
+
+    confidence = min(100, 15 + len(rows) * 7 + (20 if previous else 0))
+    return {
+        "availability": availability,
+        "slo_target": profile["slo_target"],
+        "risk_score": risk_score,
+        "risk_level": risk_level,
+        "risk_label": risk_label,
+        "recommendation": recommendation,
+        "observation_seconds": observed_seconds,
+        "online_seconds": online_seconds,
+        "downtime_seconds": downtime_seconds,
+        "sample_count": len(rows) + int(bool(previous)),
+        "confidence": confidence,
+        "outage_count": outage_count,
+        "recovery_count": len(recovered_outages),
+        "recovery_seconds_total": sum(recovered_outages),
+        "mttr_seconds": completed_mttr,
+        "longest_outage_seconds": longest_outage,
+        "current_outage_seconds": current_outage_seconds,
+        "error_budget_seconds": round(allowed_downtime),
+        "error_budget_seconds_remaining": round(allowed_downtime - downtime_seconds),
+        "error_budget_remaining_percent": max(-999, min(100, budget_remaining)),
+    }
+
+
+def fleet_mission_control(devices: list[dict], profile_key: str = "", reference_at: int | None = None) -> dict:
+    profile = operations_profile_config(profile_key)
+    paired_devices = [device for device in devices if not device.get("pairing_required")]
+    reliability_rows = []
+    for device in devices:
+        reliability = device_reliability(device, reference_at=reference_at, profile_key=profile["key"])
+        device["reliability"] = reliability
+        if not device.get("pairing_required"):
+            reliability_rows.append((device, reliability))
+
+    observed_seconds = sum(int(reliability.get("observation_seconds") or 0) for _, reliability in reliability_rows)
+    online_seconds = sum(int(reliability.get("online_seconds") or 0) for _, reliability in reliability_rows)
+    downtime_seconds = max(0, observed_seconds - online_seconds)
+    availability = round(online_seconds * 100 / observed_seconds, 3) if observed_seconds else None
+    allowed_downtime = observed_seconds * (100 - float(profile["slo_target"])) / 100
+    budget_remaining = round((allowed_downtime - downtime_seconds) * 100 / allowed_downtime) if allowed_downtime else None
+    recovery_count = sum(int(reliability.get("recovery_count") or 0) for _, reliability in reliability_rows)
+    recovery_seconds = sum(int(reliability.get("recovery_seconds_total") or 0) for _, reliability in reliability_rows)
+    mttr_seconds = round(recovery_seconds / recovery_count) if recovery_count else 0
+    outage_count = sum(int(reliability.get("outage_count") or 0) for _, reliability in reliability_rows)
+    at_risk = sorted(
+        [(device, reliability) for device, reliability in reliability_rows if int(reliability.get("risk_score") or 0) >= 50],
+        key=lambda item: int(item[1].get("risk_score") or 0),
+        reverse=True,
+    )
+    top_device, top_reliability = at_risk[0] if at_risk else (None, None)
+
+    if not paired_devices:
+        state = "empty"
+        brief = "Подключи первое устройство — Mission Control начнёт считать SLO и прогнозировать риски."
+    elif not any(bool(device.get("online")) for device in paired_devices):
+        state = "critical"
+        brief = "Флот недоступен. Recovery активен; приоритет — питание, автозапуск и маршрут до сервера."
+    elif budget_remaining is not None and budget_remaining < 0:
+        state = "critical"
+        brief = f"Error budget исчерпан. Главный риск: {top_device.get('name', 'устройство') if top_device else 'нестабильный канал'}."
+    elif at_risk:
+        state = "risk"
+        brief = f"Прогноз риска: {top_device.get('name', 'устройство')} требует внимания первым."
+    elif budget_remaining is not None and budget_remaining < 35:
+        state = "watch"
+        brief = "SLO пока удерживается, но запас надёжности снижается — избегай ручных перезапусков."
+    else:
+        state = "stable"
+        brief = f"Флот работает в пределах SLO профиля «{profile['label']}»; критических действий не требуется."
+
+    return {
+        "state": state,
+        "window_hours": 24,
+        "profile": profile,
+        "profiles": [{"key": key, **value} for key, value in OPERATIONS_PROFILES.items()],
+        "availability": availability,
+        "slo_target": profile["slo_target"],
+        "error_budget_remaining_percent": max(-999, min(100, budget_remaining)) if budget_remaining is not None else None,
+        "error_budget_seconds_remaining": round(allowed_downtime - downtime_seconds) if observed_seconds else None,
+        "outage_count": outage_count,
+        "mttr_seconds": mttr_seconds,
+        "at_risk_count": len(at_risk),
+        "paired_device_count": len(paired_devices),
+        "brief": brief,
+        "next_action": top_reliability.get("recommendation") if top_reliability else "Наблюдение работает автоматически.",
+        "top_risk_device": {
+            "device_id": top_device.get("device_id"),
+            "name": top_device.get("name"),
+            "risk_score": top_reliability.get("risk_score"),
+        } if top_device and top_reliability else None,
+    }
+
+
 def device_exists(owner_id: str, device_id: str) -> bool:
     with db_connect() as connection:
         row = connection.execute(
@@ -5399,9 +5685,11 @@ def web_devices_payload(actor_id: str, requested_owner_id: str) -> dict:
     with db_connect() as connection:
         total_paired = int(connection.execute("SELECT COUNT(*) AS count FROM devices").fetchone()["count"])
         total_pending = int(connection.execute("SELECT COUNT(*) AS count FROM pending_devices").fetchone()["count"])
+    mission_control = fleet_mission_control(devices)
     return {
         "devices": devices,
         "scope": "all" if can_view_all else "own",
+        "mission_control": mission_control,
         "meta": {
             "actor_id": str(actor_id),
             "requested_owner_id": str(requested_owner_id),
@@ -6542,6 +6830,10 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             self.handle_screen_upload()
             return
 
+        if parsed_url.path == "/api/mission/profile":
+            self.handle_operations_profile()
+            return
+
         if parsed_url.path == "/api/alerts/device/settings":
             self.handle_device_alert_settings()
             return
@@ -6661,6 +6953,33 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             notify=True,
         )
         self.send_json({"ok": True, "settings": settings, "kinds": sorted(DEVICE_ALERT_KINDS)})
+
+    def handle_operations_profile(self) -> None:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length).decode("utf-8")
+            payload = json.loads(raw_body or "{}")
+            actor_id = webapp_user_id_from_payload(payload)
+            if not actor_id or get_user_role(actor_id) != "root":
+                self.send_json({"error": "root access required"}, HTTPStatus.FORBIDDEN)
+                return
+            profile_key = str(payload.get("profile") or "").strip().lower()
+            if profile_key not in OPERATIONS_PROFILES:
+                raise ValueError("unknown operations profile")
+            settings = save_device_notify_settings({"operations_profile": profile_key})
+            profile = operations_profile_config(settings["operations_profile"])
+        except (json.JSONDecodeError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        audit_event(
+            actor_id,
+            "operations_profile_changed",
+            f"Operations profile changed: {profile_key}",
+            {"profile": profile},
+            notify=False,
+        )
+        self.send_json({"ok": True, "profile": profile})
 
     def handle_create_command(self) -> None:
         try:

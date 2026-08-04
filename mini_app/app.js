@@ -44,6 +44,17 @@ const fleetPulseAttention = $("#fleetPulseAttention");
 const fleetPulseRecovery = $("#fleetPulseRecovery");
 const fleetPulseReplay = $("#fleetPulseReplay");
 const fleetPulseAction = $("#fleetPulseAction");
+const missionControlCard = $("#missionControlCard");
+const missionProfileSelect = $("#missionProfileSelect");
+const missionState = $("#missionState");
+const missionBrief = $("#missionBrief");
+const missionNextAction = $("#missionNextAction");
+const missionAvailability = $("#missionAvailability");
+const missionTarget = $("#missionTarget");
+const missionBudget = $("#missionBudget");
+const missionRisk = $("#missionRisk");
+const missionTopRisk = $("#missionTopRisk");
+const missionAction = $("#missionAction");
 const quickNavLinks = $$(".quick-nav a");
 const installAgentButton = $("#installAgentButton");
 const openInstalledAgentButton = $("#openInstalledAgentButton");
@@ -248,6 +259,7 @@ const deviceAlertKindLabels = {
 };
 
 let devices = [];
+let missionControl = null;
 let installPlatform = localStorage.getItem("hunter_install_platform") || (detectCurrentDevice().type === "pc" ? "pc" : "android");
 let currentPairLinks = null;
 let currentPairExpiresAt = 0;
@@ -526,6 +538,77 @@ function renderFleetPulse(onlineCount) {
   fleetPulseAction.textContent = "Открыть диагностику";
   fleetPulseAction.dataset.action = "diagnose";
   fleetPulseAction.dataset.deviceId = targetDevice.device_id;
+}
+
+function renderMissionControl() {
+  if (!missionControlCard) return;
+  const mission = missionControl || {};
+  const profile = mission.profile || { key: "universal", label: "Универсальный" };
+  const profiles = Array.isArray(mission.profiles) && mission.profiles.length
+    ? mission.profiles
+    : [profile];
+  const availability = Number(mission.availability);
+  const target = Number(mission.slo_target);
+  const budget = Number(mission.error_budget_remaining_percent);
+  const stateLabels = {
+    empty: "Ожидаю флот",
+    stable: "SLO удерживается",
+    watch: "Запас снижается",
+    risk: "Риск обнаружен",
+    critical: "Критический режим",
+  };
+
+  missionControlCard.dataset.state = mission.state || "empty";
+  missionState.textContent = stateLabels[mission.state] || stateLabels.empty;
+  missionBrief.textContent = mission.brief || "Собираю историю доступности и строю прогноз риска.";
+  missionNextAction.textContent = mission.next_action || "Наблюдение запускается автоматически.";
+  missionAvailability.textContent = Number.isFinite(availability) ? `${availability.toFixed(3)}%` : "—";
+  missionTarget.textContent = Number.isFinite(target) ? `${target}%` : "—";
+  missionBudget.textContent = !Number.isFinite(budget) ? "—" : (budget < 0 ? "исчерпан" : `${Math.round(budget)}%`);
+  missionBudget.dataset.state = Number.isFinite(budget) && budget < 0 ? "spent" : "available";
+  missionRisk.textContent = String(Number(mission.at_risk_count || 0));
+
+  const selectedProfile = missionProfileSelect.value;
+  missionProfileSelect.innerHTML = profiles.map((item) => (
+    `<option value="${escapeHtml(item.key)}">${escapeHtml(`${item.icon || "◉"} ${item.label}`)}</option>`
+  )).join("");
+  missionProfileSelect.value = profile.key || selectedProfile || "universal";
+  missionProfileSelect.disabled = window.currentDeviceMeta?.role !== "root";
+  missionProfileSelect.title = missionProfileSelect.disabled
+    ? "Отраслевой режим задаёт владелец проекта"
+    : `Цель профиля: ${profile.focus || "надёжность флота"}`;
+
+  const topRisk = mission.top_risk_device;
+  if (topRisk) {
+    missionTopRisk.textContent = `Главный риск: ${topRisk.name} · ${topRisk.risk_score}/100 · окно ${mission.window_hours || 24}ч`;
+    missionAction.textContent = "Открыть риск";
+    missionAction.dataset.action = "device";
+    missionAction.dataset.deviceId = topRisk.device_id;
+  } else {
+    const mttr = Number(mission.mttr_seconds || 0);
+    missionTopRisk.textContent = `${mission.window_hours || 24} часа · сбоев ${Number(mission.outage_count || 0)} · MTTR ${mttr ? recoveryTimeLabel(mttr) : "—"}`;
+    missionAction.textContent = "Проверить флот";
+    missionAction.dataset.action = "refresh";
+    delete missionAction.dataset.deviceId;
+  }
+}
+
+async function saveMissionProfile(profileKey) {
+  if (!profileKey || window.currentDeviceMeta?.role !== "root") return;
+  missionProfileSelect.disabled = true;
+  missionState.textContent = "Перестраиваю SLO";
+  try {
+    await apiJson(`${apiBaseUrl}/api/mission/profile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(apiAuthPayload({ profile: profileKey })),
+    });
+    await refreshDevices();
+  } catch (error) {
+    missionState.textContent = "Профиль не сохранён";
+    missionNextAction.textContent = error.message;
+    missionProfileSelect.disabled = false;
+  }
 }
 
 function setInterfaceLoading(loading) {
@@ -1579,6 +1662,7 @@ async function loadDevicesFromApi() {
   if (webPinToken) params.set("web_pin_token", webPinToken);
   const payload = await apiJson(`${apiBaseUrl}/api/devices?${params.toString()}`);
   devices = payload.devices || [];
+  missionControl = payload.mission_control || null;
   window.currentDeviceScope = payload.scope || "own";
   window.currentDeviceMeta = payload.meta || null;
 }
@@ -2569,6 +2653,7 @@ function render() {
   const onlineCount = devices.filter(deviceIsLive).length;
   onlineDevices.textContent = onlineCount;
   renderFleetPulse(onlineCount);
+  renderMissionControl();
   renderDeviceToolbar();
   renderInstallationProgress();
   userName.textContent = profileName;
@@ -3016,6 +3101,20 @@ fleetPulseAction?.addEventListener("click", async () => {
     return;
   }
   const device = devices.find((item) => item.device_id === fleetPulseAction.dataset.deviceId);
+  if (!device) return;
+  selectDevice(device);
+  setRemoteTab("setup");
+  render();
+  requestAnimationFrame(() => remotePanel?.scrollIntoView({ behavior: "smooth", block: "start" }));
+});
+
+missionProfileSelect?.addEventListener("change", () => saveMissionProfile(missionProfileSelect.value));
+missionAction?.addEventListener("click", async () => {
+  if (missionAction.dataset.action === "refresh") {
+    await refreshDevices();
+    return;
+  }
+  const device = devices.find((item) => item.device_id === missionAction.dataset.deviceId);
   if (!device) return;
   selectDevice(device);
   setRemoteTab("setup");

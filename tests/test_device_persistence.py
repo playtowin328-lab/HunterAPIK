@@ -20,6 +20,7 @@ class DevicePersistenceTests(unittest.TestCase):
     def setUp(self) -> None:
         main.DEVICE_MAINTENANCE_STATE_PATH.unlink(missing_ok=True)
         main.DEVICE_NOTIFY_STATE_PATH.unlink(missing_ok=True)
+        main.DEVICE_NOTIFY_SETTINGS_PATH.unlink(missing_ok=True)
         with main.db_connect() as connection:
             connection.execute("DELETE FROM commands")
             connection.execute("DELETE FROM devices")
@@ -68,6 +69,16 @@ class DevicePersistenceTests(unittest.TestCase):
         settings = main.sanitize_device_notify_settings({"travel_mode": True})
         self.assertTrue(settings["travel_mode"])
         self.assertTrue(settings["enabled"])
+
+    def test_operations_profile_is_validated_and_exposes_slo_policy(self) -> None:
+        settings = main.sanitize_device_notify_settings({"operations_profile": "logistics"})
+        fallback = main.sanitize_device_notify_settings({"operations_profile": "unknown"})
+        profile = main.operations_profile_config(settings["operations_profile"])
+
+        self.assertEqual("logistics", settings["operations_profile"])
+        self.assertEqual("universal", fallback["operations_profile"])
+        self.assertEqual(99.7, profile["slo_target"])
+        self.assertEqual(30, profile["battery_floor"])
 
     def test_device_pulse_uses_live_android_telemetry(self) -> None:
         main.upsert_device({
@@ -187,6 +198,64 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertEqual(["offline", "permission"], settings["enabled_kinds"])
         self.assertTrue(main.device_alert_allowed("permission", "100"))
         self.assertFalse(main.device_alert_allowed("battery", "100"))
+
+    def test_reliability_calculates_availability_mttr_and_risk(self) -> None:
+        reference = 2_000_000_000
+        device = {
+            "owner_id": "100",
+            "device_id": "slo-phone",
+            "name": "SLO phone",
+            "created_at": reference - 3600,
+            "online": True,
+            "telemetry": {"battery_percent": 80},
+            "health": {"connection": {"score": 96}, "recovery": {"active": False}},
+        }
+        with main.db_connect() as connection:
+            connection.executemany(
+                "INSERT INTO device_history(owner_id, device_id, telemetry_json, online, error, created_at) VALUES (?, ?, '{}', ?, '', ?)",
+                [
+                    ("100", "slo-phone", 1, reference - 3600),
+                    ("100", "slo-phone", 0, reference - 1800),
+                    ("100", "slo-phone", 1, reference - 1200),
+                ],
+            )
+
+        reliability = main.device_reliability(device, reference_at=reference)
+        mission = main.fleet_mission_control([device], reference_at=reference)
+
+        self.assertAlmostEqual(83.333, reliability["availability"], places=3)
+        self.assertEqual(1, reliability["outage_count"])
+        self.assertEqual(600, reliability["mttr_seconds"])
+        self.assertEqual(600, reliability["longest_outage_seconds"])
+        self.assertGreaterEqual(reliability["risk_score"], 50)
+        self.assertEqual("critical", mission["state"])
+        self.assertEqual("slo-phone", mission["top_risk_device"]["device_id"])
+
+    def test_reliability_accounts_for_current_offline_state(self) -> None:
+        reference = 2_000_000_000
+        device = {
+            "owner_id": "100",
+            "device_id": "stale-phone",
+            "name": "Stale phone",
+            "created_at": reference - 3600,
+            "last_seen": reference - 300,
+            "online": False,
+            "telemetry": {},
+            "health": {"connection": {"score": 0}, "recovery": {"active": True}},
+        }
+        with main.db_connect() as connection:
+            connection.execute(
+                "INSERT INTO device_history(owner_id, device_id, telemetry_json, online, error, created_at) VALUES (?, ?, '{}', 1, '', ?)",
+                ("100", "stale-phone", reference - 3600),
+            )
+
+        with patch.object(main, "DEVICE_TTL_SECONDS", 90):
+            reliability = main.device_reliability(device, reference_at=reference)
+
+        self.assertEqual(210, reliability["current_outage_seconds"])
+        self.assertEqual(1, reliability["outage_count"])
+        self.assertLess(reliability["availability"], 100)
+        self.assertGreaterEqual(reliability["risk_score"], 82)
 
     def test_dangerous_commands_require_configured_pin(self) -> None:
         with patch.object(main, "CONTROL_PIN", "482915"):
@@ -891,6 +960,8 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertEqual({"user-phone", "other-phone"}, {device["device_id"] for device in admin_payload["devices"]})
         self.assertEqual("own", user_payload["scope"])
         self.assertEqual(["user-phone"], [device["device_id"] for device in user_payload["devices"]])
+        self.assertIn("mission_control", user_payload)
+        self.assertEqual("universal", user_payload["mission_control"]["profile"]["key"])
 
 
 if __name__ == "__main__":
