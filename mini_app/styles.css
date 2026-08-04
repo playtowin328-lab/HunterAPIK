@@ -2976,6 +2976,16 @@ select:focus {
   color: rgba(225, 244, 246, .64);
   font-size: 10px;
 }
+.mission-control-actions { display: flex; align-items: center; gap: 8px; }
+.mission-autopilot {
+  min-height: 36px;
+  border-color: rgba(101, 224, 174, .3);
+  background: linear-gradient(135deg, rgba(45, 181, 127, .95), rgba(24, 127, 111, .96));
+  color: #fff;
+  box-shadow: 0 10px 24px rgba(34, 174, 132, .16);
+}
+.mission-autopilot:hover { border-color: rgba(137, 244, 198, .55); filter: brightness(1.05); }
+.mission-autopilot:disabled { cursor: wait; filter: saturate(.55); }
 .mission-action { min-height: 36px; border-color: rgba(129, 229, 224, .24); background: rgba(3, 26, 37, .44); color: #e9ffff; }
 .mission-action:hover { border-color: rgba(129, 229, 224, .5); background: rgba(21, 111, 116, .38); }
 
@@ -3139,9 +3149,11 @@ html.app-loading body::before {
   .mission-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
   .mission-metrics div { padding: 10px; }
   .mission-metrics strong { margin-top: 4px; font-size: 17px; }
-  .mission-control-foot { gap: 8px; margin-top: 12px; padding-top: 10px; }
-  .mission-control-foot span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .mission-action { flex: 0 0 auto; min-height: 34px; padding-inline: 10px; font-size: 9px; }
+  .mission-control-foot { flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 10px; }
+  .mission-control-foot > span { width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .mission-control-actions { width: 100%; gap: 5px; }
+  .mission-autopilot { flex: 1 1 auto; min-height: 34px; padding-inline: 9px; font-size: 9px; }
+  .mission-action { flex: 1 1 auto; min-height: 34px; padding-inline: 10px; font-size: 9px; }
 
   .trust-strip {
     align-items: flex-start;

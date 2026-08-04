@@ -440,6 +440,8 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertEqual("repair_agent", recovery["command"]["type"])
         self.assertTrue(status["active"])
         self.assertEqual(1, status["attempt"])
+        self.assertEqual("restore", status["stage"])
+        self.assertTrue(status["incident_id"])
         self.assertGreater(status["eta_seconds"], 0)
         self.assertGreater(status["next_check_in"], 0)
 
@@ -507,6 +509,80 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertIsNotNone(status["last_recovered_age"])
         self.assertEqual(1, status["learning_samples"])
         self.assertGreater(status["learned_eta_seconds"], 0)
+        self.assertTrue(status["stability_guard_active"])
+        self.assertEqual("verify", status["stage"])
+
+    def test_recovery_stability_policy_detects_flapping(self) -> None:
+        record = {}
+        with (
+            patch.object(main, "RECOVERY_FLAP_THRESHOLD", 3),
+            patch.object(main, "RECOVERY_FLAP_WINDOW_SECONDS", 900),
+            patch.object(main, "RECOVERY_FLAP_GUARD_SECONDS", 1800),
+        ):
+            main.update_recovery_stability(record, 1000)
+            main.update_recovery_stability(record, 1200)
+            main.update_recovery_stability(record, 1400)
+            stage = main.recovery_stage_policy(1, flapping=True)
+
+        self.assertEqual(3, record["recovery_flap_count"])
+        self.assertEqual(3200, record["recovery_flapping_until"])
+        self.assertEqual("harden", stage["key"])
+        self.assertEqual(3, stage["level"])
+
+    def test_flapping_relapse_starts_hardening_immediately(self) -> None:
+        now = main.now_ts()
+        main.upsert_device({"owner_id": "100", "device_id": "flap-pc", "name": "Flap PC", "type": "pc", "platform": "Windows 11", "agent": "pc-agent", "secret": "paired-secret"})
+        key = main.device_notify_key("100", "flap-pc")
+        main.save_device_maintenance_state({
+            "devices": {
+                key: {
+                    "recovery_state": "idle",
+                    "recovery_command_at": now - 30,
+                    "recovery_stability_guard_until": now + 300,
+                    "recovery_success_times": [now - 60],
+                }
+            }
+        })
+        device = {
+            "owner_id": "100", "device_id": "flap-pc", "name": "Flap PC", "type": "pc", "platform": "Windows 11", "agent": "pc-agent",
+            "online": False, "pairing_required": False, "last_seen": now - 90, "telemetry": {},
+        }
+
+        with patch.object(main, "AUTO_RECOVERY_TRIGGER_SECONDS", 45):
+            recovery = main.orchestrate_device_recovery(device)
+            status = main.device_recovery_status("100", "flap-pc")
+
+        self.assertTrue(recovery["started"])
+        self.assertTrue(recovery["flapping"])
+        self.assertIsNotNone(recovery["command"])
+        self.assertEqual("harden", status["stage"])
+        self.assertEqual(1, status["relapse_count"])
+
+    def test_fleet_autopilot_hardens_pc_and_deduplicates_commands(self) -> None:
+        now = main.now_ts()
+        main.upsert_device({"owner_id": "100", "device_id": "hard-pc", "name": "Hard PC", "type": "pc", "platform": "Windows 11", "agent": "pc-agent", "secret": "pc-secret"})
+        main.upsert_device({"owner_id": "100", "device_id": "hard-phone", "name": "Hard phone", "type": "phone", "platform": "Android 16", "agent": "android-agent", "secret": "phone-secret"})
+        fleet = [
+            {
+                "owner_id": "100", "device_id": "hard-pc", "name": "Hard PC", "type": "pc", "platform": "Windows 11", "agent": "pc-agent",
+                "online": True, "created_at": now - 60, "last_seen": now, "telemetry": {"startup_installed": False, "watchdog_enabled": False, "recovery_copy": False},
+                "health": {"state": "online", "connection": {"score": 96}, "recovery": {}},
+            },
+            {
+                "owner_id": "100", "device_id": "hard-phone", "name": "Hard phone", "type": "phone", "platform": "Android 16", "agent": "android-agent",
+                "online": True, "created_at": now - 60, "last_seen": now, "telemetry": {},
+                "health": {"state": "online", "connection": {"score": 96}, "recovery": {}},
+            },
+        ]
+
+        first = main.run_fleet_autopilot("100", fleet)
+        second = main.run_fleet_autopilot("100", fleet)
+
+        self.assertEqual(2, first["queued_count"])
+        self.assertEqual(1, first["repair_count"])
+        self.assertEqual(1, first["probe_count"])
+        self.assertEqual(0, second["queued_count"])
+        self.assertEqual(2, second["already_active_count"])
 
     def test_adaptive_recovery_policy_learns_eta_and_retry_interval(self) -> None:
         learning = {}
@@ -808,6 +884,21 @@ class DevicePersistenceTests(unittest.TestCase):
             allowed, retry_after = main.request_rate_allowed("test-client", "GET", now=102.0)
             self.assertFalse(allowed)
             self.assertGreater(retry_after, 0)
+
+    def test_agent_rate_limits_are_isolated_behind_shared_nat(self) -> None:
+        path = "/api/devices/commands/next"
+        with (
+            patch.object(main, "AGENT_RATE_LIMIT_GET_PER_MINUTE", 2),
+            patch.object(main, "AGENT_IP_BURST_PER_MINUTE", 100),
+            patch.object(main, "REQUEST_RATE_BUCKETS", {}),
+        ):
+            self.assertEqual((True, 0), main.agent_request_rate_allowed(path, "agent-secret-alpha", "10.0.0.1", "GET", now=100))
+            self.assertEqual((True, 0), main.agent_request_rate_allowed(path, "agent-secret-alpha", "10.0.0.1", "GET", now=101))
+            alpha_allowed, _ = main.agent_request_rate_allowed(path, "agent-secret-alpha", "10.0.0.1", "GET", now=102)
+            beta_first = main.agent_request_rate_allowed(path, "agent-secret-bravo", "10.0.0.1", "GET", now=102)
+
+        self.assertFalse(alpha_allowed)
+        self.assertEqual((True, 0), beta_first)
 
     def test_configured_web_origins_include_public_domain(self) -> None:
         with (

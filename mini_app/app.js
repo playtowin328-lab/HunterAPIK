@@ -54,6 +54,7 @@ const missionTarget = $("#missionTarget");
 const missionBudget = $("#missionBudget");
 const missionRisk = $("#missionRisk");
 const missionTopRisk = $("#missionTopRisk");
+const missionAutopilot = $("#missionAutopilot");
 const missionAction = $("#missionAction");
 const quickNavLinks = $$(".quick-nav a");
 const installAgentButton = $("#installAgentButton");
@@ -260,6 +261,7 @@ const deviceAlertKindLabels = {
 
 let devices = [];
 let missionControl = null;
+let missionAutopilotMessage = "";
 let installPlatform = localStorage.getItem("hunter_install_platform") || (detectCurrentDevice().type === "pc" ? "pc" : "android");
 let currentPairLinks = null;
 let currentPairExpiresAt = 0;
@@ -447,7 +449,11 @@ function deviceRecovery(device) {
   const learningSamples = Math.max(0, Number(recovery.learning_samples || 0));
   const learningConfidence = Math.max(0, Number(recovery.learning_confidence || 0));
   const policy = learningSamples > 0 ? "adaptive" : "baseline";
-  return { active, attempt, etaSeconds, nextCheckIn, learningSamples, learningConfidence, policy };
+  const stage = String(recovery.stage || (active ? "restore" : "idle"));
+  const stageLabel = String(recovery.stage_label || (active ? "Восстановление" : "Готов"));
+  const flapping = recovery.flapping === true;
+  const stabilityGuardActive = recovery.stability_guard_active === true;
+  return { active, attempt, etaSeconds, nextCheckIn, learningSamples, learningConfidence, policy, stage, stageLabel, flapping, stabilityGuardActive };
 }
 
 function deviceIsLive(device) {
@@ -456,6 +462,7 @@ function deviceIsLive(device) {
 
 function renderFleetPulse(onlineCount) {
   const recoveringDevices = devices.filter((device) => deviceRecovery(device).active);
+  const guardedDevices = devices.filter((device) => deviceRecovery(device).stabilityGuardActive);
   const attentionCount = devices.filter((device) => {
     const state = device.health?.state || (device.online ? "online" : "offline");
     return ["warning", "degraded", "revoked", "offline", "recovering"].includes(state);
@@ -495,7 +502,7 @@ function renderFleetPulse(onlineCount) {
   fleetPulseAttention.textContent = String(attentionCount);
   fleetPulseRecovery.textContent = recoveringDevices.length
     ? `${recoveringDevices.length} активно`
-    : (pcDevices.length ? `${recoveryReadyCount} / ${pcDevices.length}` : "готово");
+    : (guardedDevices.length ? `${guardedDevices.length} guard` : (pcDevices.length ? `${recoveryReadyCount} / ${pcDevices.length}` : "готово"));
   fleetPulseReplay.textContent = String(replayCount);
 
   if (!devices.length) {
@@ -522,8 +529,9 @@ function renderFleetPulse(onlineCount) {
       .sort((left, right) => deviceRecovery(right).attempt - deviceRecovery(left).attempt)[0];
     const recovery = deviceRecovery(targetDevice);
     const learningText = recovery.learningSamples > 0 ? ` Adaptive AI: ${recovery.learningSamples} кейсов, уверенность ${recovery.learningConfidence}%.` : "";
+    const guardText = recovery.flapping ? " Anti-flap guard: повторные команды ограничены, включён hardening." : "";
     fleetPulseTitle.textContent = "Восстанавливаю связь";
-    fleetPulseDetail.textContent = `${recoveringDevices.length} ${recoveringDevices.length === 1 ? "устройство возвращается" : "устройства возвращаются"} Online. ${targetDevice.name}: попытка ${recovery.attempt}, проверка через ${recoveryTimeLabel(recovery.nextCheckIn)}, ETA около ${recoveryTimeLabel(recovery.etaSeconds)}.${learningText}`;
+    fleetPulseDetail.textContent = `${recoveringDevices.length} ${recoveringDevices.length === 1 ? "устройство возвращается" : "устройства возвращаются"} Online. ${targetDevice.name}: этап ${recovery.stageLabel}, попытка ${recovery.attempt}, проверка через ${recoveryTimeLabel(recovery.nextCheckIn)}, ETA около ${recoveryTimeLabel(recovery.etaSeconds)}.${learningText}${guardText}`;
     fleetPulseAction.textContent = "Открыть recovery";
     fleetPulseAction.dataset.action = "diagnose";
     fleetPulseAction.dataset.deviceId = targetDevice.device_id;
@@ -544,6 +552,7 @@ function renderMissionControl() {
   if (!missionControlCard) return;
   const mission = missionControl || {};
   const profile = mission.profile || { key: "universal", label: "Универсальный" };
+  const autopilot = mission.autopilot || {};
   const profiles = Array.isArray(mission.profiles) && mission.profiles.length
     ? mission.profiles
     : [profile];
@@ -561,7 +570,7 @@ function renderMissionControl() {
   missionControlCard.dataset.state = mission.state || "empty";
   missionState.textContent = stateLabels[mission.state] || stateLabels.empty;
   missionBrief.textContent = mission.brief || "Собираю историю доступности и строю прогноз риска.";
-  missionNextAction.textContent = mission.next_action || "Наблюдение запускается автоматически.";
+  missionNextAction.textContent = missionAutopilotMessage || mission.next_action || "Наблюдение запускается автоматически.";
   missionAvailability.textContent = Number.isFinite(availability) ? `${availability.toFixed(3)}%` : "—";
   missionTarget.textContent = Number.isFinite(target) ? `${target}%` : "—";
   missionBudget.textContent = !Number.isFinite(budget) ? "—" : (budget < 0 ? "исчерпан" : `${Math.round(budget)}%`);
@@ -577,6 +586,16 @@ function renderMissionControl() {
   missionProfileSelect.title = missionProfileSelect.disabled
     ? "Отраслевой режим задаёт владелец проекта"
     : `Цель профиля: ${profile.focus || "надёжность флота"}`;
+  const canRunAutopilot = window.currentDeviceMeta?.role === "root";
+  missionAutopilot?.classList.toggle("hidden", !canRunAutopilot);
+  if (missionAutopilot) {
+    const hardeningCount = Number(autopilot.hardening_needed_count || 0);
+    const flappingCount = Number(autopilot.flapping_count || 0);
+    missionAutopilot.textContent = hardeningCount ? `Укрепить флот · ${hardeningCount}` : "Hardening Autopilot";
+    missionAutopilot.title = flappingCount
+      ? `Anti-flap guard активен для ${flappingCount} устройств`
+      : "Безопасно проверит каналы и восстановит watchdog/backup без дублей команд";
+  }
 
   const topRisk = mission.top_risk_device;
   if (topRisk) {
@@ -608,6 +627,29 @@ async function saveMissionProfile(profileKey) {
     missionState.textContent = "Профиль не сохранён";
     missionNextAction.textContent = error.message;
     missionProfileSelect.disabled = false;
+  }
+}
+
+async function runMissionAutopilot() {
+  if (window.currentDeviceMeta?.role !== "root" || !missionAutopilot) return;
+  missionAutopilot.disabled = true;
+  missionAutopilot.textContent = "Запускаю hardening…";
+  missionAutopilotMessage = "Autopilot анализирует каналы, watchdog и резервные копии.";
+  renderMissionControl();
+  try {
+    const payload = await apiJson(`${apiBaseUrl}/api/mission/autopilot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(apiAuthPayload({ mode: "hard" })),
+    });
+    const summary = payload.summary || {};
+    missionAutopilotMessage = `Autopilot: команд ${Number(summary.queued_count || 0)}, repair ${Number(summary.repair_count || 0)}, probe ${Number(summary.probe_count || 0)}, уже защищены ${Number(summary.already_active_count || 0)}.`;
+    await refreshDevices();
+  } catch (error) {
+    missionAutopilotMessage = `Autopilot остановлен: ${error.message}`;
+    renderMissionControl();
+  } finally {
+    missionAutopilot.disabled = false;
   }
 }
 
@@ -3109,6 +3151,7 @@ fleetPulseAction?.addEventListener("click", async () => {
 });
 
 missionProfileSelect?.addEventListener("change", () => saveMissionProfile(missionProfileSelect.value));
+missionAutopilot?.addEventListener("click", runMissionAutopilot);
 missionAction?.addEventListener("click", async () => {
   if (missionAction.dataset.action === "refresh") {
     await refreshDevices();

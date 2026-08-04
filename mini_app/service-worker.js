@@ -1,5 +1,5 @@
-const CACHE = "hunter-control-v22";
-const STATIC = ["./", "./index.html", "./styles.css?v=22", "./app.js?v=22", "./manifest.webmanifest?v=22", "./assets/hunter-pwa-icon.svg", "./assets/hunter-alert-cover.png"];
+const CACHE = "hunter-control-v23";
+const STATIC = ["./", "./index.html", "./styles.css?v=23", "./app.js?v=23", "./manifest.webmanifest?v=23", "./assets/hunter-pwa-icon.svg", "./assets/hunter-alert-cover.png"];
 self.addEventListener("install", (event) => {
   self.skipWaiting();
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(STATIC)));

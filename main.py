@@ -76,6 +76,11 @@ AUTO_RECOVERY_TRIGGER_SECONDS = max(30, int(os.getenv("AUTO_RECOVERY_TRIGGER_SEC
 AUTO_RECOVERY_RETRY_SECONDS = max(15, int(os.getenv("AUTO_RECOVERY_RETRY_SECONDS", "60")))
 AUTO_RECOVERY_MAX_ETA_SECONDS = max(60, int(os.getenv("AUTO_RECOVERY_MAX_ETA_SECONDS", "180")))
 RECOVERY_LEARNING_WINDOW = max(3, min(50, int(os.getenv("RECOVERY_LEARNING_WINDOW", "20"))))
+RECOVERY_FLAP_WINDOW_SECONDS = max(300, int(os.getenv("RECOVERY_FLAP_WINDOW_SECONDS", "900")))
+RECOVERY_FLAP_THRESHOLD = max(2, min(10, int(os.getenv("RECOVERY_FLAP_THRESHOLD", "3"))))
+RECOVERY_FLAP_GUARD_SECONDS = max(300, int(os.getenv("RECOVERY_FLAP_GUARD_SECONDS", "1800")))
+RECOVERY_STABILITY_GUARD_SECONDS = max(60, int(os.getenv("RECOVERY_STABILITY_GUARD_SECONDS", "300")))
+FLEET_AUTOPILOT_COMMAND_LIMIT = max(1, min(100, int(os.getenv("FLEET_AUTOPILOT_COMMAND_LIMIT", "25"))))
 LOG_DIGEST_INTERVAL_SECONDS = max(60, int(os.getenv("LOG_DIGEST_INTERVAL_SECONDS", "300")))
 LOG_DIGEST_MAX_EVENTS = max(3, min(50, int(os.getenv("LOG_DIGEST_MAX_EVENTS", "12"))))
 BASE_DIR = Path(__file__).resolve().parent
@@ -116,6 +121,16 @@ PAIRING_TTL_SECONDS = int(os.getenv("PAIRING_TTL_SECONDS", "600"))
 MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_MB", "8")) * 1024 * 1024
 RATE_LIMIT_GET_PER_MINUTE = int(os.getenv("RATE_LIMIT_GET_PER_MINUTE", "300"))
 RATE_LIMIT_POST_PER_MINUTE = int(os.getenv("RATE_LIMIT_POST_PER_MINUTE", "180"))
+AGENT_RATE_LIMIT_GET_PER_MINUTE = int(os.getenv("AGENT_RATE_LIMIT_GET_PER_MINUTE", "120"))
+AGENT_RATE_LIMIT_POST_PER_MINUTE = int(os.getenv("AGENT_RATE_LIMIT_POST_PER_MINUTE", "90"))
+AGENT_IP_BURST_PER_MINUTE = int(os.getenv("AGENT_IP_BURST_PER_MINUTE", "3000"))
+AGENT_RATE_LIMIT_PATHS = {
+    "/api/devices/commands/next",
+    "/api/devices/register",
+    "/api/devices/heartbeat",
+    "/api/devices/commands/complete",
+    "/api/devices/screen",
+}
 
 
 def configured_web_origins() -> set[str]:
@@ -136,9 +151,9 @@ REQUEST_RATE_LOCK = threading.Lock()
 REQUEST_RATE_BUCKETS: dict[tuple[str, str], list[float]] = {}
 
 
-def request_rate_allowed(client_id: str, method: str, now: float | None = None) -> tuple[bool, int]:
+def request_rate_allowed(client_id: str, method: str, now: float | None = None, limit_override: int = 0) -> tuple[bool, int]:
     current = time.time() if now is None else now
-    limit = RATE_LIMIT_POST_PER_MINUTE if method == "POST" else RATE_LIMIT_GET_PER_MINUTE
+    limit = max(1, int(limit_override or (RATE_LIMIT_POST_PER_MINUTE if method == "POST" else RATE_LIMIT_GET_PER_MINUTE)))
     key = (client_id, method)
     with REQUEST_RATE_LOCK:
         recent = [stamp for stamp in REQUEST_RATE_BUCKETS.get(key, []) if current - stamp < 60]
@@ -154,10 +169,29 @@ def request_rate_allowed(client_id: str, method: str, now: float | None = None) 
                 REQUEST_RATE_BUCKETS.pop(bucket_key, None)
     return True, 0
 
+
+def agent_rate_limit_identity(path: str, device_secret: str, client_id: str) -> str:
+    secret = str(device_secret or "").strip()
+    if str(path or "") not in AGENT_RATE_LIMIT_PATHS or len(secret) < 16:
+        return ""
+    digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()[:24]
+    return f"agent:{digest}:{str(client_id or '')[:64]}"
+
+
+def agent_request_rate_allowed(path: str, device_secret: str, client_id: str, method: str, now: float | None = None) -> tuple[bool, int]:
+    identity = agent_rate_limit_identity(path, device_secret, client_id)
+    if not identity:
+        return request_rate_allowed(client_id, method, now)
+    credential_limit = AGENT_RATE_LIMIT_POST_PER_MINUTE if method == "POST" else AGENT_RATE_LIMIT_GET_PER_MINUTE
+    allowed, retry_after = request_rate_allowed(identity, method, now, credential_limit)
+    if not allowed:
+        return allowed, retry_after
+    return request_rate_allowed(f"agent-ip:{client_id}", method, now, AGENT_IP_BURST_PER_MINUTE)
+
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
 APP_STARTED_AT = time.time()
-PWA_CACHE_VERSION = "hunter-control-v22"
+PWA_CACHE_VERSION = "hunter-control-v23"
 DEVICE_COMMAND_CONDITION = threading.Condition()
 BOT_POLLING_READY = False
 BOT_POLLING_STATUS = "starting"
@@ -2103,6 +2137,11 @@ def device_recovery_view(device: dict) -> dict:
     learning_confidence = max(0, int(recovery.get("learning_confidence") or 0))
     policy = "adaptive" if learning_samples else "baseline"
     learning_text = f", адаптивный прогноз по {learning_samples} восстановлениям" if learning_samples else ""
+    stage = str(recovery.get("stage") or ("restore" if active else "idle"))
+    stage_label = str(recovery.get("stage_label") or ("Восстановление" if active else "Готов"))
+    flapping = bool(recovery.get("flapping"))
+    stability_guard_active = bool(recovery.get("stability_guard_active"))
+    guard_text = " · anti-flap guard" if flapping else ""
     return {
         "active": active,
         "attempt": attempt,
@@ -2111,9 +2150,16 @@ def device_recovery_view(device: dict) -> dict:
         "learning_samples": learning_samples,
         "learning_confidence": learning_confidence,
         "policy": policy,
-        "short": f"Восстановление · попытка {attempt} · ~{recovery_time_label(eta_seconds)}" if active else "",
+        "stage": stage,
+        "stage_label": stage_label,
+        "stage_level": max(0, int(recovery.get("stage_level") or 0)),
+        "flapping": flapping,
+        "flap_count": max(0, int(recovery.get("flap_count") or 0)),
+        "stability_guard_active": stability_guard_active,
+        "stability_guard_in": max(0, int(recovery.get("stability_guard_in") or 0)),
+        "short": f"{stage_label} · попытка {attempt} · ~{recovery_time_label(eta_seconds)}{guard_text}" if active else "",
         "detail": (
-            f"попытка {attempt}, следующая проверка через {recovery_time_label(next_check_in)}, "
+            f"этап {stage_label}, попытка {attempt}, следующая проверка через {recovery_time_label(next_check_in)}, "
             f"ожидаем Online примерно до {recovery_time_label(eta_seconds)}{learning_text}"
         ) if active else "",
     }
@@ -2140,6 +2186,7 @@ def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
     fleet_state = "🟢 Стабильно" if devices and online == len(devices) and not attention else (f"🟡 Восстанавливаю связь: {recovering}" if recovering else ("🟡 Нужна проверка" if devices else "⚪ Не подключено"))
     mission_availability = f"{mission['availability']:.3f}%" if mission.get("availability") is not None else "—"
     mission_profile = mission.get("profile") or {}
+    mission_autopilot = mission.get("autopilot") or {}
     device_preview = []
     for device in devices[:5]:
         recovery = device_recovery_view(device)
@@ -2165,6 +2212,7 @@ def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
         fleet_state,
         f"📱 Всего: {len(devices)} · 🟢 Online: {online} · 🟡 Recovery: {recovering} · ⚠ Внимание: {attention}",
         f"🎯 SLO 24ч: {mission_availability} / {mission.get('slo_target')}% · риск: {mission.get('at_risk_count', 0)} · {mission_profile.get('label', 'Универсальный')}",
+        f"⚙️ Autopilot HARD: hardening {mission_autopilot.get('hardening_needed_count', 0)} · anti-flap {mission_autopilot.get('flapping_count', 0)} · guard {mission_autopilot.get('stability_guard_count', 0)}",
         f"☁️ Инфраструктура: {setup_line} · 🛡 Данные: {storage_line}",
         *(["", "Быстрый обзор:", *device_preview] if device_preview else []),
         "",
@@ -4006,6 +4054,51 @@ def save_device_maintenance_state(data: dict) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+def recovery_stage_policy(attempt: int, flapping: bool = False) -> dict:
+    safe_attempt = max(1, int(attempt or 1))
+    if flapping or safe_attempt >= 4:
+        return {
+            "key": "harden",
+            "label": "Hardening",
+            "description": "Восстанавливаю автозапуск, резервную копию и проверяю heartbeat.",
+            "level": 3,
+        }
+    if safe_attempt >= 2:
+        return {
+            "key": "retry",
+            "label": "Повторный запуск",
+            "description": "Повторяю безопасный repair с адаптивной паузой.",
+            "level": 2,
+        }
+    return {
+        "key": "restore",
+        "label": "Восстановление",
+        "description": "Ожидаю Agent и ставлю безопасный repair в очередь.",
+        "level": 1,
+    }
+
+
+def update_recovery_stability(record: dict, recovered_at: int) -> dict:
+    now = max(1, int(recovered_at or now_ts()))
+    recent = [
+        max(1, int(value))
+        for value in list(record.get("recovery_success_times") or [])
+        if isinstance(value, (int, float)) and now - int(value) <= RECOVERY_FLAP_WINDOW_SECONDS
+    ]
+    recent.append(now)
+    recent = recent[-RECOVERY_FLAP_THRESHOLD * 3:]
+    flapping = len(recent) >= RECOVERY_FLAP_THRESHOLD
+    record.update({
+        "recovery_success_times": recent,
+        "recovery_flap_count": len(recent),
+        "recovery_stability_guard_until": now + RECOVERY_STABILITY_GUARD_SECONDS,
+    })
+    if flapping:
+        record["recovery_flapping_until"] = now + RECOVERY_FLAP_GUARD_SECONDS
+        record["recovery_flapping_total"] = max(0, int(record.get("recovery_flapping_total") or 0)) + 1
+    return record
+
+
 def device_recovery_status(owner_id: str, device_id: str) -> dict:
     with DEVICE_MAINTENANCE_LOCK:
         record = dict(
@@ -4021,6 +4114,15 @@ def device_recovery_status(owner_id: str, device_id: str) -> dict:
     learning_samples = max(0, int(record.get("recovery_success_count") or 0))
     learning_confidence = min(95, 20 + learning_samples * 15) if learning_samples else 0
     next_check_in = max(0, next_check_at - now_ts()) if active and next_check_at else 0
+    flapping_until = max(0, int(record.get("recovery_flapping_until") or 0))
+    stability_guard_until = max(0, int(record.get("recovery_stability_guard_until") or 0))
+    flapping = flapping_until > now_ts()
+    stage = recovery_stage_policy(max(1, attempt), flapping)
+    default_stage = stage["key"] if active else ("verify" if stability_guard_until > now_ts() else "idle")
+    default_stage_label = stage["label"] if active else ("Проверка стабильности" if stability_guard_until > now_ts() else "Готов")
+    stage_key = str(record.get("recovery_stage") or default_stage) if active or stability_guard_until > now_ts() else "idle"
+    stage_label = str(record.get("recovery_stage_label") or default_stage_label) if active or stability_guard_until > now_ts() else "Готов"
+    stage_level = max(0, int(record.get("recovery_stage_level") or stage["level"])) if active or stability_guard_until > now_ts() else 0
     return {
         "confirmation_checks": max(0, int(record.get("degraded_checks") or 0)),
         "confirmation_required": AUTO_REPAIR_CONFIRMATION_CHECKS,
@@ -4044,6 +4146,17 @@ def device_recovery_status(owner_id: str, device_id: str) -> dict:
         "learning_confidence": learning_confidence,
         "policy": "adaptive" if learning_samples else "baseline",
         "retry_seconds": max(0, int(record.get("recovery_retry_seconds") or AUTO_RECOVERY_RETRY_SECONDS)),
+        "incident_id": str(record.get("recovery_incident_id") or ""),
+        "stage": stage_key,
+        "stage_label": stage_label,
+        "stage_level": stage_level,
+        "flapping": flapping,
+        "flap_count": max(0, int(record.get("recovery_flap_count") or 0)),
+        "flapping_guard_in": max(0, flapping_until - now_ts()) if flapping else 0,
+        "flapping_total": max(0, int(record.get("recovery_flapping_total") or 0)),
+        "stability_guard_active": stability_guard_until > now_ts(),
+        "stability_guard_in": max(0, stability_guard_until - now_ts()) if stability_guard_until > now_ts() else 0,
+        "relapse_count": max(0, int(record.get("recovery_relapse_count") or 0)),
     }
 
 
@@ -4191,6 +4304,7 @@ def orchestrate_device_recovery(device: dict) -> dict:
                 recovery_duration = max(1, now - recovery_started_at)
                 recovery_attempts = max(1, int(previous.get("recovery_attempt") or 1))
                 update_recovery_learning(previous, recovery_duration, recovery_attempts)
+                update_recovery_stability(previous, now)
                 learned_eta = recovery_eta_seconds(device, 1, previous)
                 previous.update({
                     "recovery_state": "idle",
@@ -4201,6 +4315,9 @@ def orchestrate_device_recovery(device: dict) -> dict:
                     "last_recovered_at": now,
                     "last_recovery_duration": recovery_duration,
                     "recovery_learned_eta_seconds": learned_eta,
+                    "recovery_stage": "verify",
+                    "recovery_stage_label": "Проверка стабильности",
+                    "recovery_stage_level": 4,
                 })
                 devices_state[key] = previous
                 save_device_maintenance_state(state)
@@ -4229,10 +4346,21 @@ def orchestrate_device_recovery(device: dict) -> dict:
             attempt = 1
             started = True
             previous["recovery_started_at"] = now
+            previous["recovery_incident_id"] = secrets.token_urlsafe(8)
+            if now < max(0, int(previous.get("recovery_stability_guard_until") or 0)):
+                previous["recovery_relapse_count"] = max(0, int(previous.get("recovery_relapse_count") or 0)) + 1
+                previous["recovery_flapping_until"] = now + RECOVERY_FLAP_GUARD_SECONDS
             next_check_at = now + adaptive_recovery_retry_seconds(previous, attempt)
 
+        flapping = now < max(0, int(previous.get("recovery_flapping_until") or 0))
+        stage = recovery_stage_policy(attempt, flapping)
         retry_seconds = adaptive_recovery_retry_seconds(previous, attempt)
+        if flapping:
+            retry_seconds = max(retry_seconds, min(AUTO_RECOVERY_MAX_ETA_SECONDS, 120))
+            next_check_at = max(next_check_at, now + retry_seconds)
         eta_seconds = recovery_eta_seconds(device, attempt, previous)
+        if flapping:
+            eta_seconds = max(eta_seconds, retry_seconds)
         learning_samples = max(0, int(previous.get("recovery_success_count") or 0))
         previous.update({
             "recovery_state": "recovering",
@@ -4243,10 +4371,14 @@ def orchestrate_device_recovery(device: dict) -> dict:
             "recovery_learned_eta_seconds": recovery_eta_seconds(device, 1, previous),
             "recovery_policy": "adaptive" if learning_samples else "baseline",
             "recovery_last_seen_age": last_seen_age,
+            "recovery_stage": stage["key"],
+            "recovery_stage_label": stage["label"],
+            "recovery_stage_level": stage["level"],
         })
 
         last_command_at = max(0, int(previous.get("recovery_command_at") or 0))
-        command_due = not last_command_at or now - last_command_at >= max(30, COMMAND_PENDING_TIMEOUT_SECONDS)
+        command_cooldown = max(30, COMMAND_PENDING_TIMEOUT_SECONDS, 300 if flapping else 0)
+        command_due = started or not last_command_at or now - last_command_at >= command_cooldown
         if command_due and not has_active_device_command(owner_id, device_id, "repair_agent"):
             command = create_device_command(
                 owner_id,
@@ -4258,6 +4390,12 @@ def orchestrate_device_recovery(device: dict) -> dict:
                     "recovery_attempt": attempt,
                     "created_by": "recovery_orchestrator",
                     "recovery_policy": "adaptive" if learning_samples else "baseline",
+                    "recovery_stage": stage["key"],
+                    "recovery_level": stage["level"],
+                    "recovery_incident_id": previous.get("recovery_incident_id"),
+                    "flapping": flapping,
+                    "force_startup": stage["key"] == "harden",
+                    "refresh_recovery_copy": stage["key"] == "harden",
                 },
             )
             previous["recovery_command_at"] = now
@@ -4279,11 +4417,14 @@ def orchestrate_device_recovery(device: dict) -> dict:
                 "last_seen_age": last_seen_age,
                 "policy": "adaptive" if learning_samples else "baseline",
                 "learning_samples": learning_samples,
+                "stage": stage["key"],
+                "flapping": flapping,
+                "incident_id": previous.get("recovery_incident_id"),
             },
             actor_name="Recovery orchestrator",
             notify=False,
         )
-    return {"active": True, "started": started, "recovered": False, "command": command}
+    return {"active": True, "started": started, "recovered": False, "command": command, "stage": stage["key"], "flapping": flapping}
 
 
 def device_needs_auto_repair(device: dict) -> tuple[bool, str]:
@@ -5545,6 +5686,28 @@ def device_reliability(device: dict, hours: int = 24, reference_at: int | None =
     }
 
 
+def device_hardening_plan(device: dict) -> dict:
+    if device.get("pairing_required"):
+        return {"action": "skip", "reason": "pairing_required", "label": "Нужна привязка"}
+    health = device.get("health") if isinstance(device.get("health"), dict) else {}
+    recovery = health.get("recovery") if isinstance(health.get("recovery"), dict) else {}
+    telemetry = device.get("telemetry") if isinstance(device.get("telemetry"), dict) else {}
+    reliability = device.get("reliability") if isinstance(device.get("reliability"), dict) else {}
+    if not device.get("online"):
+        return {"action": "recovery", "reason": "offline", "label": "Запустить recovery"}
+    if recovery.get("flapping"):
+        return {"action": "repair_agent", "reason": "flapping", "label": "Anti-flap hardening"}
+    if is_pc_device(device) and any(telemetry.get(field) is not True for field in ("startup_installed", "watchdog_enabled", "recovery_copy")):
+        return {"action": "repair_agent", "reason": "pc_resilience_gap", "label": "Восстановить watchdog и backup"}
+    risk_score = max(0, int(reliability.get("risk_score") or 0))
+    connection = health.get("connection") if isinstance(health.get("connection"), dict) else {}
+    quality_value = connection.get("score")
+    quality_score = max(0, int(quality_value if quality_value is not None else 100))
+    if risk_score >= 50 or str(health.get("state") or "") in {"warning", "degraded"} or quality_score < 75:
+        return {"action": "repair_agent", "reason": "connection_risk", "label": "Стабилизировать Agent"}
+    return {"action": "ping", "reason": "verification", "label": "Проверить канал"}
+
+
 def fleet_mission_control(devices: list[dict], profile_key: str = "", reference_at: int | None = None) -> dict:
     profile = operations_profile_config(profile_key)
     paired_devices = [device for device in devices if not device.get("pairing_required")]
@@ -5571,6 +5734,14 @@ def fleet_mission_control(devices: list[dict], profile_key: str = "", reference_
         reverse=True,
     )
     top_device, top_reliability = at_risk[0] if at_risk else (None, None)
+    recovery_statuses = [
+        (device.get("health") or {}).get("recovery") or {}
+        for device in paired_devices
+    ]
+    flapping_count = sum(bool(status.get("flapping")) for status in recovery_statuses)
+    stability_guard_count = sum(bool(status.get("stability_guard_active")) for status in recovery_statuses)
+    hardening_plans = [device_hardening_plan(device) for device in paired_devices]
+    hardening_needed_count = sum(plan["action"] in {"repair_agent", "recovery"} for plan in hardening_plans)
 
     if not paired_devices:
         state = "empty"
@@ -5605,13 +5776,87 @@ def fleet_mission_control(devices: list[dict], profile_key: str = "", reference_
         "at_risk_count": len(at_risk),
         "paired_device_count": len(paired_devices),
         "brief": brief,
-        "next_action": top_reliability.get("recommendation") if top_reliability else "Наблюдение работает автоматически.",
+        "next_action": top_reliability.get("recommendation") if top_reliability else ("Reliability Autopilot готов закрыть пробелы hardening." if hardening_needed_count else "Наблюдение работает автоматически."),
+        "autopilot": {
+            "mode": "hard",
+            "flapping_count": flapping_count,
+            "stability_guard_count": stability_guard_count,
+            "hardening_needed_count": hardening_needed_count,
+            "command_limit": FLEET_AUTOPILOT_COMMAND_LIMIT,
+        },
         "top_risk_device": {
             "device_id": top_device.get("device_id"),
             "name": top_device.get("name"),
             "risk_score": top_reliability.get("risk_score"),
         } if top_device and top_reliability else None,
     }
+
+
+def run_fleet_autopilot(actor_id: str, devices: list[dict] | None = None) -> dict:
+    fleet = devices if devices is not None else list_all_devices()
+    mission = fleet_mission_control(fleet)
+    queued: list[dict] = []
+    already_active = 0
+    skipped = 0
+    recovery_started = 0
+
+    for device in fleet:
+        if len(queued) >= FLEET_AUTOPILOT_COMMAND_LIMIT:
+            skipped += 1
+            continue
+        plan = device_hardening_plan(device)
+        action = plan["action"]
+        if action == "skip":
+            skipped += 1
+            continue
+        if action == "recovery":
+            recovery = orchestrate_device_recovery(device)
+            command = recovery.get("command")
+            if command:
+                queued.append({"device_id": device.get("device_id"), "name": device.get("name"), "type": command["type"], "reason": plan["reason"]})
+                recovery_started += 1
+            else:
+                already_active += 1
+            continue
+        if has_active_device_command(str(device.get("owner_id") or ""), str(device.get("device_id") or ""), action):
+            already_active += 1
+            continue
+        command = create_device_command(
+            str(device.get("owner_id") or ""),
+            str(device.get("device_id") or ""),
+            action,
+            {
+                "auto": True,
+                "reason": plan["reason"],
+                "created_by": "fleet_autopilot",
+                "autopilot_mode": "hard",
+                "verify_heartbeat": True,
+                "force_startup": action == "repair_agent",
+                "refresh_recovery_copy": action == "repair_agent",
+            },
+        )
+        queued.append({"device_id": device.get("device_id"), "name": device.get("name"), "type": command["type"], "reason": plan["reason"]})
+
+    summary = {
+        "mode": "hard",
+        "fleet_size": len(fleet),
+        "queued_count": len(queued),
+        "repair_count": sum(item["type"] == "repair_agent" for item in queued),
+        "probe_count": sum(item["type"] == "ping" for item in queued),
+        "recovery_started_count": recovery_started,
+        "already_active_count": already_active,
+        "skipped_count": skipped,
+        "at_risk_count": mission.get("at_risk_count", 0),
+        "commands": queued,
+    }
+    audit_event(
+        actor_id,
+        "fleet_autopilot",
+        f"Fleet Autopilot: queued {len(queued)}, active {already_active}, skipped {skipped}",
+        summary,
+        notify=False,
+    )
+    return summary
 
 
 def device_exists(owner_id: str, device_id: str) -> bool:
@@ -6072,6 +6317,8 @@ def health_status_payload() -> dict:
             "max_wait_seconds": COMMAND_LONG_POLL_MAX_SECONDS,
             "max_delivery_attempts": COMMAND_MAX_DELIVERY_ATTEMPTS,
             "duplicate_guard": "agent_receipt_cache",
+            "rate_limit_scope": "per_agent_secret_with_ip_burst_guard",
+            "recovery_autopilot": "staged_anti_flap_hardening",
         },
     }
     if database_error:
@@ -6130,7 +6377,14 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
         return forwarded or str(self.client_address[0])
 
     def allow_request(self, method: str) -> bool:
-        allowed, retry_after = request_rate_allowed(self.client_rate_id(), method)
+        client_id = self.client_rate_id()
+        parsed_path = urlparse(self.path).path
+        allowed, retry_after = agent_request_rate_allowed(
+            parsed_path,
+            self.headers.get("X-Device-Secret", ""),
+            client_id,
+            method,
+        )
         if allowed:
             return True
         self.send_response(HTTPStatus.TOO_MANY_REQUESTS)
@@ -6834,6 +7088,10 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             self.handle_operations_profile()
             return
 
+        if parsed_url.path == "/api/mission/autopilot":
+            self.handle_fleet_autopilot()
+            return
+
         if parsed_url.path == "/api/alerts/device/settings":
             self.handle_device_alert_settings()
             return
@@ -6980,6 +7238,21 @@ class MiniAppRequestHandler(SimpleHTTPRequestHandler):
             notify=False,
         )
         self.send_json({"ok": True, "profile": profile})
+
+    def handle_fleet_autopilot(self) -> None:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length).decode("utf-8")
+            payload = json.loads(raw_body or "{}")
+            actor_id = webapp_user_id_from_payload(payload)
+            if not actor_id or get_user_role(actor_id) != "root":
+                self.send_json({"error": "root access required"}, HTTPStatus.FORBIDDEN)
+                return
+            summary = run_fleet_autopilot(actor_id)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json({"ok": True, "summary": summary})
 
     def handle_create_command(self) -> None:
         try:
