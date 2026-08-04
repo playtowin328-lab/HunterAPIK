@@ -432,7 +432,10 @@ function deviceRecovery(device) {
   const attempt = active ? Math.max(1, Number(recovery.attempt || 1)) : 0;
   const etaSeconds = active ? Math.max(1, Number(recovery.eta_seconds || 45)) : 0;
   const nextCheckIn = active ? Math.max(0, Number(recovery.next_check_in || 60)) : 0;
-  return { active, attempt, etaSeconds, nextCheckIn };
+  const learningSamples = Math.max(0, Number(recovery.learning_samples || 0));
+  const learningConfidence = Math.max(0, Number(recovery.learning_confidence || 0));
+  const policy = learningSamples > 0 ? "adaptive" : "baseline";
+  return { active, attempt, etaSeconds, nextCheckIn, learningSamples, learningConfidence, policy };
 }
 
 function deviceIsLive(device) {
@@ -506,8 +509,9 @@ function renderFleetPulse(onlineCount) {
     const targetDevice = recoveringDevices
       .sort((left, right) => deviceRecovery(right).attempt - deviceRecovery(left).attempt)[0];
     const recovery = deviceRecovery(targetDevice);
+    const learningText = recovery.learningSamples > 0 ? ` Adaptive AI: ${recovery.learningSamples} кейсов, уверенность ${recovery.learningConfidence}%.` : "";
     fleetPulseTitle.textContent = "Восстанавливаю связь";
-    fleetPulseDetail.textContent = `${recoveringDevices.length} ${recoveringDevices.length === 1 ? "устройство возвращается" : "устройства возвращаются"} Online. ${targetDevice.name}: попытка ${recovery.attempt}, проверка через ${recoveryTimeLabel(recovery.nextCheckIn)}, ETA около ${recoveryTimeLabel(recovery.etaSeconds)}.`;
+    fleetPulseDetail.textContent = `${recoveringDevices.length} ${recoveringDevices.length === 1 ? "устройство возвращается" : "устройства возвращаются"} Online. ${targetDevice.name}: попытка ${recovery.attempt}, проверка через ${recoveryTimeLabel(recovery.nextCheckIn)}, ETA около ${recoveryTimeLabel(recovery.etaSeconds)}.${learningText}`;
     fleetPulseAction.textContent = "Открыть recovery";
     fleetPulseAction.dataset.action = "diagnose";
     fleetPulseAction.dataset.deviceId = targetDevice.device_id;
@@ -905,7 +909,7 @@ function renderConnectionQuality(device) {
       ? '<b class="connection-recovery-badge" data-state="probe">Проверка</b>'
       : (recoveryReady ? '<b class="connection-recovery-badge" data-state="ready">Recovery ready</b>' : ""));
   const recommendation = recovery.active
-    ? `Repair в очереди. Следующая проверка через ${recoveryTimeLabel(recovery.nextCheckIn)}, ожидаем Online около ${recoveryTimeLabel(recovery.etaSeconds)}.`
+    ? `Repair в очереди. Следующая проверка через ${recoveryTimeLabel(recovery.nextCheckIn)}, ожидаем Online около ${recoveryTimeLabel(recovery.etaSeconds)}.${recovery.learningSamples > 0 ? ` Adaptive AI обучен на ${recovery.learningSamples} восстановлениях.` : ""}`
     : (quality.recommendations[0] || "Связь стабильна, дополнительных действий не требуется.");
   const action = deviceIsLive(device) && quality.score < 75
     ? '<button class="connection-quality-action" type="button">Усилить связь</button>'

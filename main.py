@@ -62,7 +62,7 @@ LOG_CHAT_ID = os.getenv("LOG_CHAT_ID", "").strip()
 WEBAPP_HOST = os.getenv("WEBAPP_HOST", "0.0.0.0")
 WEBAPP_PORT = int(os.getenv("PORT", os.getenv("WEBAPP_PORT", "8080")))
 DEVICE_TTL_SECONDS = int(os.getenv("DEVICE_TTL_SECONDS", "300"))
-DEVICE_MONITOR_INTERVAL_SECONDS = int(os.getenv("DEVICE_MONITOR_INTERVAL_SECONDS", "60"))
+DEVICE_MONITOR_INTERVAL_SECONDS = max(15, int(os.getenv("DEVICE_MONITOR_INTERVAL_SECONDS", "30")))
 COMMAND_PENDING_TIMEOUT_SECONDS = int(os.getenv("COMMAND_PENDING_TIMEOUT_SECONDS", "120"))
 COMMAND_DELIVERED_TIMEOUT_SECONDS = int(os.getenv("COMMAND_DELIVERED_TIMEOUT_SECONDS", "180"))
 COMMAND_RESERVATION_TIMEOUT_SECONDS = int(os.getenv("COMMAND_RESERVATION_TIMEOUT_SECONDS", "30"))
@@ -75,6 +75,9 @@ AUTO_REPAIR_CONFIRMATION_CHECKS = max(1, min(10, int(os.getenv("AUTO_REPAIR_CONF
 AUTO_RECOVERY_TRIGGER_SECONDS = max(30, int(os.getenv("AUTO_RECOVERY_TRIGGER_SECONDS", "45")))
 AUTO_RECOVERY_RETRY_SECONDS = max(15, int(os.getenv("AUTO_RECOVERY_RETRY_SECONDS", "60")))
 AUTO_RECOVERY_MAX_ETA_SECONDS = max(60, int(os.getenv("AUTO_RECOVERY_MAX_ETA_SECONDS", "180")))
+RECOVERY_LEARNING_WINDOW = max(3, min(50, int(os.getenv("RECOVERY_LEARNING_WINDOW", "20"))))
+LOG_DIGEST_INTERVAL_SECONDS = max(60, int(os.getenv("LOG_DIGEST_INTERVAL_SECONDS", "300")))
+LOG_DIGEST_MAX_EVENTS = max(3, min(50, int(os.getenv("LOG_DIGEST_MAX_EVENTS", "12"))))
 BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -154,7 +157,7 @@ def request_rate_allowed(client_id: str, method: str, now: float | None = None) 
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
 APP_STARTED_AT = time.time()
-PWA_CACHE_VERSION = "hunter-control-v20"
+PWA_CACHE_VERSION = "hunter-control-v21"
 DEVICE_COMMAND_CONDITION = threading.Condition()
 BOT_POLLING_READY = False
 BOT_POLLING_STATUS = "starting"
@@ -726,6 +729,17 @@ DEVICE_ALERT_COOLDOWNS_SECONDS = {
 }
 
 DEVICE_ALERT_PRIORITY_WEIGHT = {"critical": 0, "important": 1, "info": 2}
+ROOT_IMMEDIATE_AUDIT_ACTIONS = {
+    "device_alert",
+    "device_alert_digest",
+    "device_added",
+    "device_paired",
+    "grant_access",
+    "revoke_access",
+    "build_apk_lite",
+    "build_apk_full",
+    "build_pc_agent",
+}
 ROOT_ONLY_PROGRAM_CALLBACKS = {
     "settings",
     "setup_wizard",
@@ -913,7 +927,30 @@ async def notify_root_admins(event: dict) -> None:
     severity = str(event.get("severity") or "info")
     prefix = {"security": "🛡 БЕЗОПАСНОСТЬ", "warning": "⚠️ ТРЕБУЕТ ВНИМАНИЯ", "info": "◉ НОВОЕ СОБЫТИЕ"}.get(severity, "◉ НОВОЕ СОБЫТИЕ")
     metadata = event.get("metadata") or {}
-    if event.get("action") == "device_alert":
+    if event.get("action") == "device_alert_digest":
+        items = list(metadata.get("items") or [])
+        event_count = max(len(items), int(metadata.get("event_count") or 0))
+        device_count = max(0, int(metadata.get("device_count") or 0))
+        hidden_count = max(0, int(metadata.get("hidden_count") or 0))
+        important_count = max(0, int(metadata.get("important_count") or 0))
+        lines = []
+        for item in items[:8]:
+            priority = str(item.get("priority") or "info")
+            marker = "⭐" if priority == "important" else "•"
+            repeats = max(1, int(item.get("count") or 1))
+            repeat_text = f" ×{repeats}" if repeats > 1 else ""
+            lines.append(f"{marker} {item.get('name') or 'Устройство'} — {item.get('detail') or 'событие'}{repeat_text}")
+        if hidden_count:
+            lines.append(f"…ещё {hidden_count} событий сохранено в Trust Timeline")
+        created = datetime.fromtimestamp(int(event.get("created_at") or now_ts())).strftime("%d.%m · %H:%M")
+        text = (
+            "🧠 HUNTER SMART DIGEST\n\n"
+            f"За период: {event_count} событий · {device_count} устройств\n"
+            f"Важных: {important_count} · время: {created}\n\n"
+            + "\n".join(lines)
+            + "\n\nКритичные события по-прежнему приходят сразу. Остальное сгруппировано, чтобы чат оставался чистым."
+        )
+    elif event.get("action") == "device_alert":
         kind = str(metadata.get("kind") or "health")
         icon = {
             "online": "🟢", "offline": "🔴", "battery": "🪫", "charging": "🔌",
@@ -1038,8 +1075,14 @@ async def send_chat_id(message: Message) -> None:
     )
 
 
+def root_notification_should_send(event: dict) -> bool:
+    severity = str(event.get("severity") or "info")
+    action = str(event.get("action") or "")
+    return severity in {"warning", "security"} or action in ROOT_IMMEDIATE_AUDIT_ACTIONS
+
+
 def schedule_root_notification(event: dict, notify: bool = True) -> None:
-    if not notify or not BOT_LOOP or not BOT_INSTANCE:
+    if not notify or not root_notification_should_send(event) or not BOT_LOOP or not BOT_INSTANCE:
         return
     try:
         asyncio.run_coroutine_threadsafe(notify_root_admins(event), BOT_LOOP)
@@ -1266,6 +1309,92 @@ def device_alert_enrich_metadata(device: dict, text: str, metadata: dict | None 
     return enriched
 
 
+def queue_device_alert_digest(device: dict, text: str, metadata: dict, now: int | None = None) -> dict:
+    current = int(now if now is not None else now_ts())
+    fingerprint = str(metadata.get("fingerprint") or device_alert_fingerprint(device, text, metadata))
+    with DEVICE_NOTIFY_LOCK:
+        state = load_device_notify_state()
+        digest = state.get("digest") if isinstance(state.get("digest"), dict) else {}
+        items = list(digest.get("items") or [])
+        matched = False
+        for item in items:
+            if str(item.get("fingerprint") or "") == fingerprint:
+                item["count"] = max(1, int(item.get("count") or 1)) + 1
+                item["last_at"] = current
+                item["detail"] = str(text or "")[:240]
+                matched = True
+                break
+        hidden_count = max(0, int(digest.get("hidden_count") or 0))
+        if not matched:
+            if len(items) < LOG_DIGEST_MAX_EVENTS:
+                items.append({
+                    "fingerprint": fingerprint,
+                    "owner_id": str(device.get("owner_id") or ""),
+                    "device_id": str(device.get("device_id") or ""),
+                    "name": str(device.get("name") or "Устройство")[:80],
+                    "kind": str(metadata.get("kind") or "health"),
+                    "priority": str(metadata.get("priority") or "info"),
+                    "detail": str(text or "")[:240],
+                    "count": 1,
+                    "first_at": current,
+                    "last_at": current,
+                })
+            else:
+                hidden_count += 1
+        digest = {
+            "started_at": max(0, int(digest.get("started_at") or current)),
+            "last_updated_at": current,
+            "hidden_count": hidden_count,
+            "items": items,
+        }
+        state["digest"] = digest
+        save_device_notify_state(state)
+    return {
+        "item_count": len(items),
+        "event_count": sum(max(1, int(item.get("count") or 1)) for item in items) + hidden_count,
+        "hidden_count": hidden_count,
+    }
+
+
+def flush_device_alert_digest(force: bool = False, now: int | None = None) -> dict | None:
+    current = int(now if now is not None else now_ts())
+    with DEVICE_NOTIFY_LOCK:
+        state = load_device_notify_state()
+        digest = state.get("digest") if isinstance(state.get("digest"), dict) else {}
+        items = list(digest.get("items") or [])
+        hidden_count = max(0, int(digest.get("hidden_count") or 0))
+        if not items and not hidden_count:
+            return None
+        started_at = max(0, int(digest.get("started_at") or current))
+        event_count = sum(max(1, int(item.get("count") or 1)) for item in items) + hidden_count
+        if not force and current - started_at < LOG_DIGEST_INTERVAL_SECONDS and event_count < LOG_DIGEST_MAX_EVENTS:
+            return None
+        state.pop("digest", None)
+        save_device_notify_state(state)
+
+    device_ids = {str(item.get("device_id") or "") for item in items if item.get("device_id")}
+    important_count = sum(
+        max(1, int(item.get("count") or 1))
+        for item in items
+        if str(item.get("priority") or "") == "important"
+    )
+    return audit_event(
+        "device_monitor",
+        "device_alert_digest",
+        f"Smart Digest: {event_count} событий по {len(device_ids)} устройствам",
+        {
+            "event_count": event_count,
+            "device_count": len(device_ids),
+            "important_count": important_count,
+            "hidden_count": hidden_count,
+            "window_seconds": max(0, current - started_at),
+            "items": items[:LOG_DIGEST_MAX_EVENTS],
+        },
+        actor_name="Smart log aggregator",
+        notify=True,
+    )
+
+
 def device_alert_should_send(state: dict, device: dict, text: str, metadata: dict, now: int | None = None) -> bool:
     now = int(now or now_ts())
     enriched = device_alert_enrich_metadata(device, text, metadata)
@@ -1365,23 +1494,29 @@ def notify_device_alert(device: dict, text: str, metadata: dict | None = None) -
     kind = str(metadata.get("kind") or "unknown")
     if not device_alert_allowed(kind, str(device.get("owner_id") or "")):
         return
+    payload = {
+        "owner_id": device.get("owner_id"),
+        "device_id": device.get("device_id"),
+        "name": device.get("name"),
+        "platform": device.get("platform"),
+        "model": telemetry.get("model"),
+        "battery_percent": telemetry.get("battery_percent"),
+        "network": telemetry.get("network"),
+        **metadata,
+    }
+    priority = str(metadata.get("priority") or device_alert_priority(kind))
     audit_event(
         "device_monitor",
         "device_alert",
         device_alert_detail(device, text),
-        {
-            "owner_id": device.get("owner_id"),
-            "device_id": device.get("device_id"),
-            "name": device.get("name"),
-            "platform": device.get("platform"),
-            "model": telemetry.get("model"),
-            "battery_percent": telemetry.get("battery_percent"),
-            "network": telemetry.get("network"),
-            **metadata,
-        },
+        payload,
         actor_name="Device monitor",
-        notify=True,
+        notify=priority == "critical",
     )
+    if priority != "critical":
+        queued = queue_device_alert_digest(device, text, metadata)
+        if int(queued.get("event_count") or 0) >= LOG_DIGEST_MAX_EVENTS:
+            flush_device_alert_digest(force=True)
 
 
 def process_device_notifications(device: dict, force: bool = False) -> None:
@@ -1723,7 +1858,7 @@ def post_deploy_check_text() -> str:
         (devices >= 0, f"Устройства доступны: {devices}"),
         (roles >= 0, f"Роли и доступы доступны: {roles}"),
         (setup.get("ok", False), "API и обязательные Variables готовы"),
-        (MINI_APP_DIR.joinpath("service-worker.js").exists(), "PWA-файлы доступны · cache v15"),
+        (MINI_APP_DIR.joinpath("service-worker.js").exists(), f"PWA-файлы доступны · {PWA_CACHE_VERSION}"),
         (history >= 0, f"История телеметрии работает: {history} записей"),
     ]
     ok = all(value for value, _ in checks)
@@ -1748,6 +1883,7 @@ def root_alerts_text() -> str:
         f"📋 Категории: {len(enabled_kinds)}/{len(DEVICE_ALERT_KINDS)}",
         f"🌙 Тихие часы: {'включены' if settings.get('quiet_hours_enabled') else 'выключены'} · {settings.get('quiet_hours_start')}:00–{settings.get('quiet_hours_end')}:00",
         f"📨 Доставка: {'отдельный чат' if LOG_CHAT_ID else 'личные сообщения root'}",
+        f"🧠 Smart Digest: каждые {human_duration_ru(LOG_DIGEST_INTERVAL_SECONDS)} · критичные события сразу",
         "",
         "Последние события:",
     ]
@@ -1907,16 +2043,23 @@ def device_recovery_view(device: dict) -> dict:
     active = str(health.get("state") or "") == "recovering" or bool(recovery.get("active"))
     attempt = max(1, int(recovery.get("attempt") or 1)) if active else 0
     eta_seconds = max(1, int(recovery.get("eta_seconds") or recovery_eta_seconds(device, attempt))) if active else 0
-    next_check_in = max(0, int(recovery.get("next_check_in") or AUTO_RECOVERY_RETRY_SECONDS)) if active else 0
+    next_check_in = max(0, int(recovery.get("next_check_in") or recovery.get("retry_seconds") or AUTO_RECOVERY_RETRY_SECONDS)) if active else 0
+    learning_samples = max(0, int(recovery.get("learning_samples") or 0))
+    learning_confidence = max(0, int(recovery.get("learning_confidence") or 0))
+    policy = "adaptive" if learning_samples else "baseline"
+    learning_text = f", адаптивный прогноз по {learning_samples} восстановлениям" if learning_samples else ""
     return {
         "active": active,
         "attempt": attempt,
         "eta_seconds": eta_seconds,
         "next_check_in": next_check_in,
+        "learning_samples": learning_samples,
+        "learning_confidence": learning_confidence,
+        "policy": policy,
         "short": f"Восстановление · попытка {attempt} · ~{recovery_time_label(eta_seconds)}" if active else "",
         "detail": (
             f"попытка {attempt}, следующая проверка через {recovery_time_label(next_check_in)}, "
-            f"ожидаем Online примерно до {recovery_time_label(eta_seconds)}"
+            f"ожидаем Online примерно до {recovery_time_label(eta_seconds)}{learning_text}"
         ) if active else "",
     }
 
@@ -3816,6 +3959,8 @@ def device_recovery_status(owner_id: str, device_id: str) -> dict:
     active = str(record.get("recovery_state") or "") == "recovering"
     attempt = max(0, int(record.get("recovery_attempt") or 0))
     eta_seconds = max(0, int(record.get("recovery_eta_seconds") or 0))
+    learning_samples = max(0, int(record.get("recovery_success_count") or 0))
+    learning_confidence = min(95, 20 + learning_samples * 15) if learning_samples else 0
     next_check_in = max(0, next_check_at - now_ts()) if active and next_check_at else 0
     return {
         "confirmation_checks": max(0, int(record.get("degraded_checks") or 0)),
@@ -3833,6 +3978,13 @@ def device_recovery_status(owner_id: str, device_id: str) -> dict:
         "queued": bool(record.get("recovery_command_id")),
         "last_recovered_age": max(0, now_ts() - last_recovered_at) if last_recovered_at else None,
         "last_recovery_duration": max(0, int(record.get("last_recovery_duration") or 0)),
+        "learned_eta_seconds": max(0, int(record.get("recovery_learned_eta_seconds") or 0)),
+        "learned_average_seconds": max(0, int(record.get("recovery_duration_ewma") or 0)),
+        "learned_p90_seconds": max(0, int(record.get("recovery_duration_p90") or 0)),
+        "learning_samples": learning_samples,
+        "learning_confidence": learning_confidence,
+        "policy": "adaptive" if learning_samples else "baseline",
+        "retry_seconds": max(0, int(record.get("recovery_retry_seconds") or AUTO_RECOVERY_RETRY_SECONDS)),
     }
 
 
@@ -3901,9 +4053,47 @@ def device_supports_agent_repair(device: dict) -> bool:
     return "android" in platform or "apk" in agent or "android" in agent or "pc-agent" in agent
 
 
-def recovery_eta_seconds(device: dict, attempt: int) -> int:
+def update_recovery_learning(record: dict, duration_seconds: int, attempts: int = 1) -> dict:
+    duration = max(1, min(AUTO_RECOVERY_MAX_ETA_SECONDS * 4, int(duration_seconds or 1)))
+    durations = [
+        max(1, int(value))
+        for value in list(record.get("recovery_recent_durations") or [])
+        if isinstance(value, (int, float))
+    ][-(RECOVERY_LEARNING_WINDOW - 1):]
+    durations.append(duration)
+    previous_ewma = max(0, int(record.get("recovery_duration_ewma") or 0))
+    ewma = duration if not previous_ewma else round(previous_ewma * 0.7 + duration * 0.3)
+    ordered = sorted(durations)
+    p90_index = min(len(ordered) - 1, max(0, (len(ordered) * 9 + 9) // 10 - 1))
+    record.update({
+        "recovery_recent_durations": durations,
+        "recovery_duration_ewma": ewma,
+        "recovery_duration_p90": ordered[p90_index],
+        "recovery_success_count": max(0, int(record.get("recovery_success_count") or 0)) + 1,
+        "recovery_attempts_total": max(0, int(record.get("recovery_attempts_total") or 0)) + max(1, int(attempts or 1)),
+    })
+    return record
+
+
+def recovery_eta_seconds(device: dict, attempt: int, learning: dict | None = None) -> int:
     base_seconds = 30 if is_pc_device(device) else 45
-    return min(AUTO_RECOVERY_MAX_ETA_SECONDS, base_seconds + max(0, int(attempt) - 1) * 30)
+    learning = learning or {}
+    learned_average = max(0, int(learning.get("recovery_duration_ewma") or 0))
+    learned_p90 = max(0, int(learning.get("recovery_duration_p90") or 0))
+    learned_prediction = max(learned_p90, round(learned_average * 1.2))
+    predicted = max(base_seconds, learned_prediction) + max(0, int(attempt) - 1) * 20
+    return min(AUTO_RECOVERY_MAX_ETA_SECONDS, predicted)
+
+
+def adaptive_recovery_retry_seconds(learning: dict, attempt: int) -> int:
+    samples = max(0, int(learning.get("recovery_success_count") or 0))
+    if not samples:
+        return AUTO_RECOVERY_RETRY_SECONDS
+    learned_average = max(0, int(learning.get("recovery_duration_ewma") or 0))
+    learned_p90 = max(0, int(learning.get("recovery_duration_p90") or 0))
+    learned = max(learned_average, learned_p90)
+    base_retry = max(15, min(AUTO_RECOVERY_RETRY_SECONDS, max(15, learned // 2)))
+    return min(AUTO_RECOVERY_MAX_ETA_SECONDS, base_retry + max(0, int(attempt) - 1) * 10)
 
 
 def recovery_time_label(seconds: int) -> str:
@@ -3939,6 +4129,10 @@ def orchestrate_device_recovery(device: dict) -> dict:
         if not should_recover:
             if was_recovering:
                 recovery_started_at = max(0, int(previous.get("recovery_started_at") or now))
+                recovery_duration = max(1, now - recovery_started_at)
+                recovery_attempts = max(1, int(previous.get("recovery_attempt") or 1))
+                update_recovery_learning(previous, recovery_duration, recovery_attempts)
+                learned_eta = recovery_eta_seconds(device, 1, previous)
                 previous.update({
                     "recovery_state": "idle",
                     "recovery_attempt": 0,
@@ -3946,7 +4140,8 @@ def orchestrate_device_recovery(device: dict) -> dict:
                     "recovery_eta_seconds": 0,
                     "recovery_command_id": "",
                     "last_recovered_at": now,
-                    "last_recovery_duration": max(0, now - recovery_started_at),
+                    "last_recovery_duration": recovery_duration,
+                    "recovery_learned_eta_seconds": learned_eta,
                 })
                 devices_state[key] = previous
                 save_device_maintenance_state(state)
@@ -3970,19 +4165,24 @@ def orchestrate_device_recovery(device: dict) -> dict:
             next_check_at = max(0, int(previous.get("recovery_next_check_at") or 0))
             if now >= next_check_at:
                 attempt += 1
-                next_check_at = now + AUTO_RECOVERY_RETRY_SECONDS
+                next_check_at = now + adaptive_recovery_retry_seconds(previous, attempt)
         else:
             attempt = 1
             started = True
             previous["recovery_started_at"] = now
-            next_check_at = now + AUTO_RECOVERY_RETRY_SECONDS
+            next_check_at = now + adaptive_recovery_retry_seconds(previous, attempt)
 
-        eta_seconds = recovery_eta_seconds(device, attempt)
+        retry_seconds = adaptive_recovery_retry_seconds(previous, attempt)
+        eta_seconds = recovery_eta_seconds(device, attempt, previous)
+        learning_samples = max(0, int(previous.get("recovery_success_count") or 0))
         previous.update({
             "recovery_state": "recovering",
             "recovery_attempt": attempt,
             "recovery_next_check_at": next_check_at,
             "recovery_eta_seconds": eta_seconds,
+            "recovery_retry_seconds": retry_seconds,
+            "recovery_learned_eta_seconds": recovery_eta_seconds(device, 1, previous),
+            "recovery_policy": "adaptive" if learning_samples else "baseline",
             "recovery_last_seen_age": last_seen_age,
         })
 
@@ -3998,6 +4198,7 @@ def orchestrate_device_recovery(device: dict) -> dict:
                     "reason": "heartbeat_recovery",
                     "recovery_attempt": attempt,
                     "created_by": "recovery_orchestrator",
+                    "recovery_policy": "adaptive" if learning_samples else "baseline",
                 },
             )
             previous["recovery_command_at"] = now
@@ -4017,6 +4218,8 @@ def orchestrate_device_recovery(device: dict) -> dict:
                 "attempt": attempt,
                 "eta_seconds": eta_seconds,
                 "last_seen_age": last_seen_age,
+                "policy": "adaptive" if learning_samples else "baseline",
+                "learning_samples": learning_samples,
             },
             actor_name="Recovery orchestrator",
             notify=False,
@@ -6673,6 +6876,7 @@ async def device_monitor_loop() -> None:
                 print(f"Device maintenance: {maintenance}")
             for device in await asyncio.to_thread(list_all_devices):
                 process_device_notifications(device)
+            await asyncio.to_thread(flush_device_alert_digest)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

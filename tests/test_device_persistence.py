@@ -19,6 +19,7 @@ import main  # noqa: E402
 class DevicePersistenceTests(unittest.TestCase):
     def setUp(self) -> None:
         main.DEVICE_MAINTENANCE_STATE_PATH.unlink(missing_ok=True)
+        main.DEVICE_NOTIFY_STATE_PATH.unlink(missing_ok=True)
         with main.db_connect() as connection:
             connection.execute("DELETE FROM commands")
             connection.execute("DELETE FROM devices")
@@ -435,6 +436,24 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertTrue(recovered["recovered"])
         self.assertFalse(status["active"])
         self.assertIsNotNone(status["last_recovered_age"])
+        self.assertEqual(1, status["learning_samples"])
+        self.assertGreater(status["learned_eta_seconds"], 0)
+
+    def test_adaptive_recovery_policy_learns_eta_and_retry_interval(self) -> None:
+        learning = {}
+        main.update_recovery_learning(learning, 40, 1)
+        main.update_recovery_learning(learning, 80, 2)
+        main.update_recovery_learning(learning, 60, 1)
+        device = {"type": "pc", "platform": "Windows 11", "agent": "pc-agent"}
+
+        eta = main.recovery_eta_seconds(device, 1, learning)
+        retry = main.adaptive_recovery_retry_seconds(learning, 1)
+
+        self.assertEqual(3, learning["recovery_success_count"])
+        self.assertEqual(80, learning["recovery_duration_p90"])
+        self.assertEqual(80, eta)
+        self.assertEqual(40, retry)
+        self.assertLess(retry, main.AUTO_RECOVERY_RETRY_SECONDS)
 
     def test_command_for_unknown_device_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "device not found"):
@@ -636,6 +655,55 @@ class DevicePersistenceTests(unittest.TestCase):
         )
         self.assertEqual("important", first["priority"])
         self.assertEqual(1, later["suppressed_since_last"])
+
+    def test_noncritical_device_alerts_are_grouped_into_smart_digest(self) -> None:
+        device = {
+            "owner_id": "100",
+            "device_id": "phone-digest",
+            "name": "Digest phone",
+            "telemetry": {"network": "wifi"},
+        }
+        battery = main.device_alert_enrich_metadata(device, "низкая батарея", {"kind": "battery"})
+        network = main.device_alert_enrich_metadata(device, "сеть изменилась", {"kind": "network"})
+
+        main.queue_device_alert_digest(device, "низкая батарея", battery, now=1000)
+        main.queue_device_alert_digest(device, "сеть изменилась", network, now=1010)
+
+        with patch.object(main, "audit_event", return_value={"action": "device_alert_digest"}) as audit:
+            waiting = main.flush_device_alert_digest(now=1000 + main.LOG_DIGEST_INTERVAL_SECONDS - 1)
+            flushed = main.flush_device_alert_digest(now=1000 + main.LOG_DIGEST_INTERVAL_SECONDS)
+
+        self.assertIsNone(waiting)
+        self.assertEqual("device_alert_digest", flushed["action"])
+        metadata = audit.call_args.args[3]
+        self.assertEqual(2, metadata["event_count"])
+        self.assertEqual(1, metadata["device_count"])
+        self.assertEqual(1, metadata["important_count"])
+
+    def test_critical_device_alert_bypasses_smart_digest(self) -> None:
+        device = {
+            "owner_id": "100",
+            "device_id": "phone-critical",
+            "name": "Critical phone",
+            "platform": "Android",
+            "telemetry": {},
+        }
+
+        with (
+            patch.object(main, "device_alert_allowed", return_value=True),
+            patch.object(main, "audit_event") as audit,
+            patch.object(main, "queue_device_alert_digest") as queue,
+        ):
+            main.notify_device_alert(device, "heartbeat потерян", {"kind": "offline"})
+
+        self.assertTrue(audit.call_args.kwargs["notify"])
+        queue.assert_not_called()
+
+    def test_root_chat_keeps_only_important_audit_actions(self) -> None:
+        self.assertFalse(main.root_notification_should_send({"action": "device_command", "severity": "info"}))
+        self.assertFalse(main.root_notification_should_send({"action": "timeline_opened", "severity": "info"}))
+        self.assertTrue(main.root_notification_should_send({"action": "device_paired", "severity": "info"}))
+        self.assertTrue(main.root_notification_should_send({"action": "device_command", "severity": "security"}))
 
     def test_device_alert_priorities_and_cooldowns_are_typed(self) -> None:
         self.assertEqual("critical", main.device_alert_priority("offline"))
