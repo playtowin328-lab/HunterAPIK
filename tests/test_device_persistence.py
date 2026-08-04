@@ -741,6 +741,11 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertTrue(health["ok"])
         self.assertTrue(health["database_ready"])
         self.assertEqual("long_poll", health["command_transport"]["mode"])
+
+    def test_backend_and_service_worker_report_same_pwa_cache(self) -> None:
+        health = main.health_status_payload()
+        service_worker = (main.MINI_APP_DIR / "service-worker.js").read_text(encoding="utf-8")
+        self.assertIn(f'"{main.PWA_CACHE_VERSION}"', service_worker)
         self.assertEqual(main.PWA_CACHE_VERSION, health["pwa_cache"])
 
     def test_health_status_fails_when_database_is_unavailable(self) -> None:

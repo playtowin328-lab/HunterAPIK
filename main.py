@@ -191,7 +191,7 @@ def agent_request_rate_allowed(path: str, device_secret: str, client_id: str, me
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
 APP_STARTED_AT = time.time()
-PWA_CACHE_VERSION = "hunter-control-v23"
+PWA_CACHE_VERSION = "hunter-control-v24"
 DEVICE_COMMAND_CONDITION = threading.Condition()
 BOT_POLLING_READY = False
 BOT_POLLING_STATUS = "starting"
