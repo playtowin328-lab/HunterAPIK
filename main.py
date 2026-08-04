@@ -72,6 +72,9 @@ COMMAND_HISTORY_TTL_SECONDS = int(os.getenv("COMMAND_HISTORY_TTL_SECONDS", "8640
 AUDIT_RETENTION_DAYS = max(7, int(os.getenv("AUDIT_RETENTION_DAYS", "30")))
 AUTO_REPAIR_COOLDOWN_SECONDS = int(os.getenv("AUTO_REPAIR_COOLDOWN_SECONDS", "300"))
 AUTO_REPAIR_CONFIRMATION_CHECKS = max(1, min(10, int(os.getenv("AUTO_REPAIR_CONFIRMATION_CHECKS", "2"))))
+AUTO_RECOVERY_TRIGGER_SECONDS = max(30, int(os.getenv("AUTO_RECOVERY_TRIGGER_SECONDS", "45")))
+AUTO_RECOVERY_RETRY_SECONDS = max(15, int(os.getenv("AUTO_RECOVERY_RETRY_SECONDS", "60")))
+AUTO_RECOVERY_MAX_ETA_SECONDS = max(60, int(os.getenv("AUTO_RECOVERY_MAX_ETA_SECONDS", "180")))
 BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -151,7 +154,7 @@ def request_rate_allowed(client_id: str, method: str, now: float | None = None) 
 # В простой первой версии храним последнее фото пользователя на диске.
 user_last_photo: dict[int, Path] = {}
 APP_STARTED_AT = time.time()
-PWA_CACHE_VERSION = "hunter-control-v18"
+PWA_CACHE_VERSION = "hunter-control-v19"
 DEVICE_COMMAND_CONDITION = threading.Condition()
 BOT_POLLING_READY = False
 BOT_POLLING_STATUS = "starting"
@@ -919,7 +922,7 @@ async def notify_root_admins(event: dict) -> None:
             "command_queue": "⏳", "health": "🩺",
         }.get(kind, "◉")
         kind_label = {
-            "online": "Связь восстановлена", "offline": "Нет связи", "battery": "Низкий заряд",
+            "online": "Связь восстановлена", "offline": "Восстановление связи", "battery": "Низкий заряд",
             "charging": "Состояние зарядки", "network": "Изменение сети", "lost_mode": "Режим защиты",
             "blackout": "Защитный экран", "accessibility": "Доступ к управлению", "screen": "Трансляция экрана",
             "agent_error": "Ошибка агента", "screen_error": "Ошибка экрана",
@@ -930,7 +933,7 @@ async def notify_root_admins(event: dict) -> None:
         created = datetime.fromtimestamp(int(event.get("created_at") or now_ts())).strftime("%d.%m · %H:%M")
         recommendation = {
             "online": "Связь восстановлена. Дополнительных действий не требуется.",
-            "offline": "Проверь питание, интернет и фоновую работу Hunter Agent.",
+            "offline": "Recovery уже запущен. Если ETA истекло, проверь питание, интернет и фоновую работу Hunter Agent.",
             "battery": "Подключи устройство к зарядке или проверь питание удалённой точки.",
             "charging": "Проверь, ожидаемо ли изменился режим зарядки.",
             "network": "Убедись, что новая сеть стабильна и не блокирует HTTPS-соединение.",
@@ -1397,7 +1400,9 @@ def process_device_notifications(device: dict, force: bool = False) -> None:
             if previous.get("online") is not True and snapshot["online"]:
                 alerts.append(("устройство снова online", {"kind": "online"}))
             if previous.get("online") is True and not snapshot["online"]:
-                alerts.append(("устройство offline или давно не присылало heartbeat", {"kind": "offline"}))
+                recovery = device_recovery_view(device)
+                detail = f"heartbeat потерян — recovery, {recovery['detail']}" if recovery["active"] else "устройство offline или давно не присылало heartbeat"
+                alerts.append((detail, {"kind": "offline", "recovery_attempt": recovery["attempt"], "eta_seconds": recovery["eta_seconds"]}))
             if previous.get("battery_bucket") != snapshot["battery_bucket"] and snapshot["battery_bucket"] in {"low", "very_low", "critical"}:
                 alerts.append((f"низкая батарея: {snapshot['battery_percent']}%", {"kind": "battery", "bucket": snapshot["battery_bucket"]}))
             if previous.get("charging") != snapshot["charging"] and snapshot["battery_percent"] >= 0:
@@ -1427,7 +1432,17 @@ def process_device_notifications(device: dict, force: bool = False) -> None:
                 alerts.append((f"очередь команд растет: {snapshot['pending_commands']} pending", {"kind": "command_queue"}))
             if int(previous.get("delivered_commands") or 0) < 2 <= snapshot["delivered_commands"]:
                 alerts.append((f"агент получил {snapshot['delivered_commands']} команд, но не завершил их", {"kind": "command_queue"}))
-            if previous.get("health_state") not in {"degraded", "warning", "revoked"} and snapshot["health_state"] in {"degraded", "warning", "revoked"}:
+            if previous.get("health_state") != "recovering" and snapshot["health_state"] == "recovering":
+                recovery = device_recovery_view(device)
+                if not any(metadata.get("kind") == "offline" for _, metadata in alerts):
+                    alerts.append((
+                        f"автовосстановление запущено: {recovery['detail']}",
+                        {"kind": "offline", "recovery_attempt": recovery["attempt"], "eta_seconds": recovery["eta_seconds"]},
+                    ))
+            if previous.get("health_state") == "recovering" and snapshot["health_state"] not in {"recovering", "offline"} and snapshot["online"]:
+                if not any(metadata.get("kind") == "online" for _, metadata in alerts):
+                    alerts.append(("автовосстановление завершено — устройство снова online", {"kind": "online"}))
+            if previous.get("health_state") not in {"degraded", "warning", "revoked", "recovering"} and snapshot["health_state"] in {"degraded", "warning", "revoked"}:
                 specific_problem_reported = any(
                     metadata.get("kind") in {"agent_error", "screen_error", "command_queue"}
                     for _, metadata in alerts
@@ -1886,26 +1901,53 @@ HELP_TEXT = (
 )
 
 
+def device_recovery_view(device: dict) -> dict:
+    health = device.get("health") or {}
+    recovery = health.get("recovery") or {}
+    active = str(health.get("state") or "") == "recovering" or bool(recovery.get("active"))
+    attempt = max(1, int(recovery.get("attempt") or 1)) if active else 0
+    eta_seconds = max(1, int(recovery.get("eta_seconds") or recovery_eta_seconds(device, attempt))) if active else 0
+    next_check_in = max(0, int(recovery.get("next_check_in") or AUTO_RECOVERY_RETRY_SECONDS)) if active else 0
+    return {
+        "active": active,
+        "attempt": attempt,
+        "eta_seconds": eta_seconds,
+        "next_check_in": next_check_in,
+        "short": f"Восстановление · попытка {attempt} · ~{recovery_time_label(eta_seconds)}" if active else "",
+        "detail": (
+            f"попытка {attempt}, следующая проверка через {recovery_time_label(next_check_in)}, "
+            f"ожидаем Online примерно до {recovery_time_label(eta_seconds)}"
+        ) if active else "",
+    }
+
+
+def device_connection_is_live(device: dict) -> bool:
+    return bool(device.get("online") and not device_recovery_view(device)["active"])
+
+
 def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
     devices = list_all_devices() if project_scope else list_devices_for_user(str(owner_id))
-    online = sum(1 for device in devices if device.get("online"))
+    online = sum(1 for device in devices if device_connection_is_live(device))
+    recovering = sum(1 for device in devices if device_recovery_view(device)["active"])
     attention = sum(
         1
         for device in devices
-        if (device.get("health") or {}).get("state") in {"warning", "degraded", "revoked", "offline"}
+        if (device.get("health") or {}).get("state") in {"warning", "degraded", "revoked", "offline", "recovering"}
     )
     storage_ok = railway_storage_is_persistent()
     setup_ok = not [item for item in setup_checks() if item.get("required") and not item.get("ok")]
     storage_line = "защищено Volume" if storage_ok else "ВНИМАНИЕ: временное хранилище"
     setup_line = "готова" if setup_ok else "требует настройки"
-    fleet_state = "🟢 Стабильно" if devices and online == len(devices) and not attention else ("🟡 Нужна проверка" if devices else "⚪ Не подключено")
+    fleet_state = "🟢 Стабильно" if devices and online == len(devices) and not attention else (f"🟡 Восстанавливаю связь: {recovering}" if recovering else ("🟡 Нужна проверка" if devices else "⚪ Не подключено"))
     device_preview = []
     for device in devices[:5]:
-        marker = "🟢" if device.get("online") else "⚫"
+        recovery = device_recovery_view(device)
+        marker = "🟡" if recovery["active"] else ("🟢" if device_connection_is_live(device) else "⚫")
         telemetry = device.get("telemetry") or {}
         battery = telemetry.get("battery_percent", telemetry.get("battery"))
         battery_text = f" · 🔋 {battery}%" if isinstance(battery, (int, float)) else ""
-        device_preview.append(f"{marker} {device.get('name', 'Устройство')}{battery_text}")
+        recovery_text = f" · {recovery['short']}" if recovery["active"] else ""
+        device_preview.append(f"{marker} {device.get('name', 'Устройство')}{battery_text}{recovery_text}")
     if len(devices) > 5:
         device_preview.append(f"…и ещё {len(devices) - 5}")
     next_step = (
@@ -1920,7 +1962,7 @@ def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
         "Ваш персональный центр устройств",
         "",
         fleet_state,
-        f"📱 Всего: {len(devices)} · 🟢 Online: {online} · ⚠ Внимание: {attention}",
+        f"📱 Всего: {len(devices)} · 🟢 Online: {online} · 🟡 Recovery: {recovering} · ⚠ Внимание: {attention}",
         f"☁️ Инфраструктура: {setup_line} · 🛡 Данные: {storage_line}",
         *(["", "Быстрый обзор:", *device_preview] if device_preview else []),
         "",
@@ -1933,7 +1975,8 @@ def dashboard_text(owner_id: int, project_scope: bool = False) -> str:
 def device_pulse_text(owner_id: int, project_scope: bool = False) -> str:
     devices = list_all_devices() if project_scope else list_devices_for_user(str(owner_id))
     settings = load_device_notify_settings()
-    online = sum(bool(device.get("online")) for device in devices)
+    online = sum(device_connection_is_live(device) for device in devices)
+    recovering = sum(device_recovery_view(device)["active"] for device in devices)
     pending = sum(bool(device.get("pairing_required")) for device in devices)
     ready_permissions = 0
     total_permissions = 0
@@ -1960,16 +2003,20 @@ def device_pulse_text(owner_id: int, project_scope: bool = False) -> str:
         battery = telemetry.get("battery_percent", telemetry.get("battery"))
         battery_label = f" · 🔋 {int(battery)}%" if isinstance(battery, (int, float)) and battery >= 0 else ""
         network = str(telemetry.get("network") or ("WINDOWS" if pc_device else "—")).upper()
-        state = "🟢" if device.get("online") else "🔴"
+        recovery = device_recovery_view(device)
+        state = "🟡" if recovery["active"] else ("🟢" if device_connection_is_live(device) else "🔴")
         link = " · нужен QR" if device.get("pairing_required") else ""
         readiness_label = "модули" if pc_device else "доступы"
-        cards.append(f"{state} {device.get('name', 'Устройство')}{battery_label}\n   {network} · {readiness_label} {ready}/3{link}")
+        recovery_line = f"\n   ↻ {recovery['detail']}" if recovery["active"] else ""
+        cards.append(f"{state} {device.get('name', 'Устройство')}{battery_label}\n   {network} · {readiness_label} {ready}/3{link}{recovery_line}")
 
     readiness = round(ready_permissions * 100 / total_permissions) if total_permissions else 0
     if not devices:
         headline = "⚪ Парк пока пуст"
     elif online == len(devices) and readiness == 100 and not pending:
         headline = "🟢 Все системы готовы"
+    elif recovering:
+        headline = f"🟡 Автовосстановление устройств: {recovering}"
     elif online:
         headline = "🟡 Парк требует внимания"
     else:
@@ -1979,11 +2026,11 @@ def device_pulse_text(owner_id: int, project_scope: bool = False) -> str:
         "◉ HUNTER DEVICE PULSE",
         headline,
         "",
-        f"Связь  {online}/{len(devices)}     Готовность  {readiness}%",
+        f"Связь  {online}/{len(devices)}     Recovery  {recovering}     Готовность  {readiness}%",
         f"Командировка  {travel}",
         *( ["", *cards] if cards else ["", "Установи Android или Windows Agent и подключи его одноразовым кодом."] ),
         "",
-        "Обновляется по живым heartbeat-сигналам.",
+        "Recovery проверяется автоматически; после возврата heartbeat устройство само станет Online.",
     ])
 
 
@@ -2000,7 +2047,8 @@ def device_pulse_keyboard(owner_id: int, project_scope: bool, show_root: bool) -
     else:
         rows.append([InlineKeyboardButton(text="◉ Все устройства", callback_data="my_devices")])
     for device in [item for item in devices if item.get("owner_id")][:5]:
-        marker = "🟢" if device.get("online") else "🔴"
+        recovery = device_recovery_view(device)
+        marker = "🟡" if recovery["active"] else ("🟢" if device_connection_is_live(device) else "🔴")
         rows.append([InlineKeyboardButton(
             text=f"{marker} {str(device.get('name') or 'Устройство')[:28]}",
             callback_data=f"pulse_device:{pulse_device_key(device['device_id'])}",
@@ -2038,7 +2086,17 @@ def pulse_device_text(device: dict) -> str:
             telemetry.get("accessibility") is True,
         ]
     )
-    status = "🟢 ONLINE" if device.get("online") else "🔴 OFFLINE · команда останется в очереди"
+    recovery = device_recovery_view(device)
+    status = (
+        f"🟡 {recovery['short'].upper()}"
+        if recovery["active"]
+        else ("🟢 ONLINE" if device_connection_is_live(device) else "🔴 OFFLINE · требуется питание или интернет")
+    )
+    recovery_lines = [
+        f"↻ Следующая проверка: через {recovery_time_label(recovery['next_check_in'])}",
+        f"◷ Ожидаем Online: примерно до {recovery_time_label(recovery['eta_seconds'])}",
+        "✓ Repair уже поставлен в очередь и выполнится сразу после ответа Agent.",
+    ] if recovery["active"] else []
     return "\n".join([
         "⌁ HUNTER QUICK CONTROL",
         f"{device.get('name', 'Устройство')} · {status}",
@@ -2047,6 +2105,7 @@ def pulse_device_text(device: dict) -> str:
         f"⌁ Сеть: {str(telemetry.get('network') or '—').upper()}",
         f"✓ {'Модули ПК' if pc_device else 'Разрешения'}: {permissions}/3",
         f"◷ Последний сигнал: {format_last_seen_ru(int(device.get('last_seen') or 0))}",
+        *recovery_lines,
         "",
         "Выбери действие — результат придёт в журнал и Device Pulse.",
     ])
@@ -3315,19 +3374,22 @@ def format_all_devices_text() -> str:
 def format_device_lines(devices: list[dict], include_owner: bool = False) -> list[str]:
     lines = []
     for device in devices:
-        status = "🟢 online" if device.get("online") else "⚫ offline"
+        recovery = device_recovery_view(device)
+        status = f"🟡 {recovery['short']}" if recovery["active"] else ("🟢 online" if device_connection_is_live(device) else "⚫ offline")
         owner_line = f"Owner: {device.get('owner_id', 'unknown')}\n" if include_owner else ""
         health = device.get("health") or {}
         health_line = f"Состояние: {health.get('label')}\n" if health.get("label") else ""
         setup_line = format_device_setup_line(device)
         setup_details = "\n".join(format_device_setup_details(device)[:4])
         setup_block = f"{setup_line}\n{setup_details}\n" if setup_details else f"{setup_line}\n"
+        recovery_block = f"Recovery: {recovery['detail']}\n" if recovery["active"] else ""
         lines.append(
             f"\n{status} — {device.get('name', 'Unknown')}\n"
             f"{owner_line}"
             f"Платформа: {device.get('platform', 'unknown')}\n"
             f"Агент: {device.get('agent', 'unknown')}\n"
             f"{health_line}"
+            f"{recovery_block}"
             f"{setup_block}"
             f"Device ID: {device.get('device_id', 'unknown')}"
         )
@@ -3748,6 +3810,13 @@ def device_recovery_status(owner_id: str, device_id: str) -> dict:
             load_device_maintenance_state().get("devices", {}).get(device_notify_key(owner_id, device_id)) or {}
         )
     last_repair_at = max(0, int(record.get("last_repair_at") or 0))
+    recovery_started_at = max(0, int(record.get("recovery_started_at") or 0))
+    next_check_at = max(0, int(record.get("recovery_next_check_at") or 0))
+    last_recovered_at = max(0, int(record.get("last_recovered_at") or 0))
+    active = str(record.get("recovery_state") or "") == "recovering"
+    attempt = max(0, int(record.get("recovery_attempt") or 0))
+    eta_seconds = max(0, int(record.get("recovery_eta_seconds") or 0))
+    next_check_in = max(0, next_check_at - now_ts()) if active and next_check_at else 0
     return {
         "confirmation_checks": max(0, int(record.get("degraded_checks") or 0)),
         "confirmation_required": AUTO_REPAIR_CONFIRMATION_CHECKS,
@@ -3755,6 +3824,15 @@ def device_recovery_status(owner_id: str, device_id: str) -> dict:
         "degraded_since": max(0, int(record.get("degraded_since") or 0)),
         "last_repair_age": max(0, now_ts() - last_repair_at) if last_repair_at else None,
         "last_repair_reason": str(record.get("last_repair_reason") or ""),
+        "active": active,
+        "state": "recovering" if active else "idle",
+        "attempt": attempt,
+        "started_age": max(0, now_ts() - recovery_started_at) if recovery_started_at else None,
+        "next_check_in": next_check_in,
+        "eta_seconds": eta_seconds,
+        "queued": bool(record.get("recovery_command_id")),
+        "last_recovered_age": max(0, now_ts() - last_recovered_at) if last_recovered_at else None,
+        "last_recovery_duration": max(0, int(record.get("last_recovery_duration") or 0)),
     }
 
 
@@ -3821,6 +3899,129 @@ def device_supports_agent_repair(device: dict) -> bool:
     platform = str(device.get("platform") or "").lower()
     agent = str(device.get("agent") or "").lower()
     return "android" in platform or "apk" in agent or "android" in agent or "pc-agent" in agent
+
+
+def recovery_eta_seconds(device: dict, attempt: int) -> int:
+    base_seconds = 30 if is_pc_device(device) else 45
+    return min(AUTO_RECOVERY_MAX_ETA_SECONDS, base_seconds + max(0, int(attempt) - 1) * 30)
+
+
+def recovery_time_label(seconds: int) -> str:
+    safe_seconds = max(0, int(seconds or 0))
+    if safe_seconds < 60:
+        return f"{safe_seconds} сек"
+    minutes = max(1, (safe_seconds + 59) // 60)
+    return f"{minutes} мин"
+
+
+def orchestrate_device_recovery(device: dict) -> dict:
+    owner_id = str(device.get("owner_id") or "")
+    device_id = str(device.get("device_id") or "")
+    last_seen = max(0, int(device.get("last_seen") or 0))
+    now = now_ts()
+    last_seen_age = max(0, now - last_seen) if last_seen else None
+    recoverable = bool(owner_id and device_id and device_supports_agent_repair(device) and not device.get("pairing_required"))
+    should_recover = bool(recoverable and last_seen_age is not None and last_seen_age >= AUTO_RECOVERY_TRIGGER_SECONDS)
+    command = None
+    started = False
+    recovered = False
+
+    if not owner_id or not device_id:
+        return {"active": False, "started": False, "recovered": False, "command": None}
+
+    with DEVICE_MAINTENANCE_LOCK:
+        state = load_device_maintenance_state()
+        devices_state = state.setdefault("devices", {})
+        key = device_notify_key(owner_id, device_id)
+        previous = dict(devices_state.get(key) or {})
+        was_recovering = str(previous.get("recovery_state") or "") == "recovering"
+
+        if not should_recover:
+            if was_recovering:
+                recovery_started_at = max(0, int(previous.get("recovery_started_at") or now))
+                previous.update({
+                    "recovery_state": "idle",
+                    "recovery_attempt": 0,
+                    "recovery_next_check_at": 0,
+                    "recovery_eta_seconds": 0,
+                    "recovery_command_id": "",
+                    "last_recovered_at": now,
+                    "last_recovery_duration": max(0, now - recovery_started_at),
+                })
+                devices_state[key] = previous
+                save_device_maintenance_state(state)
+                recovered = True
+                audit_event(
+                    "device_monitor",
+                    "device_recovered",
+                    f"Связь восстановлена для {device.get('name', 'Unknown device')}",
+                    {
+                        "owner_id": owner_id,
+                        "device_id": device_id,
+                        "duration_seconds": previous["last_recovery_duration"],
+                    },
+                    actor_name="Recovery orchestrator",
+                    notify=False,
+                )
+            return {"active": False, "started": False, "recovered": recovered, "command": None}
+
+        if was_recovering:
+            attempt = max(1, int(previous.get("recovery_attempt") or 1))
+            next_check_at = max(0, int(previous.get("recovery_next_check_at") or 0))
+            if now >= next_check_at:
+                attempt += 1
+                next_check_at = now + AUTO_RECOVERY_RETRY_SECONDS
+        else:
+            attempt = 1
+            started = True
+            previous["recovery_started_at"] = now
+            next_check_at = now + AUTO_RECOVERY_RETRY_SECONDS
+
+        eta_seconds = recovery_eta_seconds(device, attempt)
+        previous.update({
+            "recovery_state": "recovering",
+            "recovery_attempt": attempt,
+            "recovery_next_check_at": next_check_at,
+            "recovery_eta_seconds": eta_seconds,
+            "recovery_last_seen_age": last_seen_age,
+        })
+
+        last_command_at = max(0, int(previous.get("recovery_command_at") or 0))
+        command_due = not last_command_at or now - last_command_at >= max(30, COMMAND_PENDING_TIMEOUT_SECONDS)
+        if command_due and not has_active_device_command(owner_id, device_id, "repair_agent"):
+            command = create_device_command(
+                owner_id,
+                device_id,
+                "repair_agent",
+                {
+                    "auto": True,
+                    "reason": "heartbeat_recovery",
+                    "recovery_attempt": attempt,
+                    "created_by": "recovery_orchestrator",
+                },
+            )
+            previous["recovery_command_at"] = now
+            previous["recovery_command_id"] = command["command_id"]
+
+        devices_state[key] = previous
+        save_device_maintenance_state(state)
+
+    if started:
+        audit_event(
+            "device_monitor",
+            "device_recovery",
+            f"Автовосстановление запущено для {device.get('name', 'Unknown device')}",
+            {
+                "owner_id": owner_id,
+                "device_id": device_id,
+                "attempt": attempt,
+                "eta_seconds": eta_seconds,
+                "last_seen_age": last_seen_age,
+            },
+            actor_name="Recovery orchestrator",
+            notify=False,
+        )
+    return {"active": True, "started": started, "recovered": False, "command": command}
 
 
 def device_needs_auto_repair(device: dict) -> tuple[bool, str]:
@@ -3948,12 +4149,22 @@ def maybe_enqueue_auto_repair(device: dict) -> dict | None:
 def run_device_maintenance() -> dict:
     devices = list_all_devices()
     repairs = 0
+    recoveries = 0
+    recovery_commands = 0
+    recovered_devices = 0
     for device in devices:
         record_device_history(device)
+        recovery = orchestrate_device_recovery(device)
+        recoveries += int(bool(recovery.get("active")))
+        recovery_commands += int(bool(recovery.get("command")))
+        recovered_devices += int(bool(recovery.get("recovered")))
         if maybe_enqueue_auto_repair(device):
             repairs += 1
     summary = expire_stale_commands()
     summary["auto_repairs"] = repairs
+    summary["active_recoveries"] = recoveries
+    summary["recovery_commands"] = recovery_commands
+    summary["recovered_devices"] = recovered_devices
     summary["delivery_records_cleaned"] = cleanup_old_delivery_records()
     return summary
 
@@ -4230,6 +4441,26 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     delivered_commands = int(diagnostics.get("delivered_commands") or 0)
     oldest_delivered_age = int(diagnostics.get("oldest_delivered_age") or 0)
     connection_quality = device_connection_quality(device, diagnostics)
+    recovery_status = dict(diagnostics.get("auto_repair") or {})
+    recoverable = bool(secret_set and device_supports_agent_repair(device))
+    recovery_active = bool(
+        recoverable
+        and last_seen_age is not None
+        and last_seen_age >= AUTO_RECOVERY_TRIGGER_SECONDS
+    )
+    if recovery_active:
+        recovery_attempt = max(1, int(recovery_status.get("attempt") or 1))
+        recovery_eta = max(1, int(recovery_status.get("eta_seconds") or recovery_eta_seconds(device, recovery_attempt)))
+        recovery_status.update({
+            "active": True,
+            "state": "recovering",
+            "attempt": recovery_attempt,
+            "eta_seconds": recovery_eta,
+            "next_check_in": max(0, int(recovery_status.get("next_check_in") or AUTO_RECOVERY_RETRY_SECONDS)),
+        })
+    else:
+        recovery_status["active"] = False
+        recovery_status["state"] = "idle"
 
     issues: list[str] = []
     hints: list[str] = []
@@ -4240,6 +4471,13 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     if last_seen_age is None:
         issues.append("never_seen")
         hints.append("Агент еще ни разу не прислал heartbeat.")
+    elif recovery_active:
+        issues.append("heartbeat_recovering")
+        hints.append(
+            f"Автовосстановление: попытка {recovery_status['attempt']}, "
+            f"следующая проверка через {recovery_time_label(recovery_status['next_check_in'])}, "
+            f"ожидаем связь примерно до {recovery_time_label(recovery_status['eta_seconds'])}."
+        )
     elif not online:
         issues.append("heartbeat_stale")
         hints.append("Запусти Windows PC Agent и проверь интернет." if pc_device else "Запусти Android Agent и проверь интернет/режим энергосбережения.")
@@ -4274,6 +4512,9 @@ def device_health(device: dict, diagnostics: dict) -> dict:
     elif "pairing_revoked" in issues:
         state = "revoked"
         label = "Нужна новая привязка"
+    elif "heartbeat_recovering" in issues:
+        state = "recovering"
+        label = f"Восстановление · ~{recovery_time_label(recovery_status['eta_seconds'])}"
     elif "heartbeat_stale" in issues or "never_seen" in issues:
         state = "offline"
         label = "Offline"
@@ -4292,6 +4533,7 @@ def device_health(device: dict, diagnostics: dict) -> dict:
         "last_seen_age": last_seen_age,
         "secret_set": secret_set,
         "connection": connection_quality,
+        "recovery": recovery_status,
     }
 
 

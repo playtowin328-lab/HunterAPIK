@@ -595,7 +595,8 @@ h2 {
 }
 
 .device-card[data-health="degraded"] .status-pill,
-.device-card[data-health="warning"] .status-pill {
+.device-card[data-health="warning"] .status-pill,
+.device-card[data-health="recovering"] .status-pill {
   background: rgba(154, 106, 0, 0.14);
   color: var(--warn);
 }
@@ -647,6 +648,10 @@ h2 {
 
 .connection-quality[data-level="offline"] {
   --connection-color: var(--muted);
+}
+
+.connection-quality[data-level="recovering"] {
+  --connection-color: var(--warn);
 }
 
 .connection-quality-head,
@@ -2134,6 +2139,28 @@ body {
 
 .device-card.offline::before {
   background: var(--muted);
+}
+
+.device-card.recovering {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+  background: color-mix(in srgb, var(--warn) 5%, var(--surface));
+}
+
+.device-card.recovering::before {
+  background: var(--warn);
+}
+
+.device-card.recovering::after {
+  content: "";
+  position: absolute;
+  right: 15px;
+  bottom: 15px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 45%, transparent);
+  animation: live-pulse 1.5s ease-out infinite;
 }
 
 .device-card:hover {

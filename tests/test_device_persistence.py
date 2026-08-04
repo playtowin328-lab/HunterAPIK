@@ -313,6 +313,108 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertIsNotNone(second)
         self.assertEqual("repair_agent", second["type"])
 
+    def test_offline_recovery_queues_repair_and_exposes_eta(self) -> None:
+        main.upsert_device({
+            "owner_id": "100",
+            "device_id": "pc-recovery",
+            "name": "Recovery PC",
+            "type": "pc",
+            "platform": "Windows 11",
+            "agent": "pc-agent",
+            "secret": "paired-secret",
+        })
+        device = {
+            "owner_id": "100",
+            "device_id": "pc-recovery",
+            "name": "Recovery PC",
+            "type": "pc",
+            "platform": "Windows 11",
+            "agent": "pc-agent",
+            "secret": "paired-secret",
+            "online": False,
+            "pairing_required": False,
+            "last_seen": main.now_ts() - 90,
+            "telemetry": {},
+        }
+
+        with (
+            patch.object(main, "AUTO_RECOVERY_TRIGGER_SECONDS", 45),
+            patch.object(main, "AUTO_RECOVERY_RETRY_SECONDS", 60),
+        ):
+            recovery = main.orchestrate_device_recovery(device)
+            status = main.device_recovery_status("100", "pc-recovery")
+
+        self.assertTrue(recovery["active"])
+        self.assertTrue(recovery["started"])
+        self.assertEqual("repair_agent", recovery["command"]["type"])
+        self.assertTrue(status["active"])
+        self.assertEqual(1, status["attempt"])
+        self.assertGreater(status["eta_seconds"], 0)
+        self.assertGreater(status["next_check_in"], 0)
+
+    def test_device_health_reports_recovery_instead_of_offline(self) -> None:
+        device = {
+            "owner_id": "100",
+            "device_id": "phone-recovery",
+            "name": "Recovery phone",
+            "type": "phone",
+            "platform": "Android 16",
+            "agent": "android-agent",
+            "secret": "paired-secret",
+            "online": False,
+            "last_seen": main.now_ts() - 90,
+            "telemetry": {},
+        }
+        diagnostics = {
+            "auto_repair": {
+                "active": True,
+                "attempt": 2,
+                "eta_seconds": 75,
+                "next_check_in": 30,
+            }
+        }
+
+        with patch.object(main, "AUTO_RECOVERY_TRIGGER_SECONDS", 45):
+            health = main.device_health(device, diagnostics)
+
+        self.assertEqual("recovering", health["state"])
+        self.assertIn("Восстановление", health["label"])
+        self.assertIn("heartbeat_recovering", health["issues"])
+        self.assertTrue(health["recovery"]["active"])
+        self.assertEqual(2, health["recovery"]["attempt"])
+
+    def test_recovery_clears_after_fresh_heartbeat(self) -> None:
+        main.upsert_device({
+            "owner_id": "100",
+            "device_id": "phone-returned",
+            "name": "Returned phone",
+            "platform": "Android 16",
+            "agent": "android-agent",
+            "secret": "paired-secret",
+        })
+        stale_device = {
+            "owner_id": "100",
+            "device_id": "phone-returned",
+            "name": "Returned phone",
+            "platform": "Android 16",
+            "agent": "android-agent",
+            "secret": "paired-secret",
+            "online": False,
+            "pairing_required": False,
+            "last_seen": main.now_ts() - 90,
+            "telemetry": {},
+        }
+        fresh_device = {**stale_device, "online": True, "last_seen": main.now_ts()}
+
+        with patch.object(main, "AUTO_RECOVERY_TRIGGER_SECONDS", 45):
+            main.orchestrate_device_recovery(stale_device)
+            recovered = main.orchestrate_device_recovery(fresh_device)
+            status = main.device_recovery_status("100", "phone-returned")
+
+        self.assertTrue(recovered["recovered"])
+        self.assertFalse(status["active"])
+        self.assertIsNotNone(status["last_recovered_age"])
+
     def test_command_for_unknown_device_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "device not found"):
             main.create_device_command("100", "missing", "ping")

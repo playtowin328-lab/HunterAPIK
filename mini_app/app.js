@@ -412,10 +412,31 @@ function updateLocalClock() {
   }).format(new Date());
 }
 
+function recoveryTimeLabel(seconds) {
+  const value = Math.max(0, Math.round(Number(seconds || 0)));
+  if (value < 60) return `${value} сек`;
+  return `${Math.max(1, Math.ceil(value / 60))} мин`;
+}
+
+function deviceRecovery(device) {
+  const health = device?.health || {};
+  const recovery = health.recovery || {};
+  const active = health.state === "recovering" || recovery.active === true;
+  const attempt = active ? Math.max(1, Number(recovery.attempt || 1)) : 0;
+  const etaSeconds = active ? Math.max(1, Number(recovery.eta_seconds || 45)) : 0;
+  const nextCheckIn = active ? Math.max(0, Number(recovery.next_check_in || 60)) : 0;
+  return { active, attempt, etaSeconds, nextCheckIn };
+}
+
+function deviceIsLive(device) {
+  return Boolean(device?.online && !deviceRecovery(device).active);
+}
+
 function renderFleetPulse(onlineCount) {
+  const recoveringDevices = devices.filter((device) => deviceRecovery(device).active);
   const attentionCount = devices.filter((device) => {
     const state = device.health?.state || (device.online ? "online" : "offline");
-    return ["warning", "degraded", "revoked", "offline"].includes(state);
+    return ["warning", "degraded", "revoked", "offline", "recovering"].includes(state);
   }).length;
   const allOnline = devices.length > 0 && onlineCount === devices.length;
   const fleetQuality = devices.length
@@ -428,7 +449,7 @@ function renderFleetPulse(onlineCount) {
     return telemetry.startup_installed === true && telemetry.watchdog_enabled === true && telemetry.recovery_copy === true;
   }).length;
   const replayCount = devices.reduce((total, device) => total + Math.max(0, Number(device.telemetry?.command_replays_prevented || 0)), 0);
-  const fleetState = !devices.length ? "empty" : (!onlineCount ? "critical" : (fleetReady && fleetQuality >= 85 ? "stable" : "attention"));
+  const fleetState = !devices.length ? "empty" : (!onlineCount && !recoveringDevices.length ? "critical" : (fleetReady && fleetQuality >= 85 ? "stable" : "attention"));
 
   document.documentElement.dataset.fleet = !devices.length ? "empty" : (fleetReady ? "ready" : "attention");
   if (fleetLiveStatus) {
@@ -436,7 +457,9 @@ function renderFleetPulse(onlineCount) {
     fleetLiveStatus.innerHTML = `<i aria-hidden="true"></i> ${connectionText}${devices.length ? ` · Smart Link ${fleetQuality}%` : ""}`;
   }
   if (fleetAttentionStatus) {
-    fleetAttentionStatus.textContent = attentionCount
+    fleetAttentionStatus.textContent = recoveringDevices.length
+      ? `Восстановление: ${recoveringDevices.length}`
+      : attentionCount
       ? `Внимание: ${attentionCount}`
       : (devices.length ? "Система стабильна" : "Добавьте первое устройство");
   }
@@ -448,7 +471,9 @@ function renderFleetPulse(onlineCount) {
   fleetPulseGauge.setAttribute("aria-label", devices.length ? `Среднее качество связи ${fleetQuality} процентов` : "Качество связи пока не определено");
   fleetPulseOnline.textContent = `${onlineCount} / ${devices.length}`;
   fleetPulseAttention.textContent = String(attentionCount);
-  fleetPulseRecovery.textContent = pcDevices.length ? `${recoveryReadyCount} / ${pcDevices.length}` : "нет ПК";
+  fleetPulseRecovery.textContent = recoveringDevices.length
+    ? `${recoveringDevices.length} активно`
+    : (pcDevices.length ? `${recoveryReadyCount} / ${pcDevices.length}` : "готово");
   fleetPulseReplay.textContent = String(replayCount);
 
   if (!devices.length) {
@@ -467,6 +492,18 @@ function renderFleetPulse(onlineCount) {
     fleetPulseAction.textContent = "Проверить сейчас";
     fleetPulseAction.dataset.action = "refresh";
     delete fleetPulseAction.dataset.deviceId;
+    return;
+  }
+
+  if (recoveringDevices.length) {
+    const targetDevice = recoveringDevices
+      .sort((left, right) => deviceRecovery(right).attempt - deviceRecovery(left).attempt)[0];
+    const recovery = deviceRecovery(targetDevice);
+    fleetPulseTitle.textContent = "Восстанавливаю связь";
+    fleetPulseDetail.textContent = `${recoveringDevices.length} ${recoveringDevices.length === 1 ? "устройство возвращается" : "устройства возвращаются"} Online. ${targetDevice.name}: попытка ${recovery.attempt}, проверка через ${recoveryTimeLabel(recovery.nextCheckIn)}, ETA около ${recoveryTimeLabel(recovery.etaSeconds)}.`;
+    fleetPulseAction.textContent = "Открыть recovery";
+    fleetPulseAction.dataset.action = "diagnose";
+    fleetPulseAction.dataset.deviceId = targetDevice.device_id;
     return;
   }
 
@@ -491,13 +528,13 @@ function setInterfaceLoading(loading) {
 
 function needsAttention(device) {
   const state = device.health?.state || (device.online ? "online" : "offline");
-  return ["warning", "degraded", "revoked", "offline"].includes(state);
+  return ["warning", "degraded", "revoked", "offline", "recovering"].includes(state);
 }
 
 function visibleDevices() {
   const query = deviceSearchQuery.trim().toLocaleLowerCase("ru");
   return devices.filter((device) => {
-    if (activeDeviceFilter === "online" && !device.online) return false;
+    if (activeDeviceFilter === "online" && !deviceIsLive(device)) return false;
     if (activeDeviceFilter === "attention" && !needsAttention(device)) return false;
     if (!query) return true;
     return [device.name, device.device_id, device.platform, device.agent, device.type]
@@ -508,7 +545,7 @@ function visibleDevices() {
 
 function renderDeviceToolbar() {
   if (filterAllCount) filterAllCount.textContent = devices.length;
-  if (filterOnlineCount) filterOnlineCount.textContent = devices.filter((device) => device.online).length;
+  if (filterOnlineCount) filterOnlineCount.textContent = devices.filter(deviceIsLive).length;
   if (filterAttentionCount) filterAttentionCount.textContent = devices.filter(needsAttention).length;
   deviceFilterButtons.forEach((button) => {
     const active = button.dataset.deviceFilter === activeDeviceFilter;
@@ -524,7 +561,7 @@ function renderInstallationProgress() {
   const installStarted = localStorage.getItem(installStartedKey(target)) === "1";
   const agentOpened = localStorage.getItem(agentOpenAttemptKey(target)) === "1";
   const paired = targetDevices.length > 0;
-  const online = targetDevices.some((device) => device.online);
+  const online = targetDevices.some(deviceIsLive);
   let step = 0;
   if (installStarted) step = 1;
   if (agentOpened) step = 2;
@@ -831,31 +868,37 @@ function formatDiagnostics(device) {
 
 function deviceConnectionQuality(device) {
   const connection = device?.health?.connection || {};
-  const score = Math.max(0, Math.min(100, Number(connection.score ?? (device?.online ? 80 : 0))));
+  const live = deviceIsLive(device);
+  const score = Math.max(0, Math.min(100, Number(connection.score ?? (live ? 80 : 0))));
   return {
     score: Math.round(score),
-    state: connection.state || (device?.online ? "good" : "offline"),
-    label: connection.label || (device?.online ? "Хорошая" : "Нет связи"),
-    summary: connection.summary || (device?.online ? "Heartbeat поступает" : "Heartbeat не поступает"),
+    state: connection.state || (live ? "good" : "offline"),
+    label: connection.label || (live ? "Хорошая" : "Нет связи"),
+    summary: connection.summary || (live ? "Heartbeat поступает" : "Heartbeat не поступает"),
     recommendations: Array.isArray(connection.recommendations) ? connection.recommendations.filter(Boolean) : [],
   };
 }
 
 function renderConnectionQuality(device) {
   const quality = deviceConnectionQuality(device);
+  const recovery = deviceRecovery(device);
   const channelState = String(device?.telemetry?.command_channel_state || "closed");
   const recoveryReady = device?.telemetry?.watchdog_enabled === true && device?.telemetry?.recovery_copy === true;
-  const recoveryBadge = channelState === "open"
+  const recoveryBadge = recovery.active
+    ? `<b class="connection-recovery-badge" data-state="active">Recovery ${recovery.attempt}</b>`
+    : channelState === "open"
     ? '<b class="connection-recovery-badge" data-state="active">Auto-heal</b>'
     : (channelState === "half_open"
       ? '<b class="connection-recovery-badge" data-state="probe">Проверка</b>'
       : (recoveryReady ? '<b class="connection-recovery-badge" data-state="ready">Recovery ready</b>' : ""));
-  const recommendation = quality.recommendations[0] || "Связь стабильна, дополнительных действий не требуется.";
-  const action = device?.online && quality.score < 75
+  const recommendation = recovery.active
+    ? `Repair в очереди. Следующая проверка через ${recoveryTimeLabel(recovery.nextCheckIn)}, ожидаем Online около ${recoveryTimeLabel(recovery.etaSeconds)}.`
+    : (quality.recommendations[0] || "Связь стабильна, дополнительных действий не требуется.");
+  const action = deviceIsLive(device) && quality.score < 75
     ? '<button class="connection-quality-action" type="button">Усилить связь</button>'
     : "";
   return `
-    <div class="connection-quality" data-level="${escapeHtml(quality.state)}">
+    <div class="connection-quality" data-level="${recovery.active ? "recovering" : escapeHtml(quality.state)}">
       <div class="connection-quality-head">
         <span><i aria-hidden="true"></i> Smart Link · ${escapeHtml(quality.label)} ${recoveryBadge}</span>
         <strong>${quality.score}%</strong>
@@ -876,14 +919,14 @@ function formatHealthHint(device, fallback = "") {
   const hints = Array.isArray(health.hints) ? health.hints.filter(Boolean) : [];
   if (hints.length) return hints.join(" ");
   if (fallback) return fallback;
-  if (device.online) return "Готов к командам.";
+  if (deviceIsLive(device)) return "Готов к командам.";
   return isPcDevice(device) ? "Запусти Windows PC Agent на компьютере." : "Запусти Android Agent на телефоне.";
 }
 
 function formatDeviceNote(device) {
   const diagnostics = formatDiagnostics(device);
   const healthHint = formatHealthHint(device);
-  if (device.online) {
+  if (deviceIsLive(device)) {
     return diagnostics ? `${healthHint} ${diagnostics}` : healthHint;
   }
   return diagnostics ? `${healthHint} Последнее: ${diagnostics}` : healthHint;
@@ -907,7 +950,9 @@ function formatRemoteStatus(device) {
   const last = diagnostics.last_command?.type ? ` · ${diagnostics.last_command.type}` : "";
   const quality = deviceConnectionQuality(device);
   return {
-    connection: device?.online ? `${quality.label} · ${quality.score}%` : "Offline · 0%",
+    connection: deviceRecovery(device).active
+      ? `Recovery ${deviceRecovery(device).attempt} · ETA ${recoveryTimeLabel(deviceRecovery(device).etaSeconds)}`
+      : (deviceIsLive(device) ? `${quality.label} · ${quality.score}%` : "Offline · 0%"),
     battery,
     security,
     commands: pending ? `ждет ${pending}${last}` : (delivered ? `дост. ${delivered}${last}` : `чисто${last}`),
@@ -943,7 +988,18 @@ function primaryDeviceIssue(device) {
       actionLabel: "Получить QR",
     };
   }
-  if (!device.online) {
+  if (deviceRecovery(device).active) {
+    const recovery = deviceRecovery(device);
+    return {
+      status: "warn",
+      label: "Recovery",
+      title: "Связь восстанавливается",
+      detail: `Попытка ${recovery.attempt}. Repair уже в очереди, следующая проверка через ${recoveryTimeLabel(recovery.nextCheckIn)}, ETA около ${recoveryTimeLabel(recovery.etaSeconds)}.`,
+      action: "",
+      actionLabel: "Recovery запущен",
+    };
+  }
+  if (!deviceIsLive(device)) {
     return {
       status: "danger",
       label: "Связь",
@@ -1148,7 +1204,7 @@ async function copySelectedDeviceReport() {
 
 function setupSteps(device) {
   const telemetry = device?.telemetry || {};
-  const isOnline = Boolean(device?.online);
+  const isOnline = deviceIsLive(device);
   if (isPcDevice(device)) {
     const agentReady = isOnline && telemetry.agent_enabled !== false;
     return [
@@ -1275,7 +1331,7 @@ function deviceSetupProgress(device) {
   const next = device?.pairing_required
     ? { title: "Подтвердить привязку", status: "todo", detail: "Используй QR на Android или setup-команду на Windows." }
     : nextSetupStep(device);
-  const status = !device?.online ? "offline" : (percent >= 100 ? "ready" : (device?.pairing_required ? "pairing" : "setup"));
+  const status = !deviceIsLive(device) ? "offline" : (percent >= 100 ? "ready" : (device?.pairing_required ? "pairing" : "setup"));
   return { setup, total, ready, percent, next, status };
 }
 
@@ -1325,14 +1381,14 @@ function renderSetupAutomation(device) {
   `).join("");
 
   if (nextSetupStepButton) {
-    nextSetupStepButton.disabled = !nextStep?.command || remoteCommandBusy || !device?.online || device?.pairing_required;
+    nextSetupStepButton.disabled = !nextStep?.command || remoteCommandBusy || !deviceIsLive(device) || device?.pairing_required;
     nextSetupStepButton.dataset.command = nextStep?.command || "";
     nextSetupStepButton.textContent = nextStep ? `Открыть: ${nextStep.title}` : "Все готово";
   }
 }
 
 function canControlDevice(device) {
-  return Boolean(device?.online && !device?.pairing_required && device?.health?.state !== "revoked");
+  return Boolean(deviceIsLive(device) && !device?.pairing_required && device?.health?.state !== "revoked");
 }
 
 function setTelegramTheme() {
@@ -1986,7 +2042,7 @@ function loadScreenFrame(device) {
 }
 
 async function requestFreshScreenFrame(device) {
-  if (!device.online || pendingScreenRequests.has(device.device_id)) return;
+  if (!deviceIsLive(device) || pendingScreenRequests.has(device.device_id)) return;
   pendingScreenRequests.add(device.device_id);
   try {
     const profile = qualityProfiles[getDeviceQuality(device)];
@@ -2335,10 +2391,10 @@ function renderRemotePanel(restartScreen = false) {
   remoteBatteryStatus.textContent = remoteStatus.battery;
   remoteSecurityStatus.textContent = remoteStatus.security;
   remoteCommandStatus.textContent = remoteStatus.commands;
-  remoteDeviceMeta.textContent = `${device.platform || "unknown"} · ${device.agent || "agent"} · ${device.health?.label || (device.online ? "Online" : "Offline")}`;
+  remoteDeviceMeta.textContent = `${device.platform || "unknown"} · ${device.agent || "agent"} · ${device.health?.label || (deviceIsLive(device) ? "Online" : "Offline")}`;
   const telemetry = device.telemetry || {};
   const activeCommand = device.diagnostics?.last_command;
-  remoteNowTitle.textContent = telemetry.active_app_label || telemetry.active_app_package || telemetry.hostname || (device.online ? "Агент работает в фоне" : "Устройство не на связи");
+  remoteNowTitle.textContent = telemetry.active_app_label || telemetry.active_app_package || telemetry.hostname || (deviceRecovery(device).active ? "Идёт восстановление связи" : (deviceIsLive(device) ? "Агент работает в фоне" : "Устройство не на связи"));
   remoteNowDetail.textContent = activeCommand
     ? `Команда: ${activeCommand.type} · ${activeCommand.status}. Агент: ${telemetry.agent_enabled === false ? "выключен" : "активен"}.`
     : `Активных команд нет. Агент: ${telemetry.agent_enabled === false ? "выключен" : "активен"}.`;
@@ -2349,7 +2405,7 @@ function renderRemotePanel(restartScreen = false) {
   renderRemoteHealth(device);
   remoteControlNote.textContent = formatDeviceNote(device);
 
-  if (restartScreen && device.online) {
+  if (restartScreen && deviceIsLive(device)) {
     startScreenPolling(device, remoteScreenPreview, remoteScreenImage, remoteControlNote);
   }
 }
@@ -2439,8 +2495,8 @@ function bindScreenGestures(image, getDevice, note) {
   });
   image.addEventListener("pointerup", async (event) => {
     const device = getDevice();
-    if (!device || !device.online) {
-      note.textContent = "Жест недоступен, пока устройство offline.";
+    if (!device || !deviceIsLive(device)) {
+      note.textContent = deviceRecovery(device).active ? "Жест станет доступен сразу после завершения recovery." : "Жест недоступен, пока устройство offline.";
       pointerStart = null;
       return;
     }
@@ -2469,8 +2525,8 @@ function bindScreenGestures(image, getDevice, note) {
   });
   image.addEventListener("dblclick", async (event) => {
     const device = getDevice();
-    if (!device || !device.online) {
-      note.textContent = "Long tap недоступен, пока устройство offline.";
+    if (!device || !deviceIsLive(device)) {
+      note.textContent = deviceRecovery(device).active ? "Long tap станет доступен сразу после завершения recovery." : "Long tap недоступен, пока устройство offline.";
       return;
     }
     try {
@@ -2493,7 +2549,7 @@ function render() {
 
   deviceList.innerHTML = "";
   totalDevices.textContent = devices.length;
-  const onlineCount = devices.filter((device) => device.online).length;
+  const onlineCount = devices.filter(deviceIsLive).length;
   onlineDevices.textContent = onlineCount;
   renderFleetPulse(onlineCount);
   renderDeviceToolbar();
@@ -2536,11 +2592,13 @@ function render() {
   filteredDevices.forEach((device) => {
     const card = template.content.firstElementChild.cloneNode(true);
     const healthState = device.health?.state || (device.online ? "online" : "offline");
-    card.classList.toggle("offline", !device.online);
+    const recovery = deviceRecovery(device);
+    card.classList.toggle("offline", !deviceIsLive(device));
+    card.classList.toggle("recovering", recovery.active);
     card.classList.toggle("selected", device.device_id === selectedDeviceId);
     card.dataset.health = healthState;
     $("h2", card).textContent = device.name;
-    $(".status-pill", card).textContent = device.health?.label || (device.online ? "Online" : "Offline");
+    $(".status-pill", card).textContent = device.health?.label || (deviceIsLive(device) ? "Online" : "Offline");
 
     const platform = device.platform ? ` · ${device.platform}` : "";
     const agent = device.agent ? ` · ${device.agent}` : "";
