@@ -780,6 +780,77 @@ class DevicePersistenceTests(unittest.TestCase):
         self.assertEqual(1, notify.call_count)
         self.assertEqual("agent_error", notify.call_args.args[2]["kind"])
 
+    def test_accessibility_rebind_does_not_emit_permission_loss_alert(self) -> None:
+        key = main.device_notify_key("100", "phone-rebind")
+        previous = main.device_notify_snapshot(
+            {
+                "online": True,
+                "telemetry": {
+                    "accessibility": True,
+                    "accessibility_enabled_in_settings": True,
+                    "screen_streaming": False,
+                },
+                "diagnostics": {},
+                "health": {"state": "online"},
+            }
+        )
+        main.save_device_notify_state({"devices": {key: previous}})
+        device = {
+            "owner_id": "100",
+            "device_id": "phone-rebind",
+            "name": "Phone",
+            "platform": "Android 16",
+            "agent": "android-agent",
+            "online": True,
+            "telemetry": {
+                "accessibility": False,
+                "accessibility_enabled_in_settings": True,
+                "accessibility_state": "reconnecting",
+                "screen_streaming": False,
+            },
+            "diagnostics": {},
+            "health": {"state": "online"},
+        }
+
+        with patch.object(main, "notify_device_alert") as notify:
+            main.process_device_notifications(device)
+
+        notify.assert_not_called()
+
+    def test_screen_recovery_alert_explains_single_pending_consent(self) -> None:
+        key = main.device_notify_key("100", "phone-screen")
+        previous = main.device_notify_snapshot(
+            {
+                "online": True,
+                "telemetry": {"screen_streaming": True},
+                "diagnostics": {},
+                "health": {"state": "online"},
+            }
+        )
+        main.save_device_notify_state({"devices": {key: previous}})
+        device = {
+            "owner_id": "100",
+            "device_id": "phone-screen",
+            "name": "Phone",
+            "platform": "Android 16",
+            "agent": "android-agent",
+            "online": True,
+            "telemetry": {
+                "screen_streaming": False,
+                "screen_permission_pending": True,
+                "screen_session_state": "consent_pending",
+            },
+            "diagnostics": {},
+            "health": {"state": "online"},
+        }
+
+        with patch.object(main, "notify_device_alert") as notify:
+            main.process_device_notifications(device)
+
+        self.assertEqual(1, notify.call_count)
+        self.assertIn("одно подтверждение", notify.call_args.args[1])
+        self.assertEqual("screen", notify.call_args.args[2]["kind"])
+
     def test_duplicate_device_alerts_are_throttled_by_fingerprint(self) -> None:
         state = {"devices": {}, "alerts": {}}
         device = {"owner_id": "100", "device_id": "phone-1", "telemetry": {}}

@@ -1562,10 +1562,15 @@ def device_notify_snapshot(device: dict) -> dict:
         "lost_mode": bool(telemetry.get("lost_mode")),
         "blackout": bool(telemetry.get("blackout")),
         "accessibility": bool(telemetry.get("accessibility")),
+        "accessibility_enabled_in_settings": telemetry.get("accessibility_enabled_in_settings") is True,
+        "accessibility_state": str(telemetry.get("accessibility_state") or ""),
         "notifications_ready": telemetry.get("notifications_ready") is True,
         "notification_listener_ready": telemetry.get("notification_listener_ready") is True,
         "battery_ready": telemetry.get("battery_ready") is True,
         "screen_streaming": bool(telemetry.get("screen_streaming")),
+        "screen_session_state": str(telemetry.get("screen_session_state") or ""),
+        "screen_permission_pending": telemetry.get("screen_permission_pending") is True,
+        "screen_stop_reason": str(telemetry.get("screen_stop_reason") or "")[:80],
         "last_error": str(telemetry.get("last_error") or "")[:180],
         "screen_error": str(telemetry.get("screen_error") or "")[:180],
         "pending_commands": int(diagnostics.get("pending_commands") or 0),
@@ -1638,7 +1643,8 @@ def process_device_notifications(device: dict, force: bool = False) -> None:
             if previous.get("blackout") != snapshot["blackout"]:
                 alerts.append(("черный экран включен" if snapshot["blackout"] else "черный экран выключен", {"kind": "blackout"}))
             if previous.get("accessibility") is True and not snapshot["accessibility"]:
-                alerts.append(("Accessibility/жесты больше не активны", {"kind": "accessibility"}))
+                if not snapshot["accessibility_enabled_in_settings"]:
+                    alerts.append(("Android отключил Accessibility/жесты — включи Hunter Agent один раз", {"kind": "accessibility"}))
             for key, label in (
                 ("notifications_ready", "уведомления"),
                 ("notification_listener_ready", "чтение уведомлений"),
@@ -1647,7 +1653,13 @@ def process_device_notifications(device: dict, force: bool = False) -> None:
                 if previous.get(key) is True and snapshot.get(key) is False:
                     alerts.append((f"Android отключил разрешение: {label}", {"kind": "permission", "permission": key}))
             if previous.get("screen_streaming") != snapshot["screen_streaming"]:
-                alerts.append(("трансляция экрана запущена" if snapshot["screen_streaming"] else "трансляция экрана остановлена", {"kind": "screen"}))
+                if snapshot["screen_streaming"]:
+                    alerts.append(("постоянная сессия экрана запущена — повторный запрос не нужен", {"kind": "screen"}))
+                elif snapshot["screen_permission_pending"]:
+                    alerts.append(("восстановление экрана ждёт одно подтверждение Android на устройстве", {"kind": "screen"}))
+                else:
+                    stop_reason = snapshot["screen_stop_reason"] or "android_stopped_projection"
+                    alerts.append((f"Android завершил сессию экрана ({stop_reason}); для новой сессии нужно одно подтверждение", {"kind": "screen"}))
             if not previous.get("last_error") and snapshot["last_error"]:
                 alerts.append((f"ошибка агента: {snapshot['last_error']}", {"kind": "agent_error"}))
             if not previous.get("screen_error") and snapshot["screen_error"]:
@@ -3113,14 +3125,26 @@ def device_setup_steps(device: dict) -> list[dict]:
                     "оптимизация батареи отключена" if telemetry.get("battery_ready") is True else "нужно разрешить работу в фоне",
                 ),
                 setup_step(
-                    "ready" if telemetry.get("accessibility") else "todo",
+                    "ready" if telemetry.get("accessibility") or telemetry.get("accessibility_enabled_in_settings") else "todo",
                     "Жесты",
-                    "Accessibility включен" if telemetry.get("accessibility") else "включи Hunter Agent в Accessibility",
+                    "Accessibility подключен"
+                    if telemetry.get("accessibility")
+                    else (
+                        "Android переподключает уже включенный сервис"
+                        if telemetry.get("accessibility_enabled_in_settings")
+                        else "включи Hunter Agent в Accessibility один раз"
+                    ),
                 ),
                 setup_step(
                     "ready" if telemetry.get("screen_streaming") else "todo",
                     "Экран",
-                    "трансляция активна" if telemetry.get("screen_streaming") else "запусти экран и подтверди системное окно",
+                    "постоянная сессия активна — повторный запрос не нужен"
+                    if telemetry.get("screen_streaming")
+                    else (
+                        "ожидается одно подтверждение Android"
+                        if telemetry.get("screen_permission_pending")
+                        else "запусти новую сессию и подтверди системное окно один раз"
+                    ),
                 ),
             ]
         )

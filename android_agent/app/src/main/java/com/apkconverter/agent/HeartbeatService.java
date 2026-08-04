@@ -341,18 +341,8 @@ public class HeartbeatService extends Service {
             if (!BuildConfig.FULL_CONTROL) {
                 result = "Screen preview is disabled in Lite build.";
                 status = "rejected";
-            } else if (ScreenCaptureService.isRunning()) {
-                saveScreenOptions(command);
-                result = revealBlackoutForScreenCapture(command)
-                        ? "Screen capture already running. Blackout paused briefly for remote preview."
-                        : "Screen capture already running.";
             } else {
-                saveScreenOptions(command);
-                Intent intent = new Intent(this, MainActivity.class)
-                        .setAction(MainActivity.ACTION_REQUEST_SCREEN_CAPTURE)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(intent);
-                result = "Screen permission requested on device.";
+                result = ensureScreenSession(command);
             }
         } else if ("stop_screen".equals(command.type)) {
             if (!BuildConfig.FULL_CONTROL) {
@@ -366,9 +356,15 @@ public class HeartbeatService extends Service {
         } else if ("request_files".equals(command.type)) {
             result = "Files request received. Storage picker module is not enabled yet.";
         } else if ("request_actions".equals(command.type)) {
-            result = BuildConfig.FULL_CONTROL && TouchControlService.isReady()
-                    ? "Actions module is ready for taps and navigation."
-                    : "Actions are disabled in Lite build.";
+            if (!BuildConfig.FULL_CONTROL) {
+                result = "Actions are disabled in Lite build.";
+            } else if (TouchControlService.isReady()) {
+                result = "Actions module is ready for taps and navigation.";
+            } else if (TouchControlService.isEnabledInSettings(this)) {
+                result = "Accessibility is enabled and Android is reconnecting the gesture service.";
+            } else {
+                result = "Enable Hunter Agent in Android Accessibility settings.";
+            }
         } else if ("tap".equals(command.type)) {
             result = dispatchTap(command);
         } else if ("long_tap".equals(command.type)) {
@@ -396,17 +392,13 @@ public class HeartbeatService extends Service {
         } else if ("request_battery_permission".equals(command.type)) {
             result = openBatteryPermissionSettings();
         } else if ("request_accessibility_permission".equals(command.type)) {
-            result = openAccessibilityPermissionSettings();
+            result = ensureAccessibilityService();
         } else if ("request_screen_permission".equals(command.type)) {
             if (!BuildConfig.FULL_CONTROL) {
                 result = "Screen permission is disabled in Lite build.";
                 status = "rejected";
             } else {
-                Intent intent = new Intent(this, MainActivity.class)
-                        .setAction(MainActivity.ACTION_REQUEST_SCREEN_CAPTURE)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(intent);
-                result = "Screen permission requested on device.";
+                result = ensureScreenSession(command);
             }
         } else if ("setup_wizard".equals(command.type)) {
             Intent intent = new Intent(this, MainActivity.class)
@@ -487,7 +479,7 @@ public class HeartbeatService extends Service {
             return "Tap rejected. Lite build has no Accessibility control.";
         }
         if (!TouchControlService.isReady()) {
-            return "Tap rejected. Enable APK Agent Accessibility Service in Android settings.";
+            return accessibilityUnavailable("Tap");
         }
         if (command.x < 0 || command.y < 0) {
             return "Tap rejected. Coordinates are missing.";
@@ -500,7 +492,7 @@ public class HeartbeatService extends Service {
             return "Long tap rejected. Lite build has no Accessibility control.";
         }
         if (!TouchControlService.isReady()) {
-            return "Long tap rejected. Enable APK Agent Accessibility Service in Android settings.";
+            return accessibilityUnavailable("Long tap");
         }
         if (command.x < 0 || command.y < 0) {
             return "Long tap rejected. Coordinates are missing.";
@@ -513,7 +505,7 @@ public class HeartbeatService extends Service {
             return "Swipe rejected. Lite build has no Accessibility control.";
         }
         if (!TouchControlService.isReady()) {
-            return "Swipe rejected. Enable APK Agent Accessibility Service in Android settings.";
+            return accessibilityUnavailable("Swipe");
         }
         if (command.x < 0 || command.y < 0 || command.endX < 0 || command.endY < 0) {
             return "Swipe rejected. Coordinates are missing.";
@@ -528,7 +520,7 @@ public class HeartbeatService extends Service {
             return "Text input failed. Lite build has no Accessibility control.";
         }
         if (!TouchControlService.isReady()) {
-            return "Text input failed. Enable Accessibility Service.";
+            return accessibilityUnavailable("Text input");
         }
         if (command.text == null || command.text.isEmpty()) {
             return "Text input failed. Text is empty.";
@@ -542,6 +534,47 @@ public class HeartbeatService extends Service {
         AgentConfig.prefs(this).edit()
                 .putInt(AgentConfig.KEY_SCREEN_MAX_SIZE, command.maxSize)
                 .apply();
+    }
+
+    private String ensureScreenSession(DeviceApiClient.RemoteCommand command) {
+        saveScreenOptions(command);
+        if (ScreenCaptureService.isRunning()) {
+            return revealBlackoutForScreenCapture(command)
+                    ? "Persistent screen session reused. Blackout paused briefly for remote preview."
+                    : "Persistent screen session reused without another consent prompt.";
+        }
+        if (ScreenCaptureService.isPermissionPending(this)) {
+            return "Screen recovery is waiting for the single Android confirmation already shown on the device.";
+        }
+        if (!ScreenCaptureService.reservePermissionPrompt(this, false)) {
+            return "Screen confirmation was requested recently. Duplicate prompt suppressed while Android finishes recovery.";
+        }
+        Intent intent = new Intent(this, MainActivity.class)
+                .setAction(MainActivity.ACTION_REQUEST_SCREEN_CAPTURE)
+                .putExtra(MainActivity.EXTRA_SCREEN_PERMISSION_RESERVED, true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        startActivity(intent);
+        return "Screen session recovery started. Confirm Android once; later requests will reuse the active session.";
+    }
+
+    private String ensureAccessibilityService() {
+        if (!BuildConfig.FULL_CONTROL) {
+            return "Accessibility permission is disabled in Lite build.";
+        }
+        if (TouchControlService.isReady()) {
+            return "Accessibility is already connected. No repeated setup is required.";
+        }
+        if (TouchControlService.isEnabledInSettings(this)) {
+            return "Accessibility remains enabled; Android is reconnecting the gesture service automatically.";
+        }
+        return openAccessibilityPermissionSettings();
+    }
+
+    private String accessibilityUnavailable(String action) {
+        if (TouchControlService.isEnabledInSettings(this)) {
+            return action + " paused. Android is reconnecting the enabled Accessibility service; retry shortly.";
+        }
+        return action + " rejected. Enable Hunter Agent in Android Accessibility settings once.";
     }
 
     private String repairAgent() {

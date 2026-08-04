@@ -219,8 +219,8 @@ const remoteCommandMessages = {
   request_notification_permission: "Запрос уведомлений открыт на телефоне.",
   request_notification_listener_permission: "Настройки доступа к уведомлениям открыты на телефоне.",
   request_battery_permission: "Запрос работы в фоне открыт на телефоне.",
-  request_accessibility_permission: "Настройки жестов и Accessibility открыты на телефоне.",
-  request_screen_permission: "Запрос доступа к экрану открыт на телефоне.",
+  request_accessibility_permission: "Если Accessibility уже включен, агент переподключит жесты без повторной настройки.",
+  request_screen_permission: "Активная сессия будет переиспользована; окно Android появится только когда сессия реально завершена.",
   setup_wizard: "Мастер автонастройки открыт на телефоне.",
   repair_agent: "Ремонт связи запущен на устройстве.",
   ping: "Агент отвечает.",
@@ -1243,21 +1243,43 @@ function primaryDeviceIssue(device) {
     };
   }
   if (telemetry.full_control === true && telemetry.accessibility !== true) {
+    if (telemetry.accessibility_enabled_in_settings === true) {
+      return {
+        status: "info",
+        label: "Жесты",
+        title: "Android переподключает управление",
+        detail: "Специальный доступ уже включен. Повторно подтверждать его не нужно; агент ждёт системный rebind и не открывает настройки без причины.",
+        action: "report",
+        actionLabel: "Показать состояние",
+      };
+    }
     return {
       status: "warn",
       label: "Жесты",
       title: "Accessibility не включен",
-      detail: "Тапы, свайпы и ввод заработают после включения Hunter Agent в Accessibility.",
+      detail: "Включи Hunter Agent в Accessibility один раз. Пока Android не отключит доступ, повторная настройка не потребуется.",
       action: "setup",
       actionLabel: "Открыть шаг",
     };
   }
   if (telemetry.full_control === true && telemetry.screen_streaming !== true) {
+    if (telemetry.screen_permission_pending === true) {
+      return {
+        status: "info",
+        label: "Экран",
+        title: "Идёт восстановление экрана",
+        detail: "На устройстве уже открыт один системный запрос Android. Подтверди его; дублирующие окна заблокированы.",
+        action: "report",
+        actionLabel: "Показать состояние",
+      };
+    }
     return {
       status: "info",
       label: "Экран",
       title: "Live-экран не запущен",
-      detail: "Можно запросить трансляцию и подтвердить системное окно на телефоне.",
+      detail: telemetry.screen_stop_reason
+        ? `Android завершил прошлую сессию (${telemetry.screen_stop_reason}). Подтверди новую один раз; затем пульт будет переиспользовать её.`
+        : "Подтверди системное окно один раз; затем пульт будет переиспользовать живую сессию без новых запросов.",
       action: "screen",
       actionLabel: "Запустить live",
     };
@@ -1427,8 +1449,12 @@ function setupSteps(device) {
       title: "Жесты и ввод",
       detail: isLite
         ? "Жесты доступны только в Full APK."
-        : (telemetry.accessibility ? "Accessibility включен, тапы и свайпы готовы." : "Включи Hunter Agent в Accessibility."),
-      status: !isAndroid || isLite ? "skipped" : (telemetry.accessibility ? "ready" : "todo"),
+        : (telemetry.accessibility
+          ? "Accessibility подключен, сериализованные тапы и свайпы готовы."
+          : (telemetry.accessibility_enabled_in_settings
+            ? "Доступ уже включен; Android переподключает сервис без повторного запроса."
+            : "Включи Hunter Agent в Accessibility один раз.")),
+      status: !isAndroid || isLite ? "skipped" : (telemetry.accessibility || telemetry.accessibility_enabled_in_settings ? "ready" : "todo"),
       command: "request_accessibility_permission",
     },
     {
@@ -1436,7 +1462,11 @@ function setupSteps(device) {
       title: "Экран",
       detail: isLite
         ? "Трансляция экрана доступна только в Full APK."
-        : (telemetry.screen_streaming ? "Трансляция активна." : "Запусти запрос экрана и подтверди системное окно."),
+        : (telemetry.screen_streaming
+          ? "Постоянная сессия активна; повторный consent не нужен."
+          : (telemetry.screen_permission_pending
+            ? "Ожидается одно подтверждение Android; повторные окна заблокированы."
+            : "Запусти новую сессию и подтверди системное окно один раз.")),
       status: !isAndroid || isLite ? "skipped" : (telemetry.screen_streaming ? "ready" : "todo"),
       command: "request_screen_permission",
     },

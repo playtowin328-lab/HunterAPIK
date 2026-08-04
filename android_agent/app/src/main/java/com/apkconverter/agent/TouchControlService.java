@@ -2,6 +2,7 @@ package com.apkconverter.agent;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityService.GestureResultCallback;
+import android.accessibilityservice.AccessibilityServiceInfo;
 import android.accessibilityservice.GestureDescription;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -10,21 +11,47 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Path;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.SystemClock;
 import android.util.DisplayMetrics;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 public class TouchControlService extends AccessibilityService {
-    private static TouchControlService instance;
+    private static final Object GESTURE_LOCK = new Object();
+    private static final long GESTURE_RESULT_TIMEOUT_MS = 3_000L;
+    private static volatile TouchControlService instance;
     private static volatile long lastGestureMs;
     private static volatile String lastGestureResult = "";
+    private static volatile long connectedAt;
+    private static volatile String connectionSessionId = "";
+    private static volatile boolean gestureInFlight;
+    private HandlerThread gestureCallbackThread;
+    private Handler gestureCallbackHandler;
 
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
+        stopGestureCallbackThread();
+        gestureCallbackThread = new HandlerThread("gesture-callback");
+        gestureCallbackThread.start();
+        gestureCallbackHandler = new Handler(gestureCallbackThread.getLooper());
+        connectedAt = System.currentTimeMillis();
+        connectionSessionId = UUID.randomUUID().toString();
         instance = this;
+        AgentConfig.prefs(this).edit()
+                .putLong(AgentConfig.KEY_ACCESSIBILITY_CONNECTED_AT, connectedAt)
+                .putString(AgentConfig.KEY_ACCESSIBILITY_SESSION_ID, connectionSessionId)
+                .apply();
     }
 
     @Override
@@ -51,12 +78,66 @@ public class TouchControlService extends AccessibilityService {
 
     @Override
     public boolean onUnbind(android.content.Intent intent) {
-        instance = null;
+        markDisconnected(this);
+        stopGestureCallbackThread();
         return super.onUnbind(intent);
+    }
+
+    @Override
+    public void onDestroy() {
+        markDisconnected(this);
+        stopGestureCallbackThread();
+        super.onDestroy();
     }
 
     static boolean isReady() {
         return instance != null;
+    }
+
+    static boolean isEnabledInSettings(Context context) {
+        AccessibilityManager manager = (AccessibilityManager) context.getSystemService(Context.ACCESSIBILITY_SERVICE);
+        if (manager == null || !manager.isEnabled()) {
+            return false;
+        }
+        List<AccessibilityServiceInfo> enabledServices = manager.getEnabledAccessibilityServiceList(
+                AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+        );
+        String packageName = context.getPackageName();
+        String serviceName = TouchControlService.class.getName();
+        for (AccessibilityServiceInfo info : enabledServices) {
+            if (info == null || info.getResolveInfo() == null || info.getResolveInfo().serviceInfo == null) {
+                continue;
+            }
+            android.content.pm.ServiceInfo resolved = info.getResolveInfo().serviceInfo;
+            if (packageName.equals(resolved.packageName) && serviceName.equals(resolved.name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static String getConnectionState(Context context) {
+        if (isReady()) {
+            return "connected";
+        }
+        return isEnabledInSettings(context) ? "reconnecting" : "disabled";
+    }
+
+    static String getConnectionSessionId(Context context) {
+        return isReady()
+                ? connectionSessionId
+                : AgentConfig.prefs(context).getString(AgentConfig.KEY_ACCESSIBILITY_SESSION_ID, "");
+    }
+
+    static long getConnectionAgeSeconds(Context context) {
+        long timestamp = isReady()
+                ? connectedAt
+                : AgentConfig.prefs(context).getLong(AgentConfig.KEY_ACCESSIBILITY_CONNECTED_AT, 0L);
+        return timestamp > 0 ? Math.max(0L, (System.currentTimeMillis() - timestamp) / 1000L) : -1L;
+    }
+
+    static boolean isGestureInFlight() {
+        return gestureInFlight;
     }
 
     static boolean tapNormalized(float normalizedX, float normalizedY) {
@@ -300,30 +381,107 @@ public class TouchControlService extends AccessibilityService {
     }
 
     private static boolean performGlobalActionCompat(int action) {
-        if (instance == null) {
-            return false;
+        synchronized (GESTURE_LOCK) {
+            TouchControlService service = instance;
+            if (service == null) {
+                recordGesture("global_action", 0, false, "service not ready");
+                return false;
+            }
+            long started = SystemClock.elapsedRealtime();
+            boolean result = service.performGlobalAction(action);
+            recordGesture("global_action", SystemClock.elapsedRealtime() - started, result, result ? "completed" : "rejected");
+            return result;
         }
-        long started = SystemClock.elapsedRealtime();
-        boolean result = instance.performGlobalAction(action);
-        recordGesture("global_action", SystemClock.elapsedRealtime() - started, result, result ? "accepted" : "rejected");
-        return result;
     }
 
     private static boolean dispatch(String label, GestureDescription gesture) {
-        long started = SystemClock.elapsedRealtime();
-        boolean accepted = instance.dispatchGesture(gesture, new GestureResultCallback() {
-            @Override
-            public void onCompleted(GestureDescription gestureDescription) {
-                recordGesture(label, SystemClock.elapsedRealtime() - started, true, "completed");
+        synchronized (GESTURE_LOCK) {
+            TouchControlService service = instance;
+            if (service == null) {
+                recordGesture(label, 0, false, "service not ready");
+                return false;
             }
+            gestureInFlight = true;
+            try {
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    long started = SystemClock.elapsedRealtime();
+                    CountDownLatch completion = new CountDownLatch(1);
+                    AtomicBoolean completed = new AtomicBoolean(false);
+                    boolean accepted;
+                    try {
+                        accepted = service.dispatchGesture(gesture, new GestureResultCallback() {
+                            @Override
+                            public void onCompleted(GestureDescription gestureDescription) {
+                                completed.set(true);
+                                incrementCounter(service, AgentConfig.KEY_GESTURE_COMPLETED_COUNT);
+                                recordGesture(label, SystemClock.elapsedRealtime() - started, true, "completed");
+                                completion.countDown();
+                            }
 
-            @Override
-            public void onCancelled(GestureDescription gestureDescription) {
-                recordGesture(label, SystemClock.elapsedRealtime() - started, false, "cancelled");
+                            @Override
+                            public void onCancelled(GestureDescription gestureDescription) {
+                                incrementCounter(service, AgentConfig.KEY_GESTURE_CANCELLED_COUNT);
+                                recordGesture(label, SystemClock.elapsedRealtime() - started, false, "cancelled");
+                                completion.countDown();
+                            }
+                        }, service.gestureCallbackHandler);
+                    } catch (RuntimeException exc) {
+                        incrementCounter(service, AgentConfig.KEY_GESTURE_REJECTED_COUNT);
+                        recordGesture(label, SystemClock.elapsedRealtime() - started, false, "dispatch error");
+                        return false;
+                    }
+                    if (!accepted) {
+                        incrementCounter(service, AgentConfig.KEY_GESTURE_REJECTED_COUNT);
+                        recordGesture(label, SystemClock.elapsedRealtime() - started, false, "rejected");
+                        if (attempt == 0 && instance == service) {
+                            SystemClock.sleep(100L);
+                            continue;
+                        }
+                        return false;
+                    }
+                    recordGesture(label, SystemClock.elapsedRealtime() - started, true, "running");
+                    try {
+                        if (!completion.await(GESTURE_RESULT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                            incrementCounter(service, AgentConfig.KEY_GESTURE_TIMEOUT_COUNT);
+                            recordGesture(label, SystemClock.elapsedRealtime() - started, false, "timeout");
+                            return false;
+                        }
+                    } catch (InterruptedException exc) {
+                        Thread.currentThread().interrupt();
+                        recordGesture(label, SystemClock.elapsedRealtime() - started, false, "interrupted");
+                        return false;
+                    }
+                    return completed.get();
+                }
+                return false;
+            } finally {
+                gestureInFlight = false;
             }
-        }, null);
-        recordGesture(label, SystemClock.elapsedRealtime() - started, accepted, accepted ? "accepted" : "rejected");
-        return accepted;
+        }
+    }
+
+    private static void incrementCounter(TouchControlService service, String key) {
+        android.content.SharedPreferences prefs = AgentConfig.prefs(service);
+        prefs.edit().putInt(key, prefs.getInt(key, 0) + 1).apply();
+    }
+
+    private static void markDisconnected(TouchControlService service) {
+        if (instance != service) {
+            return;
+        }
+        instance = null;
+        gestureInFlight = false;
+        AgentConfig.prefs(service).edit()
+                .putLong(AgentConfig.KEY_ACCESSIBILITY_DISCONNECTED_AT, System.currentTimeMillis())
+                .apply();
+    }
+
+    private void stopGestureCallbackThread() {
+        gestureCallbackHandler = null;
+        if (gestureCallbackThread != null) {
+            gestureCallbackThread.quitSafely();
+            gestureCallbackThread = null;
+        }
     }
 
     private static void recordGesture(String label, long durationMs, boolean success, String detail) {

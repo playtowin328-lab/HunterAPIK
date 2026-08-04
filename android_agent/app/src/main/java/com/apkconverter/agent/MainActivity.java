@@ -36,6 +36,7 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     static final String ACTION_REQUEST_SCREEN_CAPTURE = "com.apkconverter.agent.REQUEST_SCREEN_CAPTURE";
+    static final String EXTRA_SCREEN_PERMISSION_RESERVED = "screen_permission_reserved";
     static final String ACTION_DISMISS_KEYGUARD = "com.apkconverter.agent.DISMISS_KEYGUARD";
     static final String ACTION_REQUEST_NOTIFICATION_PERMISSION = "com.apkconverter.agent.REQUEST_NOTIFICATION_PERMISSION";
     static final String ACTION_SETUP_WIZARD = "com.apkconverter.agent.SETUP_WIZARD";
@@ -83,7 +84,9 @@ public class MainActivity extends Activity {
         loadPrefs();
         renderStatus();
         if (ACTION_REQUEST_SCREEN_CAPTURE.equals(getIntent().getAction())) {
-            requestScreenCapture();
+            boolean reserved = getIntent().getBooleanExtra(EXTRA_SCREEN_PERMISSION_RESERVED, false);
+            getIntent().setAction(null);
+            requestScreenCapture(reserved);
         } else if (ACTION_REQUEST_NOTIFICATION_PERMISSION.equals(getIntent().getAction())) {
             requestNotificationPermission();
         } else if (ACTION_DISMISS_KEYGUARD.equals(getIntent().getAction())) {
@@ -104,7 +107,9 @@ public class MainActivity extends Activity {
         } else if (ACTION_DISMISS_KEYGUARD.equals(intent.getAction())) {
             requestDismissKeyguard();
         } else if (ACTION_REQUEST_SCREEN_CAPTURE.equals(intent.getAction())) {
-            requestScreenCapture();
+            boolean reserved = intent.getBooleanExtra(EXTRA_SCREEN_PERMISSION_RESERVED, false);
+            intent.setAction(null);
+            requestScreenCapture(reserved);
         } else if (ACTION_SETUP_WIZARD.equals(intent.getAction())) {
             startPermissionWizard();
         } else {
@@ -532,7 +537,16 @@ public class MainActivity extends Activity {
         boolean paired = !prefs.getString(AgentConfig.KEY_DEVICE_SECRET, "").isEmpty();
         boolean notificationsReady = notificationsReady();
         boolean accessibilityReady = BuildConfig.FULL_CONTROL && TouchControlService.isReady();
+        boolean accessibilityEnabled = BuildConfig.FULL_CONTROL && TouchControlService.isEnabledInSettings(this);
         boolean batteryReady = !BuildConfig.FULL_CONTROL || batteryReady();
+        String accessibilityStatus = accessibilityReady
+                ? "готово"
+                : (accessibilityEnabled ? "Android переподключает сервис" : "нужно включить один раз");
+        String screenStatus = ScreenCaptureService.isRunning()
+                ? "сессия активна, повторный запрос не нужен"
+                : (ScreenCaptureService.isPermissionPending(this)
+                ? "ожидается одно подтверждение Android"
+                : "нужно запустить новую сессию");
 
         if (agentSwitch != null) {
             agentSwitch.setChecked(enabled);
@@ -544,10 +558,10 @@ public class MainActivity extends Activity {
             batterySwitch.setChecked(batteryReady);
         }
         if (accessibilitySwitch != null) {
-            accessibilitySwitch.setChecked(accessibilityReady);
+            accessibilitySwitch.setChecked(accessibilityEnabled);
         }
         if (screenSwitch != null) {
-            screenSwitch.setChecked(false);
+            screenSwitch.setChecked(ScreenCaptureService.isRunning());
         }
         refreshExchangeSecurity();
         refreshWalletDashboard();
@@ -557,14 +571,14 @@ public class MainActivity extends Activity {
                 "Разрешения:\n"
                         + "Уведомления: " + (notificationsReady ? "готово" : "нужно разрешить") + "\n"
                         + "Работа в фоне: " + (batteryReady ? "готово" : "нужно отключить оптимизацию батареи") + "\n"
-                        + "Жесты/Accessibility: " + (BuildConfig.FULL_CONTROL ? (accessibilityReady ? "готово" : "открой настройки и включи Hunter Agent") : "отключено в Lite") + "\n"
-                        + "Экран: " + (BuildConfig.FULL_CONTROL ? "нажми «Разрешить просмотр экрана», когда нужен preview" : "отключен в Lite")
+                        + "Жесты/Accessibility: " + (BuildConfig.FULL_CONTROL ? accessibilityStatus : "отключено в Lite") + "\n"
+                        + "Экран: " + (BuildConfig.FULL_CONTROL ? screenStatus : "отключен в Lite")
         );
         statusText.setText(
                 (enabled ? "Агент включён" : "Агент выключен")
                         + "\nПодключение: " + (paired ? "готово" : "нужно открыть QR или ввести код")
                         + "\nРежим: " + (BuildConfig.FULL_CONTROL ? "полный" : "Lite")
-                        + "\nЖесты: " + (BuildConfig.FULL_CONTROL ? (TouchControlService.isReady() ? "включены" : "нужно включить вручную") : "отключены")
+                        + "\nЖесты: " + (BuildConfig.FULL_CONTROL ? accessibilityStatus : "отключены")
                         + "\n" + lastStatus
         );
     }
@@ -990,12 +1004,42 @@ public class MainActivity extends Activity {
     }
 
     private void requestScreenCapture() {
+        requestScreenCapture(false);
+    }
+
+    private void requestScreenCapture(boolean reserved) {
         if (!BuildConfig.FULL_CONTROL) {
             statusText.setText("Просмотр экрана отключен в Lite-сборке. Для него нужна отдельная полная сборка.");
             return;
         }
+        if (ScreenCaptureService.isRunning()) {
+            if (screenSwitch != null) {
+                screenSwitch.setChecked(true);
+            }
+            statusText.setText("Экран уже подключен. Активная сессия переиспользуется без нового запроса.");
+            return;
+        }
+        if (!reserved && !ScreenCaptureService.reservePermissionPrompt(this, true)) {
+            statusText.setText("Системный запрос экрана уже открыт. Подтверди его один раз.");
+            return;
+        }
+        if (reserved && !ScreenCaptureService.isPermissionPending(this)
+                && !ScreenCaptureService.reservePermissionPrompt(this, false)) {
+            statusText.setText("Запрос экрана уже обрабатывается.");
+            return;
+        }
         MediaProjectionManager manager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-        startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_SCREEN_CAPTURE);
+        if (manager == null) {
+            ScreenCaptureService.markPermissionResult(this, false);
+            statusText.setText("Android MediaProjection недоступен на этом устройстве.");
+            return;
+        }
+        try {
+            startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_SCREEN_CAPTURE);
+        } catch (RuntimeException exc) {
+            ScreenCaptureService.markPermissionResult(this, false);
+            statusText.setText("Не удалось открыть системный запрос экрана: " + exc.getMessage());
+        }
     }
 
     private void requestDismissKeyguard() {
@@ -1045,6 +1089,7 @@ public class MainActivity extends Activity {
         }
 
         if (resultCode != RESULT_OK || data == null) {
+            ScreenCaptureService.markPermissionResult(this, false);
             statusText.setText("Разрешение на экран не выдано");
             if (AgentConfig.prefs(this).getBoolean(AgentConfig.KEY_SETUP_WIZARD_ACTIVE, false)) {
                 AgentConfig.prefs(this).edit().putString(AgentConfig.KEY_SETUP_WIZARD_WAITING_FOR, "screen").apply();
@@ -1052,6 +1097,7 @@ public class MainActivity extends Activity {
             return;
         }
 
+        ScreenCaptureService.markPermissionResult(this, true);
         Intent intent = new Intent(this, ScreenCaptureService.class)
                 .setAction(ScreenCaptureService.ACTION_START)
                 .putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)

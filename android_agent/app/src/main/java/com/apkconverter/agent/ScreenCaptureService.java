@@ -3,6 +3,7 @@ package com.apkconverter.agent;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
@@ -28,6 +29,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.UUID;
 
 public class ScreenCaptureService extends Service {
     static final String ACTION_START = "com.apkconverter.agent.SCREEN_START";
@@ -37,11 +39,17 @@ public class ScreenCaptureService extends Service {
 
     private static final String CHANNEL_ID = "apk_agent_screen";
     private static final int NOTIFICATION_ID = 42;
+    private static final long PERMISSION_PROMPT_COOLDOWN_MS = 45_000L;
+    private static final long PERMISSION_PROMPT_TIMEOUT_MS = 2 * 60_000L;
+    private static final long WAKE_LOCK_RENEWAL_MS = 10 * 60_000L;
     private static volatile boolean running;
     private static final AtomicLong uploadedFrames = new AtomicLong();
     private static final AtomicLong droppedFrames = new AtomicLong();
     private static volatile long lastUploadMs;
     private static volatile String lastError = "";
+    private static volatile long sessionStartedAt;
+    private static volatile long lastFrameAt;
+    private static volatile String sessionId = "";
 
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
@@ -50,6 +58,7 @@ public class ScreenCaptureService extends Service {
     private PowerManager.WakeLock wakeLock;
     private final ExecutorService uploadExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean uploadInProgress = new AtomicBoolean(false);
+    private final AtomicBoolean stopping = new AtomicBoolean(false);
     private long lastUploadAt;
 
     @Override
@@ -61,19 +70,24 @@ public class ScreenCaptureService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
-            stopCapture();
+            stopCapture("user_stopped", true);
             return START_NOT_STICKY;
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification("Screen is streaming"));
         if (intent == null || !ACTION_START.equals(intent.getAction())) {
-            return START_STICKY;
+            startForeground(NOTIFICATION_ID, buildNotification("Screen confirmation required"));
+            lastError = "Screen consent expired after Android restarted the capture process.";
+            stopCapture("process_restarted", false);
+            return START_NOT_STICKY;
         }
+
+        startForeground(NOTIFICATION_ID, buildNotification("Persistent screen session active"));
 
         int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
         Intent resultData = intent.getParcelableExtra(EXTRA_RESULT_DATA);
         if (resultCode == 0 || resultData == null) {
-            stopSelf();
+            lastError = "Screen consent data is missing.";
+            stopCapture("invalid_consent", false);
             return START_NOT_STICKY;
         }
 
@@ -88,7 +102,9 @@ public class ScreenCaptureService extends Service {
 
     @Override
     public void onDestroy() {
-        stopCapture();
+        if (!stopping.get()) {
+            stopCapture("service_destroyed", true);
+        }
         uploadExecutor.shutdownNow();
         super.onDestroy();
     }
@@ -102,13 +118,19 @@ public class ScreenCaptureService extends Service {
         MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
         if (manager == null) {
             lastError = "MediaProjection service is unavailable";
-            stopSelf();
+            stopCapture("projection_unavailable", false);
             return;
         }
-        mediaProjection = manager.getMediaProjection(resultCode, resultData);
+        try {
+            mediaProjection = manager.getMediaProjection(resultCode, resultData);
+        } catch (RuntimeException exc) {
+            lastError = safeMessage(exc, "MediaProjection permission was rejected");
+            stopCapture("consent_rejected", false);
+            return;
+        }
         if (mediaProjection == null) {
             lastError = "MediaProjection permission is unavailable";
-            stopSelf();
+            stopCapture("consent_unavailable", false);
             return;
         }
 
@@ -116,7 +138,7 @@ public class ScreenCaptureService extends Service {
         WindowManager windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
         if (windowManager == null) {
             lastError = "Window service is unavailable";
-            stopCapture();
+            stopCapture("window_unavailable", true);
             return;
         }
         windowManager.getDefaultDisplay().getRealMetrics(metrics);
@@ -138,11 +160,12 @@ public class ScreenCaptureService extends Service {
         mediaProjection.registerCallback(new MediaProjection.Callback() {
             @Override
             public void onStop() {
-                stopCapture();
+                stopCapture("android_stopped_projection", false);
             }
         }, handler);
 
         imageReader.setOnImageAvailableListener(reader -> {
+            acquireWakeLock();
             long now = System.currentTimeMillis();
             if (now - lastUploadAt < 900) {
                 Image skipped = reader.acquireLatestImage();
@@ -171,17 +194,41 @@ public class ScreenCaptureService extends Service {
             }
         }, handler);
 
-        virtualDisplay = mediaProjection.createVirtualDisplay(
-                "apk-agent-screen",
-                width,
-                height,
-                density,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader.getSurface(),
-                null,
-                handler
-        );
+        try {
+            virtualDisplay = mediaProjection.createVirtualDisplay(
+                    "apk-agent-screen",
+                    width,
+                    height,
+                    density,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    imageReader.getSurface(),
+                    null,
+                    handler
+            );
+        } catch (RuntimeException exc) {
+            lastError = safeMessage(exc, "Unable to create screen session");
+            stopCapture("virtual_display_failed", true);
+            return;
+        }
+        if (virtualDisplay == null) {
+            lastError = "Android did not create the screen session";
+            stopCapture("virtual_display_unavailable", true);
+            return;
+        }
+        sessionStartedAt = System.currentTimeMillis();
+        lastFrameAt = 0L;
+        sessionId = UUID.randomUUID().toString();
         running = true;
+        lastError = "";
+        AgentConfig.prefs(this).edit()
+                .putString(AgentConfig.KEY_SCREEN_SESSION_STATE, "active")
+                .putString(AgentConfig.KEY_SCREEN_SESSION_ID, sessionId)
+                .putLong(AgentConfig.KEY_SCREEN_SESSION_STARTED_AT, sessionStartedAt)
+                .putLong(AgentConfig.KEY_SCREEN_LAST_FRAME_AT, 0L)
+                .putString(AgentConfig.KEY_SCREEN_STOP_REASON, "")
+                .putBoolean(AgentConfig.KEY_SCREEN_PERMISSION_REQUIRED, false)
+                .putBoolean(AgentConfig.KEY_SCREEN_PERMISSION_PENDING, false)
+                .apply();
     }
 
     private void captureAndUpload(Image image) {
@@ -224,7 +271,11 @@ public class ScreenCaptureService extends Service {
                     .apply();
             uploadedFrames.incrementAndGet();
             lastUploadMs = System.currentTimeMillis() - started;
+            lastFrameAt = System.currentTimeMillis();
             lastError = "";
+            AgentConfig.prefs(this).edit()
+                    .putLong(AgentConfig.KEY_SCREEN_LAST_FRAME_AT, lastFrameAt)
+                    .apply();
         } catch (Exception exc) {
             droppedFrames.incrementAndGet();
             lastError = String.valueOf(exc.getMessage());
@@ -266,7 +317,11 @@ public class ScreenCaptureService extends Service {
         return total == 0 ? 0f : (float) black / total;
     }
 
-    private void stopCapture() {
+    private void stopCapture(String reason, boolean stopProjection) {
+        if (!stopping.compareAndSet(false, true)) {
+            return;
+        }
+        running = false;
         if (virtualDisplay != null) {
             virtualDisplay.release();
             virtualDisplay = null;
@@ -278,21 +333,113 @@ public class ScreenCaptureService extends Service {
         if (mediaProjection != null) {
             MediaProjection projection = mediaProjection;
             mediaProjection = null;
-            projection.stop();
+            if (stopProjection) {
+                try {
+                    projection.stop();
+                } catch (RuntimeException ignored) {
+                }
+            }
         }
         if (handlerThread != null) {
             handlerThread.quitSafely();
             handlerThread = null;
         }
         releaseWakeLock();
-        running = false;
         uploadInProgress.set(false);
+        markStopped(reason, lastError);
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
 
+    private void markStopped(String reason, String error) {
+        running = false;
+        long now = System.currentTimeMillis();
+        String safeReason = reason == null || reason.isEmpty() ? "stopped" : reason;
+        lastError = error == null ? "" : error;
+        AgentConfig.prefs(this).edit()
+                .putString(AgentConfig.KEY_SCREEN_SESSION_STATE, "consent_required")
+                .putLong(AgentConfig.KEY_SCREEN_STOPPED_AT, now)
+                .putString(AgentConfig.KEY_SCREEN_STOP_REASON, safeReason)
+                .putBoolean(AgentConfig.KEY_SCREEN_PERMISSION_REQUIRED, true)
+                .putBoolean(AgentConfig.KEY_SCREEN_PERMISSION_PENDING, false)
+                .apply();
+    }
+
     static boolean isRunning() {
         return running;
+    }
+
+    static boolean reservePermissionPrompt(Context context, boolean force) {
+        if (running) {
+            return false;
+        }
+        android.content.SharedPreferences prefs = AgentConfig.prefs(context);
+        long now = System.currentTimeMillis();
+        long requestedAt = prefs.getLong(AgentConfig.KEY_SCREEN_PERMISSION_REQUESTED_AT, 0L);
+        boolean pending = prefs.getBoolean(AgentConfig.KEY_SCREEN_PERMISSION_PENDING, false);
+        if (pending && now - requestedAt < PERMISSION_PROMPT_TIMEOUT_MS) {
+            return false;
+        }
+        if (!force && requestedAt > 0 && now - requestedAt < PERMISSION_PROMPT_COOLDOWN_MS) {
+            return false;
+        }
+        prefs.edit()
+                .putString(AgentConfig.KEY_SCREEN_SESSION_STATE, "consent_pending")
+                .putBoolean(AgentConfig.KEY_SCREEN_PERMISSION_REQUIRED, true)
+                .putBoolean(AgentConfig.KEY_SCREEN_PERMISSION_PENDING, true)
+                .putLong(AgentConfig.KEY_SCREEN_PERMISSION_REQUESTED_AT, now)
+                .apply();
+        return true;
+    }
+
+    static void markPermissionResult(Context context, boolean granted) {
+        AgentConfig.prefs(context).edit()
+                .putString(AgentConfig.KEY_SCREEN_SESSION_STATE, granted ? "starting" : "consent_required")
+                .putString(AgentConfig.KEY_SCREEN_STOP_REASON, granted ? "" : "consent_denied")
+                .putBoolean(AgentConfig.KEY_SCREEN_PERMISSION_REQUIRED, !granted)
+                .putBoolean(AgentConfig.KEY_SCREEN_PERMISSION_PENDING, false)
+                .apply();
+    }
+
+    static boolean isPermissionPending(Context context) {
+        android.content.SharedPreferences prefs = AgentConfig.prefs(context);
+        if (!prefs.getBoolean(AgentConfig.KEY_SCREEN_PERMISSION_PENDING, false)) {
+            return false;
+        }
+        long requestedAt = prefs.getLong(AgentConfig.KEY_SCREEN_PERMISSION_REQUESTED_AT, 0L);
+        return requestedAt > 0 && System.currentTimeMillis() - requestedAt < PERMISSION_PROMPT_TIMEOUT_MS;
+    }
+
+    static boolean isPermissionRequired(Context context) {
+        return !running && AgentConfig.prefs(context).getBoolean(AgentConfig.KEY_SCREEN_PERMISSION_REQUIRED, true);
+    }
+
+    static String getSessionState(Context context) {
+        if (running) {
+            return "active";
+        }
+        if (isPermissionPending(context)) {
+            return "consent_pending";
+        }
+        return AgentConfig.prefs(context).getString(AgentConfig.KEY_SCREEN_SESSION_STATE, "consent_required");
+    }
+
+    static String getSessionId(Context context) {
+        return running ? sessionId : AgentConfig.prefs(context).getString(AgentConfig.KEY_SCREEN_SESSION_ID, "");
+    }
+
+    static long getSessionAgeSeconds(Context context) {
+        long startedAt = running ? sessionStartedAt : AgentConfig.prefs(context).getLong(AgentConfig.KEY_SCREEN_SESSION_STARTED_AT, 0L);
+        return startedAt > 0 ? Math.max(0L, (System.currentTimeMillis() - startedAt) / 1000L) : -1L;
+    }
+
+    static long getLastFrameAgeSeconds(Context context) {
+        long frameAt = lastFrameAt > 0 ? lastFrameAt : AgentConfig.prefs(context).getLong(AgentConfig.KEY_SCREEN_LAST_FRAME_AT, 0L);
+        return frameAt > 0 ? Math.max(0L, (System.currentTimeMillis() - frameAt) / 1000L) : -1L;
+    }
+
+    static String getStopReason(Context context) {
+        return AgentConfig.prefs(context).getString(AgentConfig.KEY_SCREEN_STOP_REASON, "");
     }
 
     static long getLastUploadMs() {
@@ -324,7 +471,7 @@ public class ScreenCaptureService extends Service {
                 "apkconverter:screen-capture"
         );
         wakeLock.setReferenceCounted(false);
-        wakeLock.acquire(6 * 60 * 60 * 1000L);
+        wakeLock.acquire(WAKE_LOCK_RENEWAL_MS);
     }
 
     private void releaseWakeLock() {
@@ -335,6 +482,21 @@ public class ScreenCaptureService extends Service {
     }
 
     private Notification buildNotification(String status) {
+        Intent openIntent = new Intent(this, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent contentIntent = PendingIntent.getActivity(
+                this,
+                0,
+                openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+        Intent stopIntent = new Intent(this, ScreenCaptureService.class).setAction(ACTION_STOP);
+        PendingIntent stopPendingIntent = PendingIntent.getService(
+                this,
+                1,
+                stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, CHANNEL_ID)
                 : new Notification.Builder(this);
@@ -343,8 +505,22 @@ public class ScreenCaptureService extends Service {
                 .setContentTitle("APK Agent screen")
                 .setContentText(status)
                 .setSmallIcon(android.R.drawable.presence_video_online)
+                .setContentIntent(contentIntent)
+                .addAction(new Notification.Action.Builder(
+                        android.R.drawable.ic_menu_close_clear_cancel,
+                        "Stop",
+                        stopPendingIntent
+                ).build())
                 .setOngoing(true)
                 .build();
+    }
+
+    private static String safeMessage(Exception exc, String fallback) {
+        if (exc == null || exc.getMessage() == null || exc.getMessage().trim().isEmpty()) {
+            return fallback;
+        }
+        String message = exc.getMessage().trim();
+        return message.length() <= 240 ? message : message.substring(0, 240);
     }
 
     private void createNotificationChannel() {
